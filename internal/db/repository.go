@@ -76,6 +76,29 @@ CREATE TABLE IF NOT EXISTS device_logs (
 
 CREATE INDEX IF NOT EXISTS idx_device_logs_device_created_at
     ON device_logs (device_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS users (
+    id BIGSERIAL PRIMARY KEY,
+    username VARCHAR(64) NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role VARCHAR(16) NOT NULL CHECK (role IN ('admin','user')),
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id BIGSERIAL PRIMARY KEY,
+    username VARCHAR(64) NOT NULL,
+    action VARCHAR(64) NOT NULL,
+    method VARCHAR(16) NOT NULL,
+    path TEXT NOT NULL,
+    ip VARCHAR(64),
+    detail TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_username_created_at ON audit_logs (username, created_at DESC);
 `
 
 type Device struct {
@@ -130,6 +153,26 @@ type DeviceLog struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type User struct {
+	ID           int64     `json:"id"`
+	Username     string    `json:"username"`
+	PasswordHash string    `json:"-"`
+	Role         string    `json:"role"`
+	Enabled      bool      `json:"enabled"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type AuditLog struct {
+	ID        int64     `json:"id"`
+	Username  string    `json:"username"`
+	Action    string    `json:"action"`
+	Method    string    `json:"method"`
+	Path      string    `json:"path"`
+	IP        string    `json:"ip"`
+	Detail    string    `json:"detail"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type Repository struct {
 	db *sql.DB
 }
@@ -155,6 +198,111 @@ func (r *Repository) EnsureSchema() error {
 		return fmt.Errorf("schema bootstrap failed: %w", err)
 	}
 	return nil
+}
+
+func (r *Repository) UpsertAdmin(username, passwordHash string) error {
+	const q = `
+		INSERT INTO users (username, password_hash, role, enabled)
+		VALUES ($1, $2, 'admin', TRUE)
+		ON CONFLICT (username) DO UPDATE
+		SET password_hash = EXCLUDED.password_hash,
+		    role = 'admin',
+		    enabled = TRUE;
+	`
+	if _, err := r.db.Exec(q, username, passwordHash); err != nil {
+		return fmt.Errorf("upsert admin failed: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) GetUserByUsername(ctx context.Context, username string) (*User, error) {
+	const q = `
+		SELECT id, username, password_hash, role, enabled, created_at
+		FROM users
+		WHERE username = $1;
+	`
+	var u User
+	if err := r.db.QueryRowContext(ctx, q, username).Scan(
+		&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.CreatedAt,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get user failed: %w", err)
+	}
+	return &u, nil
+}
+
+func (r *Repository) AddAuditLog(ctx context.Context, log AuditLog) error {
+	const q = `
+		INSERT INTO audit_logs (username, action, method, path, ip, detail)
+		VALUES ($1, $2, $3, $4, $5, $6);
+	`
+	if _, err := r.db.ExecContext(
+		ctx, q, log.Username, log.Action, log.Method, log.Path, log.IP, log.Detail,
+	); err != nil {
+		return fmt.Errorf("insert audit log failed: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) ListAuditLogs(ctx context.Context, limit int) ([]AuditLog, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	const q = `
+		SELECT id, username, action, method, path, COALESCE(ip,''), COALESCE(detail,''), created_at
+		FROM audit_logs
+		ORDER BY created_at DESC
+		LIMIT $1;
+	`
+	rows, err := r.db.QueryContext(ctx, q, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list audit logs failed: %w", err)
+	}
+	defer rows.Close()
+	out := make([]AuditLog, 0)
+	for rows.Next() {
+		var a AuditLog
+		if err := rows.Scan(&a.ID, &a.Username, &a.Action, &a.Method, &a.Path, &a.IP, &a.Detail, &a.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan audit log failed: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (r *Repository) CreateUser(ctx context.Context, username, passwordHash, role string) error {
+	const q = `
+		INSERT INTO users (username, password_hash, role, enabled)
+		VALUES ($1, $2, $3, TRUE);
+	`
+	if _, err := r.db.ExecContext(ctx, q, username, passwordHash, role); err != nil {
+		return fmt.Errorf("create user failed: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) ListUsers(ctx context.Context) ([]User, error) {
+	const q = `
+		SELECT id, username, password_hash, role, enabled, created_at
+		FROM users
+		ORDER BY id;
+	`
+	rows, err := r.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("list users failed: %w", err)
+	}
+	defer rows.Close()
+	out := make([]User, 0)
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan users failed: %w", err)
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
 }
 
 func (r *Repository) AddDevice(ctx context.Context, d Device) (int64, error) {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"golang.org/x/crypto/bcrypt"
 
 	"netpulse/internal/api"
 	"netpulse/internal/db"
@@ -38,6 +39,9 @@ func main() {
 	password := getenv("DB_PASSWORD", "netpulse123")
 	name := getenv("DB_NAME", "netpulse")
 	sslmode := getenv("DB_SSLMODE", "disable")
+	adminUser := getenv("ADMIN_USERNAME", "admin")
+	adminPassword := getenv("ADMIN_PASSWORD", "admin123456")
+	jwtSecret := getenv("JWT_SECRET", "change-this-secret")
 
 	dsn := fmt.Sprintf(
 		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
@@ -61,6 +65,13 @@ func main() {
 	if err := repo.EnsureSchema(); err != nil {
 		log.Fatalf("ensure schema failed: %v", err)
 	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(adminPassword), bcrypt.DefaultCost)
+	if err != nil {
+		log.Fatalf("generate admin hash failed: %v", err)
+	}
+	if err := repo.UpsertAdmin(adminUser, string(hash)); err != nil {
+		log.Fatalf("upsert admin failed: %v", err)
+	}
 
 	fmt.Println("NetPulse Server Started")
 
@@ -73,7 +84,7 @@ func main() {
 		Password: password,
 		Name:     name,
 	})
-	handler := api.NewHandler(repo, collector, systemSvc)
+	handler := api.NewHandler(repo, collector, systemSvc, jwtSecret)
 
 	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

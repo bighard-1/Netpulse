@@ -1,0 +1,139 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
+
+	"netpulse/internal/db"
+)
+
+type Claims struct {
+	Username string `json:"username"`
+	Role     string `json:"role"`
+	Client   string `json:"client"`
+	jwt.RegisteredClaims
+}
+
+type ctxKey string
+
+const userCtxKey ctxKey = "auth_user"
+
+type AuthUser struct {
+	Username string `json:"username"`
+	Role     string `json:"role"`
+}
+
+type loginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (h *Handler) handleLogin(client string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req loginRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json body")
+			return
+		}
+		u, err := h.repo.GetUserByUsername(r.Context(), req.Username)
+		if err != nil || u == nil || !u.Enabled {
+			writeError(w, http.StatusUnauthorized, "invalid username or password")
+			return
+		}
+		if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password)) != nil {
+			writeError(w, http.StatusUnauthorized, "invalid username or password")
+			return
+		}
+		if client == "mobile" && u.Role != "user" {
+			writeError(w, http.StatusForbidden, "mobile only supports normal user login")
+			return
+		}
+		if client == "web" && u.Role == "admin" {
+			// allowed
+		}
+		token, err := h.issueToken(u.Username, u.Role, client)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "token issue failed")
+			return
+		}
+		_ = h.repo.AddAuditLog(r.Context(), db.AuditLog{
+			Username: u.Username, Action: "LOGIN", Method: r.Method, Path: r.URL.Path, IP: clientIP(r), Detail: "client=" + client,
+		})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"token": token,
+			"user": map[string]string{
+				"username": u.Username,
+				"role":     u.Role,
+			},
+		})
+	}
+}
+
+func (h *Handler) issueToken(username, role, client string) (string, error) {
+	claims := Claims{
+		Username: username,
+		Role:     role,
+		Client:   client,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
+	}
+	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return t.SignedString([]byte(h.jwtSecret))
+}
+
+func (h *Handler) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			writeError(w, http.StatusUnauthorized, "missing bearer token")
+			return
+		}
+		raw := strings.TrimPrefix(auth, "Bearer ")
+		token, err := jwt.ParseWithClaims(raw, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+			return []byte(h.jwtSecret), nil
+		})
+		if err != nil || !token.Valid {
+			writeError(w, http.StatusUnauthorized, "invalid token")
+			return
+		}
+		claims := token.Claims.(*Claims)
+		u := AuthUser{Username: claims.Username, Role: claims.Role}
+		ctx := context.WithValue(r.Context(), userCtxKey, u)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func (h *Handler) adminOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u := currentUser(r.Context())
+		if u.Role != "admin" {
+			writeError(w, http.StatusForbidden, "admin only")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func currentUser(ctx context.Context) AuthUser {
+	v := ctx.Value(userCtxKey)
+	if v == nil {
+		return AuthUser{}
+	}
+	u, _ := v.(AuthUser)
+	return u
+}
+
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		return xff
+	}
+	return r.RemoteAddr
+}

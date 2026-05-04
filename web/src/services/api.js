@@ -1,11 +1,23 @@
 import axios from "axios";
 
+const API_BASE =
+  import.meta.env.VITE_API_BASE_URL || "http://119.40.55.18:18080/api";
+
 const http = axios.create({
-  baseURL: "/api",
+  baseURL: API_BASE,
   timeout: 20000
 });
 
+http.interceptors.request.use((config) => {
+  const token = localStorage.getItem("netpulse_token");
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
 export const api = {
+  login(username, password) {
+    return http.post("/auth/login", { username, password });
+  },
   listDevices() {
     return http.get("/devices");
   },
@@ -38,6 +50,14 @@ export const api = {
     return http.post("/system/restore", form, {
       headers: { "Content-Type": "multipart/form-data" }
     });
+  },
+  listUsers() {
+    return http.get("/admin/users");
+  },
+  createUser(payload) {
+    return http.post("/admin/users", payload);
+  },
+  listAuditLogs() {
+    return http.get("/audit/logs");
   }
 };
-
