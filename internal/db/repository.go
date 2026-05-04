@@ -186,14 +186,6 @@ func (r *Repository) EnsureSchema() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	var regclass sql.NullString
-	if err := r.db.QueryRowContext(ctx, `SELECT to_regclass('public.devices')`).Scan(&regclass); err != nil {
-		return fmt.Errorf("check schema existence failed: %w", err)
-	}
-	if regclass.Valid && regclass.String != "" {
-		return nil
-	}
-
 	if _, err := r.db.ExecContext(ctx, bootstrapSchemaSQL); err != nil {
 		return fmt.Errorf("schema bootstrap failed: %w", err)
 	}

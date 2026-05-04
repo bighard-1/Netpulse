@@ -8,9 +8,11 @@
 
 /* Begin PBXBuildFile section */
 		0080057A9639D07F31049EC2 /* NetPulseMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FBB40C8A17EBF9CD141771F /* NetPulseMobileApp.swift */; };
+		FA4312227A58664077DF05DB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 299B2EB66DEB18AF5521154B /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		299B2EB66DEB18AF5521154B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4FBB40C8A17EBF9CD141771F /* NetPulseMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetPulseMobileApp.swift; sourceTree = "<group>"; };
 		8FEF236FE3EA45284E30166D /* NetPulseMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = NetPulseMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FC4BF890DBFD86C70D1B9400 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -36,6 +38,7 @@
 		7F36D497BC2B342AC1F6193C /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				299B2EB66DEB18AF5521154B /* Assets.xcassets */,
 				FC4BF890DBFD86C70D1B9400 /* Info.plist */,
 				4FBB40C8A17EBF9CD141771F /* NetPulseMobileApp.swift */,
 			);
@@ -50,6 +53,7 @@
 			buildConfigurationList = 5B49413B3B5B15E3F0CAE51B /* Build configuration list for PBXNativeTarget "NetPulseMobile" */;
 			buildPhases = (
 				1E6FE5FAC7FAA94D5073DB91 /* Sources */,
+				FB88B8DBEB136815511DEAF7 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -94,6 +98,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		FB88B8DBEB136815511DEAF7 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FA4312227A58664077DF05DB /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		1E6FE5FAC7FAA94D5073DB91 /* Sources */ = {
