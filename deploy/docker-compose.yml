@@ -1,0 +1,44 @@
+version: "3.9"
+
+services:
+  netpulse-db:
+    image: timescale/timescaledb:latest-pg15
+    container_name: netpulse-db
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME:-netpulse}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-netpulse123}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - netpulse_db_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "${DB_PORT_EXPOSE:-5432}:5432"
+
+  netpulse-app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: ${APP_IMAGE:-netpulse:latest}
+    container_name: netpulse-app
+    restart: always
+    depends_on:
+      - netpulse-db
+    environment:
+      DB_HOST: ${DB_HOST:-netpulse-db}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-netpulse123}
+      DB_NAME: ${DB_NAME:-netpulse}
+      DB_SSLMODE: ${DB_SSLMODE:-disable}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - netpulse_app_data:/app/data
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+      - "${SYSLOG_UDP_PORT:-514}:514/udp"
+
+volumes:
+  netpulse_db_data:
+  netpulse_app_data:

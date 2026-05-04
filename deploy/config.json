@@ -1,0 +1,79 @@
+{
+  "name": "netpulse",
+  "title": "NetPulse",
+  "type": "docker-compose",
+  "version": "1.0.0",
+  "description": "NetPulse network monitoring system (Go + TimescaleDB).",
+  "compose_file": "docker-compose.yml",
+  "env": [
+    {
+      "key": "APP_IMAGE",
+      "label": "App Image",
+      "type": "text",
+      "default": "netpulse:latest"
+    },
+    {
+      "key": "WEB_PORT",
+      "label": "Web Port",
+      "type": "number",
+      "default": "8080"
+    },
+    {
+      "key": "SYSLOG_UDP_PORT",
+      "label": "Syslog UDP Port",
+      "type": "number",
+      "default": "514"
+    },
+    {
+      "key": "DB_HOST",
+      "label": "Database Host",
+      "type": "text",
+      "default": "netpulse-db"
+    },
+    {
+      "key": "DB_PORT",
+      "label": "Database Port",
+      "type": "number",
+      "default": "5432"
+    },
+    {
+      "key": "DB_PORT_EXPOSE",
+      "label": "Database Exposed Port",
+      "type": "number",
+      "default": "5432"
+    },
+    {
+      "key": "DB_NAME",
+      "label": "Database Name",
+      "type": "text",
+      "default": "netpulse"
+    },
+    {
+      "key": "DB_USER",
+      "label": "Database User",
+      "type": "text",
+      "default": "postgres"
+    },
+    {
+      "key": "DB_PASSWORD",
+      "label": "Database Password",
+      "type": "password",
+      "required": true,
+      "default": "netpulse123"
+    },
+    {
+      "key": "DB_SSLMODE",
+      "label": "Database SSL Mode",
+      "type": "select",
+      "default": "disable",
+      "options": ["disable", "require", "verify-ca", "verify-full"]
+    },
+    {
+      "key": "TZ",
+      "label": "Timezone",
+      "type": "text",
+      "default": "Asia/Shanghai"
+    }
+  ]
+}
+

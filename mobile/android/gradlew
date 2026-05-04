@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+set -e
+if [ -z "$JAVA_HOME" ]; then
+  JAVA_BIN=$(command -v java)
+else
+  JAVA_BIN="$JAVA_HOME/bin/java"
+fi
+exec gradle "$@"

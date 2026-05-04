@@ -1,0 +1,24 @@
+.DS_Store
+
+# Go
+bin/
+*.test
+*.out
+
+# Web
+web/node_modules/
+web/dist/
+
+# Mobile
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/android/build/
+mobile/android/app/build/
+mobile/ios/build/
+mobile/ios/*.xcodeproj/xcuserdata/
+mobile/ios/*.xcworkspace/xcuserdata/
+
+# IDE
+.idea/
+.vscode/
+
