@@ -25,6 +25,7 @@ type ctxKey string
 const userCtxKey ctxKey = "auth_user"
 
 type AuthUser struct {
+	ID       int64  `json:"id"`
 	Username string `json:"username"`
 	Role     string `json:"role"`
 }
@@ -42,7 +43,7 @@ func (h *Handler) handleLogin(client string) http.HandlerFunc {
 			return
 		}
 		u, err := h.repo.GetUserByUsername(r.Context(), req.Username)
-		if err != nil || u == nil || !u.Enabled {
+		if err != nil || u == nil {
 			writeError(w, http.StatusUnauthorized, "invalid username or password")
 			return
 		}
@@ -62,9 +63,7 @@ func (h *Handler) handleLogin(client string) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "token issue failed")
 			return
 		}
-		_ = h.repo.AddAuditLog(r.Context(), db.AuditLog{
-			Username: u.Username, Action: "LOGIN", Method: r.Method, Path: r.URL.Path, IP: clientIP(r), Detail: "client=" + client,
-		})
+		_ = h.repo.AddAuditLog(r.Context(), db.AuditLog{UserID: &u.ID, Action: "LOGIN", Target: "client=" + client})
 		writeJSON(w, http.StatusOK, map[string]any{
 			"token": token,
 			"user": map[string]string{
@@ -104,8 +103,17 @@ func (h *Handler) authMiddleware(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
-		claims := token.Claims.(*Claims)
-		u := AuthUser{Username: claims.Username, Role: claims.Role}
+		claims, ok := token.Claims.(*Claims)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "invalid token claims")
+			return
+		}
+		dbUser, err := h.repo.GetUserByUsername(r.Context(), claims.Username)
+		if err != nil || dbUser == nil {
+			writeError(w, http.StatusUnauthorized, "invalid token user")
+			return
+		}
+		u := AuthUser{ID: dbUser.ID, Username: claims.Username, Role: claims.Role}
 		ctx := context.WithValue(r.Context(), userCtxKey, u)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

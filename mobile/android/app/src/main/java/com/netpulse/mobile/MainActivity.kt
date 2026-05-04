@@ -1,23 +1,37 @@
 package com.netpulse.mobile
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Bundle
+import android.widget.TextView
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.ExperimentalMaterialApi
+import androidx.compose.material.pullrefresh.PullRefreshIndicator
+import androidx.compose.material.pullrefresh.pullRefresh
+import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -26,7 +40,19 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.github.mikephil.charting.charts.LineChart
+import com.github.mikephil.charting.components.MarkerView
+import com.github.mikephil.charting.components.XAxis
+import com.github.mikephil.charting.data.Entry
+import com.github.mikephil.charting.data.LineData
+import com.github.mikephil.charting.data.LineDataSet
+import com.github.mikephil.charting.formatter.ValueFormatter
+import com.github.mikephil.charting.highlight.Highlight
+import com.github.mikephil.charting.utils.MPPointF
 import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Date
 
 class MainActivity : FragmentActivity() {
     private val vm: MainViewModel by viewModels()
@@ -42,10 +68,7 @@ class MainActivity : FragmentActivity() {
 
     private fun triggerBiometricLogin() {
         val biometricManager = BiometricManager.from(this)
-        if (biometricManager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) != BiometricManager.BIOMETRIC_SUCCESS) {
-            return
-        }
-
+        if (biometricManager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) != BiometricManager.BIOMETRIC_SUCCESS) return
         val executor = ContextCompat.getMainExecutor(this)
         val prompt = BiometricPrompt(this, executor, object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
@@ -53,7 +76,6 @@ class MainActivity : FragmentActivity() {
                 if (u.isNotBlank() && p.isNotBlank()) vm.login(u, p, rememberCreds = true)
             }
         })
-
         val info = BiometricPrompt.PromptInfo.Builder()
             .setTitle("生物识别登录")
             .setSubtitle("验证后自动登录 NetPulse")
@@ -63,7 +85,6 @@ class MainActivity : FragmentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NetPulseApp(vm: MainViewModel, onBiometricLogin: () -> Unit) {
     val nav = rememberNavController()
@@ -73,43 +94,50 @@ fun NetPulseApp(vm: MainViewModel, onBiometricLogin: () -> Unit) {
     val loading by vm.loading.collectAsStateWithLifecycle()
 
     LaunchedEffect(token) { if (token.isNotBlank()) vm.refreshDevices() }
-
     val snackState = remember { SnackbarHostState() }
-    LaunchedEffect(msg) {
-        if (msg.isNotBlank()) snackState.showSnackbar(msg)
+    LaunchedEffect(msg) { if (msg.isNotBlank()) snackState.showSnackbar(msg) }
+    LaunchedEffect(token) {
+        if (token.isBlank()) nav.navigate("login") { popUpTo(0) }
+        else if (nav.currentDestination?.route == "login") nav.navigate("home") { popUpTo("login") { inclusive = true } }
     }
 
-    Scaffold(snackbarHost = { SnackbarHost(hostState = snackState) }) { _ ->
-    NavHost(navController = nav, startDestination = if (token.isBlank()) "login" else "home") {
-        composable("login") {
-            LoginScreen(
-                loading = loading,
-                onLogin = { u, p -> vm.login(u, p) },
-                onBio = onBiometricLogin,
-                onSaveBase = { vm.saveBaseUrl(it) },
-                hint = "默认地址: http://119.40.55.18:18080/api"
-            )
-            if (token.isNotBlank()) nav.navigate("home") { popUpTo("login") { inclusive = true } }
-        }
-        composable("home") {
-            HomeScreen(
-                devices = devices,
-                loading = loading,
-                onRefresh = vm::refreshDevices,
-                onOpen = { id -> nav.navigate("detail/$id") },
-                onLogout = vm::logout
-            )
-        }
-        composable("detail/{id}", arguments = listOf(navArgument("id") { type = NavType.LongType })) { backStack ->
-            val id = backStack.arguments?.getLong("id") ?: 0L
-            val device = devices.firstOrNull { it.id == id }
-            if (device == null) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("设备不存在") }
-            } else {
-                DetailScreen(device = device, vm = vm, onBack = { nav.popBackStack() })
+    Scaffold(snackbarHost = { SnackbarHost(hostState = snackState) }) {
+        NavHost(navController = nav, startDestination = if (token.isBlank()) "login" else "home") {
+            composable("login") {
+                LoginScreen(
+                    loading = loading,
+                    onLogin = { u, p -> vm.login(u, p) },
+                    onBio = onBiometricLogin,
+                    onSaveBase = { vm.saveBaseUrl(it) },
+                    hint = "默认地址: http://119.40.55.18:18080/api"
+                )
+            }
+            composable(
+                route = "home",
+                enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Left, tween(220)) },
+                exitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Left, tween(220)) }
+            ) {
+                HomeScreen(devices, loading, vm::refreshDevices, { id -> nav.navigate("device/$id") }, vm::logout)
+            }
+            composable(
+                route = "device/{id}",
+                arguments = listOf(navArgument("id") { type = NavType.LongType }),
+                enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Left, tween(220)) },
+                popExitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Right, tween(220)) }
+            ) { backStack ->
+                val id = backStack.arguments?.getLong("id") ?: 0L
+                DeviceDetailScreen(id, vm, onBack = { nav.popBackStack() }, onOpenPort = { portId -> nav.navigate("port/$portId") })
+            }
+            composable(
+                route = "port/{id}",
+                arguments = listOf(navArgument("id") { type = NavType.LongType }),
+                enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Left, tween(220)) },
+                popExitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Right, tween(220)) }
+            ) { backStack ->
+                val id = backStack.arguments?.getLong("id") ?: 0L
+                PortDetailScreen(id, vm, onBack = { nav.popBackStack() })
             }
         }
-    }
     }
 }
 
@@ -135,12 +163,13 @@ fun LoginScreen(loading: Boolean, onLogin: (String, String) -> Unit, onBio: () -
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(devices: List<DeviceStatus>, loading: Boolean, onRefresh: () -> Unit, onOpen: (Long) -> Unit, onLogout: () -> Unit) {
     val total = devices.size
     val online = devices.count { it.status == "online" }
     val offline = total - online
+    val ctx = LocalContext.current
 
     Scaffold(topBar = {
         TopAppBar(title = { Text("NetPulse 资产总览") }, actions = {
@@ -170,7 +199,14 @@ fun HomeScreen(devices: List<DeviceStatus>, loading: Boolean, onRefresh: () -> U
                                     ) {}
                                 }
                                 Spacer(Modifier.width(8.dp))
-                                Text(d.ip, style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    d.ip,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.combinedClickable(
+                                        onClick = {},
+                                        onLongClick = { copyToClipboard(ctx, d.ip) }
+                                    )
+                                )
                             }
                             Text("${d.brand} · ${d.remark}")
                         }
@@ -181,91 +217,284 @@ fun HomeScreen(devices: List<DeviceStatus>, loading: Boolean, onRefresh: () -> U
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterialApi::class, ExperimentalFoundationApi::class)
 @Composable
-fun DetailScreen(device: DeviceStatus, vm: MainViewModel, onBack: () -> Unit) {
-    val logs by vm.logs.collectAsStateWithLifecycle()
+fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, onOpenPort: (Long) -> Unit) {
+    val device by vm.deviceDetail.collectAsStateWithLifecycle()
     val cpu by vm.cpu.collectAsStateWithLifecycle()
     val mem by vm.mem.collectAsStateWithLifecycle()
+    val logs by vm.logs.collectAsStateWithLifecycle()
+    val loading by vm.loading.collectAsStateWithLifecycle()
+    var keyword by remember { mutableStateOf("") }
     var start by remember { mutableStateOf(OffsetDateTime.now().minusDays(1)) }
     var end by remember { mutableStateOf(OffsetDateTime.now()) }
-    var remarkDialog by remember { mutableStateOf<NetInterface?>(null) }
-    var remark by remember { mutableStateOf("") }
+    var editingPort by remember { mutableStateOf<NetInterface?>(null) }
+    var portRemark by remember { mutableStateOf("") }
+    val ctx = LocalContext.current
 
-    LaunchedEffect(device.id) { vm.loadDeviceDetail(device, start, end) }
+    LaunchedEffect(deviceId) { vm.loadDeviceDetail(deviceId, start, end) }
+
+    val ports = device?.interfaces.orEmpty().filter {
+        val k = keyword.lowercase().trim()
+        if (k.isBlank()) true else "${it.id} ${it.index} ${it.name} ${it.remark}".lowercase().contains(k)
+    }
+
+    val refreshState = rememberPullRefreshState(loading, { vm.loadDeviceDetail(deviceId, start, end) })
 
     Scaffold(topBar = {
         TopAppBar(
             title = { Text("设备详情") },
-            navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = null) } },
-            actions = {
-                TextButton(onClick = { vm.loadDeviceDetail(device, start, end) }) { Text("刷新") }
-            }
+            navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null) } }
         )
     }) { p ->
-        LazyColumn(Modifier.padding(p).fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            item {
-                ElevatedCard(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp)) {
-                        Text(device.ip, style = MaterialTheme.typography.titleMedium)
-                        Text("${device.brand} · ${device.remark}")
-                        Text("CPU点数 ${cpu.size} / 内存点数 ${mem.size}")
-                    }
-                }
-            }
-            item {
-                Text("端口列表", style = MaterialTheme.typography.titleMedium)
-            }
-            items(device.interfaces, key = { it.id }) { itf ->
-                ElevatedCard(Modifier.fillMaxWidth().clickable {
-                    remarkDialog = itf
-                    remark = itf.remark
-                }) {
-                    Column(Modifier.padding(12.dp)) {
-                        Text(itf.name, fontWeight = FontWeight.SemiBold)
-                        Text("备注: ${itf.remark.ifBlank { "-" }}")
-                        Text("点击编辑端口备注", color = Color.Gray)
-                    }
-                }
-            }
-            item { Text("最近日志", style = MaterialTheme.typography.titleMedium) }
-            items(logs, key = { it.id }) { l ->
-                ElevatedCard(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp)) {
-                        val c = when (l.level.uppercase()) {
-                            "ERROR" -> Color(0xFFC62828)
-                            "WARNING" -> Color(0xFFEF6C00)
-                            else -> Color(0xFF1565C0)
+        Box(Modifier.padding(p).fillMaxSize().pullRefresh(refreshState)) {
+            LazyColumn(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                item {
+                    ElevatedCard(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text(
+                                device?.ip ?: "-",
+                                style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier.combinedClickable(onClick = {}, onLongClick = { copyToClipboard(ctx, device?.ip ?: "") })
+                            )
+                            Text("${device?.brand ?: "-"} · ${device?.remark ?: "-"}")
                         }
-                        Text(l.level, color = c, fontWeight = FontWeight.Bold)
-                        Text(l.message)
-                        Text(l.createdAt, color = Color.Gray)
+                    }
+                }
+                item {
+                    ElevatedCard(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text("CPU / Memory", style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.height(8.dp))
+                            MiniLineChart(cpu.map { it.cpuUsage ?: 0.0 }, mem.map { it.memUsage ?: 0.0 })
+                        }
+                    }
+                }
+                item {
+                    OutlinedTextField(keyword, { keyword = it }, label = { Text("搜索端口 id/index/name/remark") }, modifier = Modifier.fillMaxWidth())
+                }
+                items(ports, key = { it.id }) { itf ->
+                    ElevatedCard(
+                        Modifier.fillMaxWidth().combinedClickable(
+                            onClick = { onOpenPort(itf.id) },
+                            onLongClick = {
+                                editingPort = itf
+                                portRemark = itf.remark
+                            }
+                        )
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text(itf.name, fontWeight = FontWeight.SemiBold)
+                            Text("index: ${itf.index} · 备注: ${itf.remark.ifBlank { "-" }}")
+                            Text("点击看流量，长按改备注", color = Color.Gray)
+                        }
+                    }
+                }
+                item {
+                    ElevatedCard(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("最近日志", style = MaterialTheme.typography.titleMedium)
+                            if (logs.isEmpty()) {
+                                Text("暂无日志", color = Color.Gray)
+                            } else {
+                                logs.take(100).forEach { log ->
+                                    val c = when (log.level.uppercase()) {
+                                        "ERROR" -> Color(0xFFC62828)
+                                        "WARNING", "WARN" -> Color(0xFFEF6C00)
+                                        else -> Color(0xFF2E7D32)
+                                    }
+                                    Text(
+                                        "[${log.level}] ${log.message}",
+                                        color = c,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
+            PullRefreshIndicator(loading, refreshState, Modifier.align(Alignment.TopCenter))
         }
     }
 
-    if (remarkDialog != null) {
+    if (editingPort != null) {
         AlertDialog(
-            onDismissRequest = { remarkDialog = null },
+            onDismissRequest = { editingPort = null },
             title = { Text("编辑端口备注") },
             text = {
-                Column {
-                    Text(remarkDialog!!.name)
-                    OutlinedTextField(remark, { remark = it }, label = { Text("备注") })
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(editingPort?.name ?: "")
+                    OutlinedTextField(
+                        value = portRemark,
+                        onValueChange = { portRemark = it },
+                        label = { Text("备注") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    vm.updateInterfaceRemark(remarkDialog!!.id, remark) {
-                        vm.refreshDevices()
-                        vm.loadDeviceDetail(device, start, end)
-                    }
-                    remarkDialog = null
+                    val target = editingPort ?: return@TextButton
+                    vm.updateInterfaceRemark(deviceId, target.id, portRemark.trim(), start, end)
+                    editingPort = null
                 }) { Text("保存") }
             },
-            dismissButton = { TextButton(onClick = { remarkDialog = null }) { Text("取消") } }
+            dismissButton = {
+                TextButton(onClick = { editingPort = null }) { Text("取消") }
+            }
         )
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
+    val traffic by vm.traffic.collectAsStateWithLifecycle()
+    var start by remember { mutableStateOf(OffsetDateTime.now().minusDays(1)) }
+    var end by remember { mutableStateOf(OffsetDateTime.now()) }
+    val nowMs = System.currentTimeMillis()
+    val minMs = nowMs - 3L * 365 * 24 * 3600 * 1000
+    var showStartPicker by remember { mutableStateOf(false) }
+    var showEndPicker by remember { mutableStateOf(false) }
+
+    LaunchedEffect(portId) { vm.loadPortTraffic(portId, start, end) }
+
+    Scaffold(topBar = {
+        TopAppBar(
+            title = { Text("端口流量") },
+            navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null) } },
+            actions = { TextButton(onClick = { vm.loadPortTraffic(portId, start, end) }) { Text("刷新") } }
+        )
+    }) { p ->
+        Column(Modifier.padding(p).fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { showStartPicker = true }) { Text("开始: ${start.toLocalDate()}") }
+                OutlinedButton(onClick = { showEndPicker = true }) { Text("结束: ${end.toLocalDate()}") }
+            }
+            Text("支持 3 年查询范围", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            Surface(tonalElevation = 2.dp, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth().weight(1f)) {
+                val decimated = remember(traffic) { decimateTraffic(traffic, 1800) }
+                MpTrafficChart(points = decimated, modifier = Modifier.fillMaxSize().padding(10.dp))
+            }
+        }
+    }
+
+    if (showStartPicker) {
+        val state = rememberDatePickerState(initialSelectedDateMillis = start.toInstant().toEpochMilli(), yearRange = IntRange(OffsetDateTime.now().year - 3, OffsetDateTime.now().year))
+        DatePickerDialog(onDismissRequest = { showStartPicker = false }, confirmButton = {
+            TextButton(onClick = {
+                state.selectedDateMillis?.let {
+                    val clamped = it.coerceIn(minMs, nowMs)
+                    start = Date(clamped).toInstant().atZone(ZoneId.systemDefault()).toOffsetDateTime()
+                }
+                showStartPicker = false
+            }) { Text("确定") }
+        }) { DatePicker(state = state) }
+    }
+    if (showEndPicker) {
+        val state = rememberDatePickerState(initialSelectedDateMillis = end.toInstant().toEpochMilli(), yearRange = IntRange(OffsetDateTime.now().year - 3, OffsetDateTime.now().year))
+        DatePickerDialog(onDismissRequest = { showEndPicker = false }, confirmButton = {
+            TextButton(onClick = {
+                state.selectedDateMillis?.let {
+                    val clamped = it.coerceIn(minMs, nowMs)
+                    end = Date(clamped).toInstant().atZone(ZoneId.systemDefault()).toOffsetDateTime()
+                }
+                showEndPicker = false
+            }) { Text("确定") }
+        }) { DatePicker(state = state) }
+    }
+}
+
+@Composable
+fun MpTrafficChart(points: List<InterfaceHistoryPoint>, modifier: Modifier = Modifier) {
+    val formatter = DateTimeFormatter.ofPattern("MM-dd HH:mm")
+    AndroidView(modifier = modifier, factory = { ctx ->
+        LineChart(ctx).apply {
+            description.isEnabled = false
+            setTouchEnabled(true)
+            setPinchZoom(true)
+            isDragEnabled = true
+            setScaleEnabled(true)
+            setVisibleXRangeMaximum(180f)
+            axisRight.isEnabled = false
+            xAxis.position = XAxis.XAxisPosition.BOTTOM
+            xAxis.granularity = 1f
+            xAxis.valueFormatter = object : ValueFormatter() {
+                override fun getFormattedValue(value: Float): String {
+                    val i = value.toInt().coerceIn(0, points.lastIndex)
+                    val dt = parseTs(points[i].timestamp)
+                    return dt.format(formatter)
+                }
+            }
+            marker = TrafficMarkerView(ctx, points)
+        }
+    }, update = { chart ->
+        if (points.isEmpty()) {
+            chart.clear()
+            return@AndroidView
+        }
+        val inEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficInBps ?: 0.0).toFloat()) }
+        val outEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficOutBps ?: 0.0).toFloat()) }
+
+        val inSet = LineDataSet(inEntries, "Inbound").apply {
+            color = android.graphics.Color.parseColor("#2E7D32")
+            setDrawCircles(false)
+            lineWidth = 1.8f
+            mode = LineDataSet.Mode.LINEAR
+        }
+        val outSet = LineDataSet(outEntries, "Outbound").apply {
+            color = android.graphics.Color.parseColor("#EF6C00")
+            setDrawCircles(false)
+            lineWidth = 1.8f
+            mode = LineDataSet.Mode.LINEAR
+        }
+        chart.data = LineData(inSet, outSet)
+        chart.invalidate()
+    })
+}
+
+class TrafficMarkerView(context: Context, private val points: List<InterfaceHistoryPoint>) : MarkerView(context, R.layout.chart_marker) {
+    private val tv: TextView = findViewById(R.id.markerText)
+    override fun refreshContent(e: Entry?, highlight: Highlight?) {
+        if (e == null || points.isEmpty()) return
+        val i = e.x.toInt().coerceIn(0, points.lastIndex)
+        val p = points[i]
+        tv.text = "${p.timestamp}\nIn: ${(p.trafficInBps ?: 0.0).toLong()} bps\nOut: ${(p.trafficOutBps ?: 0.0).toLong()} bps"
+        super.refreshContent(e, highlight)
+    }
+    override fun getOffset(): MPPointF = MPPointF(-(width / 2f), -height.toFloat())
+}
+
+fun decimateTraffic(src: List<InterfaceHistoryPoint>, maxPoints: Int): List<InterfaceHistoryPoint> {
+    if (src.size <= maxPoints) return src
+    val bucket = src.size.toDouble() / maxPoints
+    val out = ArrayList<InterfaceHistoryPoint>(maxPoints)
+    var i = 0.0
+    while (i < src.size) {
+        val from = i.toInt()
+        val to = (i + bucket).toInt().coerceAtMost(src.size)
+        val slice = src.subList(from, to)
+        val inAvg = slice.map { it.trafficInBps ?: 0.0 }.average()
+        val outAvg = slice.map { it.trafficOutBps ?: 0.0 }.average()
+        out += InterfaceHistoryPoint(timestamp = slice[slice.size / 2].timestamp, trafficInBps = inAvg, trafficOutBps = outAvg)
+        i += bucket
+    }
+    return out
+}
+
+fun parseTs(ts: String): OffsetDateTime {
+    return try { OffsetDateTime.parse(ts) } catch (_: Exception) { OffsetDateTime.now() }
+}
+
+@Composable
+fun MiniLineChart(cpu: List<Double>, mem: List<Double>) {
+    val pts = cpu.indices.map { i -> InterfaceHistoryPoint(timestamp = i.toString(), trafficInBps = cpu[i], trafficOutBps = mem.getOrElse(i) { 0.0 }) }
+    MpTrafficChart(points = decimateTraffic(pts, 400), modifier = Modifier.fillMaxWidth().height(220.dp))
+}
+
+fun copyToClipboard(context: Context, value: String) {
+    if (value.isBlank()) return
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    cm.setPrimaryClip(ClipData.newPlainText("ip", value))
 }

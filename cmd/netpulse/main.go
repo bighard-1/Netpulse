@@ -40,7 +40,7 @@ func main() {
 	name := getenv("DB_NAME", "netpulse")
 	sslmode := getenv("DB_SSLMODE", "disable")
 	adminUser := getenv("ADMIN_USERNAME", "admin")
-	adminPassword := getenv("ADMIN_PASSWORD", "admin123456")
+	adminPassword := getenv("ADMIN_PASSWORD", "admin123")
 	jwtSecret := getenv("JWT_SECRET", "change-this-secret")
 
 	dsn := fmt.Sprintf(

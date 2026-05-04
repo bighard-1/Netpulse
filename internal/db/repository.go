@@ -9,6 +9,7 @@ import (
 
 const bootstrapSchemaSQL = `
 CREATE EXTENSION IF NOT EXISTS timescaledb;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS devices (
     id BIGSERIAL PRIMARY KEY,
@@ -81,24 +82,23 @@ CREATE TABLE IF NOT EXISTS users (
     id BIGSERIAL PRIMARY KEY,
     username VARCHAR(64) NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
-    role VARCHAR(16) NOT NULL CHECK (role IN ('admin','user')),
-    enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    role VARCHAR(16) NOT NULL CHECK (role IN ('admin','user'))
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (
     id BIGSERIAL PRIMARY KEY,
-    username VARCHAR(64) NOT NULL,
+    user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
     action VARCHAR(64) NOT NULL,
-    method VARCHAR(16) NOT NULL,
-    path TEXT NOT NULL,
-    ip VARCHAR(64),
-    detail TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    target TEXT,
+    ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs (created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_audit_logs_username_created_at ON audit_logs (username, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_ts ON audit_logs (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user_ts ON audit_logs (user_id, ts DESC);
+
+INSERT INTO users (username, password_hash, role)
+VALUES ('admin', crypt('admin123', gen_salt('bf')), 'admin')
+ON CONFLICT (username) DO NOTHING;
 `
 
 type Device struct {
@@ -154,23 +154,19 @@ type DeviceLog struct {
 }
 
 type User struct {
-	ID           int64     `json:"id"`
-	Username     string    `json:"username"`
-	PasswordHash string    `json:"-"`
-	Role         string    `json:"role"`
-	Enabled      bool      `json:"enabled"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID           int64  `json:"id"`
+	Username     string `json:"username"`
+	PasswordHash string `json:"-"`
+	Role         string `json:"role"`
 }
 
 type AuditLog struct {
 	ID        int64     `json:"id"`
-	Username  string    `json:"username"`
+	UserID    *int64    `json:"user_id"`
+	Username  string    `json:"username,omitempty"`
 	Action    string    `json:"action"`
-	Method    string    `json:"method"`
-	Path      string    `json:"path"`
-	IP        string    `json:"ip"`
-	Detail    string    `json:"detail"`
-	CreatedAt time.Time `json:"created_at"`
+	Target    string    `json:"target"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 type Repository struct {
@@ -194,12 +190,11 @@ func (r *Repository) EnsureSchema() error {
 
 func (r *Repository) UpsertAdmin(username, passwordHash string) error {
 	const q = `
-		INSERT INTO users (username, password_hash, role, enabled)
-		VALUES ($1, $2, 'admin', TRUE)
+		INSERT INTO users (username, password_hash, role)
+		VALUES ($1, $2, 'admin')
 		ON CONFLICT (username) DO UPDATE
 		SET password_hash = EXCLUDED.password_hash,
-		    role = 'admin',
-		    enabled = TRUE;
+		    role = 'admin';
 	`
 	if _, err := r.db.Exec(q, username, passwordHash); err != nil {
 		return fmt.Errorf("upsert admin failed: %w", err)
@@ -209,13 +204,13 @@ func (r *Repository) UpsertAdmin(username, passwordHash string) error {
 
 func (r *Repository) GetUserByUsername(ctx context.Context, username string) (*User, error) {
 	const q = `
-		SELECT id, username, password_hash, role, enabled, created_at
+		SELECT id, username, password_hash, role
 		FROM users
 		WHERE username = $1;
 	`
 	var u User
 	if err := r.db.QueryRowContext(ctx, q, username).Scan(
-		&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.CreatedAt,
+		&u.ID, &u.Username, &u.PasswordHash, &u.Role,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -227,11 +222,11 @@ func (r *Repository) GetUserByUsername(ctx context.Context, username string) (*U
 
 func (r *Repository) AddAuditLog(ctx context.Context, log AuditLog) error {
 	const q = `
-		INSERT INTO audit_logs (username, action, method, path, ip, detail)
-		VALUES ($1, $2, $3, $4, $5, $6);
+		INSERT INTO audit_logs (user_id, action, target, ts)
+		VALUES ($1, $2, $3, NOW());
 	`
 	if _, err := r.db.ExecContext(
-		ctx, q, log.Username, log.Action, log.Method, log.Path, log.IP, log.Detail,
+		ctx, q, log.UserID, log.Action, log.Target,
 	); err != nil {
 		return fmt.Errorf("insert audit log failed: %w", err)
 	}
@@ -243,9 +238,10 @@ func (r *Repository) ListAuditLogs(ctx context.Context, limit int) ([]AuditLog, 
 		limit = 200
 	}
 	const q = `
-		SELECT id, username, action, method, path, COALESCE(ip,''), COALESCE(detail,''), created_at
-		FROM audit_logs
-		ORDER BY created_at DESC
+		SELECT a.id, a.user_id, COALESCE(u.username,''), a.action, COALESCE(a.target,''), a.ts
+		FROM audit_logs a
+		LEFT JOIN users u ON u.id = a.user_id
+		ORDER BY a.ts DESC
 		LIMIT $1;
 	`
 	rows, err := r.db.QueryContext(ctx, q, limit)
@@ -256,7 +252,7 @@ func (r *Repository) ListAuditLogs(ctx context.Context, limit int) ([]AuditLog, 
 	out := make([]AuditLog, 0)
 	for rows.Next() {
 		var a AuditLog
-		if err := rows.Scan(&a.ID, &a.Username, &a.Action, &a.Method, &a.Path, &a.IP, &a.Detail, &a.CreatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.UserID, &a.Username, &a.Action, &a.Target, &a.Timestamp); err != nil {
 			return nil, fmt.Errorf("scan audit log failed: %w", err)
 		}
 		out = append(out, a)
@@ -266,8 +262,8 @@ func (r *Repository) ListAuditLogs(ctx context.Context, limit int) ([]AuditLog, 
 
 func (r *Repository) CreateUser(ctx context.Context, username, passwordHash, role string) error {
 	const q = `
-		INSERT INTO users (username, password_hash, role, enabled)
-		VALUES ($1, $2, $3, TRUE);
+		INSERT INTO users (username, password_hash, role)
+		VALUES ($1, $2, $3);
 	`
 	if _, err := r.db.ExecContext(ctx, q, username, passwordHash, role); err != nil {
 		return fmt.Errorf("create user failed: %w", err)
@@ -277,7 +273,7 @@ func (r *Repository) CreateUser(ctx context.Context, username, passwordHash, rol
 
 func (r *Repository) ListUsers(ctx context.Context) ([]User, error) {
 	const q = `
-		SELECT id, username, password_hash, role, enabled, created_at
+		SELECT id, username, password_hash, role
 		FROM users
 		ORDER BY id;
 	`
@@ -289,12 +285,61 @@ func (r *Repository) ListUsers(ctx context.Context) ([]User, error) {
 	out := make([]User, 0)
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Enabled, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role); err != nil {
 			return nil, fmt.Errorf("scan users failed: %w", err)
 		}
 		out = append(out, u)
 	}
 	return out, rows.Err()
+}
+
+func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus, error) {
+	const q = `
+		SELECT d.id, d.ip::text, d.brand, d.community, COALESCE(d.remark, ''), d.created_at, lm.last_ts
+		FROM devices d
+		LEFT JOIN (
+			SELECT device_id, MAX(ts) AS last_ts
+			FROM metrics
+			GROUP BY device_id
+		) lm ON lm.device_id = d.id
+		WHERE d.id = $1;
+	`
+	var ds DeviceStatus
+	if err := r.db.QueryRowContext(ctx, q, id).Scan(
+		&ds.ID, &ds.IP, &ds.Brand, &ds.Community, &ds.Remark, &ds.CreatedAt, &ds.LastMetricAt,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get device by id: %w", err)
+	}
+	ds.Status = "offline"
+	if ds.LastMetricAt != nil && time.Since(*ds.LastMetricAt) <= 2*time.Minute {
+		ds.Status = "online"
+	}
+
+	const iq = `
+		SELECT id, device_id, "index", name, COALESCE(remark, '')
+		FROM interfaces
+		WHERE device_id = $1
+		ORDER BY "index";
+	`
+	rows, err := r.db.QueryContext(ctx, iq, id)
+	if err != nil {
+		return nil, fmt.Errorf("query interfaces by device id: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var itf Interface
+		if err := rows.Scan(&itf.ID, &itf.DeviceID, &itf.Index, &itf.Name, &itf.Remark); err != nil {
+			return nil, fmt.Errorf("scan interface by device id: %w", err)
+		}
+		ds.Interfaces = append(ds.Interfaces, itf)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate interfaces by device id: %w", err)
+	}
+	return &ds, nil
 }
 
 func (r *Repository) AddDevice(ctx context.Context, d Device) (int64, error) {

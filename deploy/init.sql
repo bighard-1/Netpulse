@@ -1,4 +1,5 @@
 CREATE EXTENSION IF NOT EXISTS timescaledb;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS devices (
     id BIGSERIAL PRIMARY KEY,
@@ -66,3 +67,24 @@ CREATE TABLE IF NOT EXISTS device_logs (
 CREATE INDEX IF NOT EXISTS idx_device_logs_device_created_at
     ON device_logs (device_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS users (
+    id BIGSERIAL PRIMARY KEY,
+    username VARCHAR(64) NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role VARCHAR(16) NOT NULL CHECK (role IN ('admin','user'))
+);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    action VARCHAR(64) NOT NULL,
+    target TEXT,
+    ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_ts ON audit_logs (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user_ts ON audit_logs (user_id, ts DESC);
+
+INSERT INTO users (username, password_hash, role)
+VALUES ('admin', crypt('admin123', gen_salt('bf')), 'admin')
+ON CONFLICT (username) DO NOTHING;

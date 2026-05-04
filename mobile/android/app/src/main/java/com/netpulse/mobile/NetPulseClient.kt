@@ -2,6 +2,7 @@ package com.netpulse.mobile
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -9,15 +10,30 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
+class ApiException(val code: Int, override val message: String) : RuntimeException(message)
+
 class NetPulseClient(
     private val baseUrl: String,
-    private val http: OkHttpClient = OkHttpClient(),
-    private val json: Json = Json { ignoreUnknownKeys = true }
+    tokenProvider: () -> String
 ) {
-    private fun reqBuilder(path: String, token: String? = null): Request.Builder {
-        val b = Request.Builder().url("$baseUrl$path")
-        if (!token.isNullOrBlank()) b.header("Authorization", "Bearer $token")
-        return b
+    private val json: Json = Json { ignoreUnknownKeys = true }
+
+    private val http: OkHttpClient = OkHttpClient.Builder()
+        .addInterceptor(Interceptor { chain ->
+            val req = chain.request()
+            val token = tokenProvider()
+            val withAuth = if (token.isNotBlank()) {
+                req.newBuilder().header("Authorization", "Bearer $token").build()
+            } else req
+            chain.proceed(withAuth)
+        })
+        .build()
+
+    private fun reqBuilder(path: String): Request.Builder = Request.Builder().url("$baseUrl$path")
+
+    private fun ensureOk(respCode: Int, msg: String) {
+        if (respCode in 200..299) return
+        throw ApiException(respCode, "$msg($respCode)")
     }
 
     fun loginMobile(username: String, password: String): LoginResponse {
@@ -25,53 +41,61 @@ class NetPulseClient(
             .toRequestBody("application/json".toMediaType())
         val req = reqBuilder("/auth/mobile/login").post(body).build()
         http.newCall(req).execute().use { resp ->
-            require(resp.isSuccessful) { "登录失败(${resp.code})" }
+            ensureOk(resp.code, "登录失败")
             return json.decodeFromString(resp.body!!.string())
         }
     }
 
-    fun fetchDevices(token: String): List<DeviceStatus> {
-        val req = reqBuilder("/devices", token).get().build()
+    fun fetchDevices(): List<DeviceStatus> {
+        val req = reqBuilder("/devices").get().build()
         http.newCall(req).execute().use { resp ->
-            require(resp.isSuccessful) { "获取设备失败(${resp.code})" }
+            ensureOk(resp.code, "获取设备失败")
             return json.decodeFromString(resp.body!!.string())
         }
     }
 
-    fun fetchLogs(token: String, deviceID: Long): List<DeviceLog> {
-        val req = reqBuilder("/devices/$deviceID/logs", token).get().build()
+    fun fetchDeviceById(deviceID: Long): DeviceStatus {
+        val req = reqBuilder("/devices/$deviceID").get().build()
         http.newCall(req).execute().use { resp ->
-            require(resp.isSuccessful) { "获取日志失败(${resp.code})" }
+            ensureOk(resp.code, "获取设备详情失败")
             return json.decodeFromString(resp.body!!.string())
         }
     }
 
-    fun updateInterfaceRemark(token: String, interfaceID: Long, remark: String) {
-        val payload = json.encodeToString(mapOf("remark" to remark))
-            .toRequestBody("application/json".toMediaType())
-        val req = reqBuilder("/interfaces/$interfaceID/remark", token).put(payload).build()
+    fun fetchLogs(deviceID: Long): List<DeviceLog> {
+        val req = reqBuilder("/devices/$deviceID/logs").get().build()
         http.newCall(req).execute().use { resp ->
-            require(resp.isSuccessful) { "更新端口备注失败(${resp.code})" }
+            ensureOk(resp.code, "获取日志失败")
+            return json.decodeFromString(resp.body!!.string())
         }
     }
 
-    fun fetchDeviceHistory(token: String, type: String, deviceID: Long, start: String, end: String): List<DeviceHistoryPoint> {
+    fun fetchDeviceHistory(type: String, deviceID: Long, start: String, end: String): List<DeviceHistoryPoint> {
         val s = URLEncoder.encode(start, StandardCharsets.UTF_8)
         val e = URLEncoder.encode(end, StandardCharsets.UTF_8)
-        val req = reqBuilder("/metrics/history?type=$type&id=$deviceID&start=$s&end=$e", token).get().build()
+        val req = reqBuilder("/metrics/history?type=$type&id=$deviceID&start=$s&end=$e").get().build()
         http.newCall(req).execute().use { resp ->
-            require(resp.isSuccessful) { "获取历史失败(${resp.code})" }
+            ensureOk(resp.code, "获取历史失败")
             return json.decodeFromString<HistoryResponse<DeviceHistoryPoint>>(resp.body!!.string()).data
         }
     }
 
-    fun fetchTrafficHistory(token: String, interfaceID: Long, start: String, end: String): List<InterfaceHistoryPoint> {
+    fun fetchTrafficHistory(interfaceID: Long, start: String, end: String): List<InterfaceHistoryPoint> {
         val s = URLEncoder.encode(start, StandardCharsets.UTF_8)
         val e = URLEncoder.encode(end, StandardCharsets.UTF_8)
-        val req = reqBuilder("/metrics/history?type=traffic&id=$interfaceID&start=$s&end=$e", token).get().build()
+        val req = reqBuilder("/metrics/history?type=traffic&id=$interfaceID&start=$s&end=$e").get().build()
         http.newCall(req).execute().use { resp ->
-            require(resp.isSuccessful) { "获取端口流量失败(${resp.code})" }
+            ensureOk(resp.code, "获取端口流量失败")
             return json.decodeFromString<HistoryResponse<InterfaceHistoryPoint>>(resp.body!!.string()).data
+        }
+    }
+
+    fun updateInterfaceRemark(interfaceID: Long, remark: String) {
+        val body = """{"remark":${json.encodeToString(remark)}}"""
+            .toRequestBody("application/json".toMediaType())
+        val req = reqBuilder("/interfaces/$interfaceID/remark").put(body).build()
+        http.newCall(req).execute().use { resp ->
+            ensureOk(resp.code, "更新端口备注失败")
         }
     }
 }

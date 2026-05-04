@@ -13,17 +13,19 @@ import java.time.format.DateTimeFormatter
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val sp = app.getSharedPreferences("netpulse", 0)
-    private var base = sp.getString("base_url", "http://119.40.55.18:18080/api") ?: "http://119.40.55.18:18080/api"
-    private var client = NetPulseClient(base)
+    private val secureStore = SecureStore(app)
 
-    private val _token = MutableStateFlow(sp.getString("token", "") ?: "")
+    private var base = sp.getString("base_url", "http://119.40.55.18:18080/api") ?: "http://119.40.55.18:18080/api"
+    private var client = NetPulseClient(base) { secureStore.getToken() }
+
+    private val _token = MutableStateFlow(secureStore.getToken())
     val token: StateFlow<String> = _token
 
     private val _devices = MutableStateFlow<List<DeviceStatus>>(emptyList())
     val devices: StateFlow<List<DeviceStatus>> = _devices
 
-    private val _logs = MutableStateFlow<List<DeviceLog>>(emptyList())
-    val logs: StateFlow<List<DeviceLog>> = _logs
+    private val _deviceDetail = MutableStateFlow<DeviceStatus?>(null)
+    val deviceDetail: StateFlow<DeviceStatus?> = _deviceDetail
 
     private val _message = MutableStateFlow("")
     val message: StateFlow<String> = _message
@@ -33,14 +35,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _cpu = MutableStateFlow<List<DeviceHistoryPoint>>(emptyList())
     val cpu: StateFlow<List<DeviceHistoryPoint>> = _cpu
+
     private val _mem = MutableStateFlow<List<DeviceHistoryPoint>>(emptyList())
     val mem: StateFlow<List<DeviceHistoryPoint>> = _mem
+
+    private val _traffic = MutableStateFlow<List<InterfaceHistoryPoint>>(emptyList())
+    val traffic: StateFlow<List<InterfaceHistoryPoint>> = _traffic
+
+    private val _logs = MutableStateFlow<List<DeviceLog>>(emptyList())
+    val logs: StateFlow<List<DeviceLog>> = _logs
 
     fun saveBaseUrl(url: String) {
         base = url.trim().ifBlank { "http://119.40.55.18:18080/api" }
         sp.edit().putString("base_url", base).apply()
-        client = NetPulseClient(base)
+        client = NetPulseClient(base) { secureStore.getToken() }
     }
+
     fun loadSavedCreds(): Pair<String, String> = (sp.getString("u", "") ?: "") to (sp.getString("p", "") ?: "")
 
     fun login(username: String, password: String, rememberCreds: Boolean = true) {
@@ -48,8 +58,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _loading.value = true
             try {
                 val res = withContext(Dispatchers.IO) { client.loginMobile(username, password) }
+                secureStore.setToken(res.token)
                 _token.value = res.token
-                sp.edit().putString("token", res.token).apply()
                 if (rememberCreds) sp.edit().putString("u", username).putString("p", password).apply()
                 _message.value = "登录成功"
                 refreshDevices()
@@ -62,56 +72,83 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun logout() {
+        secureStore.clearToken()
         _token.value = ""
         _devices.value = emptyList()
+        _deviceDetail.value = null
+        _cpu.value = emptyList()
+        _mem.value = emptyList()
+        _traffic.value = emptyList()
         _logs.value = emptyList()
-        sp.edit().remove("token").apply()
+    }
+
+    private fun handleApiError(ex: Exception, fallback: String) {
+        if (ex is ApiException && ex.code == 401) {
+            _message.value = "登录已失效，请重新登录"
+            logout()
+        } else {
+            _message.value = ex.message ?: fallback
+        }
     }
 
     fun refreshDevices() {
-        val t = _token.value
-        if (t.isBlank()) return
+        if (_token.value.isBlank()) return
         viewModelScope.launch {
             _loading.value = true
             try {
-                _devices.value = withContext(Dispatchers.IO) { client.fetchDevices(t) }
+                _devices.value = withContext(Dispatchers.IO) { client.fetchDevices() }
             } catch (e: Exception) {
-                _message.value = e.message ?: "加载设备失败"
+                handleApiError(e, "加载设备失败")
             } finally {
                 _loading.value = false
             }
         }
     }
 
-    fun loadDeviceDetail(device: DeviceStatus, start: OffsetDateTime, end: OffsetDateTime) {
-        val t = _token.value
-        if (t.isBlank()) return
+    fun loadDeviceDetail(deviceId: Long, start: OffsetDateTime, end: OffsetDateTime) {
+        if (_token.value.isBlank()) return
         viewModelScope.launch {
             _loading.value = true
             try {
                 val s = DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(start)
                 val e = DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(end)
-                _cpu.value = withContext(Dispatchers.IO) { client.fetchDeviceHistory(t, "cpu", device.id, s, e) }
-                _mem.value = withContext(Dispatchers.IO) { client.fetchDeviceHistory(t, "mem", device.id, s, e) }
-                _logs.value = withContext(Dispatchers.IO) { client.fetchLogs(t, device.id) }
+                _deviceDetail.value = withContext(Dispatchers.IO) { client.fetchDeviceById(deviceId) }
+                _cpu.value = withContext(Dispatchers.IO) { client.fetchDeviceHistory("cpu", deviceId, s, e) }
+                _mem.value = withContext(Dispatchers.IO) { client.fetchDeviceHistory("mem", deviceId, s, e) }
+                _logs.value = withContext(Dispatchers.IO) { client.fetchLogs(deviceId) }
             } catch (ex: Exception) {
-                _message.value = ex.message ?: "加载详情失败"
+                handleApiError(ex, "加载详情失败")
             } finally {
                 _loading.value = false
             }
         }
     }
 
-    fun updateInterfaceRemark(interfaceId: Long, remark: String, done: () -> Unit = {}) {
-        val t = _token.value
-        if (t.isBlank()) return
+    fun loadPortTraffic(portId: Long, start: OffsetDateTime, end: OffsetDateTime) {
+        if (_token.value.isBlank()) return
+        viewModelScope.launch {
+            _loading.value = true
+            try {
+                val s = DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(start)
+                val e = DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(end)
+                _traffic.value = withContext(Dispatchers.IO) { client.fetchTrafficHistory(portId, s, e) }
+            } catch (ex: Exception) {
+                handleApiError(ex, "加载端口流量失败")
+            } finally {
+                _loading.value = false
+            }
+        }
+    }
+
+    fun updateInterfaceRemark(deviceId: Long, interfaceId: Long, remark: String, start: OffsetDateTime, end: OffsetDateTime) {
+        if (_token.value.isBlank()) return
         viewModelScope.launch {
             try {
-                withContext(Dispatchers.IO) { client.updateInterfaceRemark(t, interfaceId, remark) }
+                withContext(Dispatchers.IO) { client.updateInterfaceRemark(interfaceId, remark) }
                 _message.value = "端口备注已更新"
-                done()
-            } catch (e: Exception) {
-                _message.value = e.message ?: "更新失败"
+                loadDeviceDetail(deviceId, start, end)
+            } catch (ex: Exception) {
+                handleApiError(ex, "更新端口备注失败")
             }
         }
     }

@@ -30,26 +30,49 @@ func NewHandler(repo *db.Repository, collector *snmp.Collector, system *SystemSe
 func (h *Handler) Router() http.Handler {
 	r := chi.NewRouter()
 
+	r.Post("/api/login", h.handleLogin("web"))
 	r.Post("/api/auth/login", h.handleLogin("web"))
 	r.Post("/api/auth/mobile/login", h.handleLogin("mobile"))
 
 	r.Group(func(pr chi.Router) {
 		pr.Use(h.authMiddleware)
 		pr.Get("/api/devices", h.handleListDevices)
-		pr.Post("/api/devices", h.handleAddDevice)
-		pr.Delete("/api/devices/{id}", h.handleDeleteDevice)
-		pr.Put("/api/devices/{id}/remark", h.handleUpdateDeviceRemark)
-		pr.Put("/api/interfaces/{id}/remark", h.handleUpdateInterfaceRemark)
+		pr.Get("/api/devices/{id}", h.handleGetDevice)
+		pr.With(h.auditMiddleware("ADD_DEVICE")).Post("/api/devices", h.handleAddDevice)
+		pr.With(h.auditMiddleware("DELETE_DEVICE")).Delete("/api/devices/{id}", h.handleDeleteDevice)
+		pr.With(h.auditMiddleware("UPDATE_DEVICE_REMARK")).Put("/api/devices/{id}/remark", h.handleUpdateDeviceRemark)
+		pr.With(h.auditMiddleware("UPDATE_INTERFACE_REMARK")).Put("/api/interfaces/{id}/remark", h.handleUpdateInterfaceRemark)
 		pr.Get("/api/metrics/history", h.handleMetricsHistory)
 		pr.Get("/api/devices/{id}/logs", h.handleDeviceLogs)
 		pr.Get("/api/system/backup", h.handleSystemBackup)
-		pr.Post("/api/system/restore", h.handleSystemRestore)
+		pr.With(h.auditMiddleware("RESTORE_SYSTEM")).Post("/api/system/restore", h.handleSystemRestore)
+		pr.With(h.adminOnly).Get("/api/audit-logs", h.handleAuditLogs)
 		pr.With(h.adminOnly).Get("/api/audit/logs", h.handleAuditLogs)
+		pr.With(h.adminOnly).Get("/api/users", h.handleListUsers)
+		pr.With(h.adminOnly).Post("/api/users", h.handleCreateUser)
 		pr.With(h.adminOnly).Get("/api/admin/users", h.handleListUsers)
 		pr.With(h.adminOnly).Post("/api/admin/users", h.handleCreateUser)
 	})
 
 	return r
+}
+
+func (h *Handler) handleGetDevice(w http.ResponseWriter, r *http.Request) {
+	id, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid device id")
+		return
+	}
+	item, err := h.repo.GetDeviceByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if item == nil {
+		writeError(w, http.StatusNotFound, "device not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 type addDeviceRequest struct {
@@ -112,7 +135,6 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 		"id":      deviceID,
 		"message": "device created",
 	})
-	h.audit(r, "ADD_DEVICE", "device_id="+strconv.FormatInt(deviceID, 10))
 }
 
 func (h *Handler) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
@@ -125,7 +147,6 @@ func (h *Handler) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	h.audit(r, "DELETE_DEVICE", "device_id="+strconv.FormatInt(id, 10))
 	writeJSON(w, http.StatusOK, map[string]string{"message": "device deleted"})
 }
 
@@ -144,7 +165,6 @@ func (h *Handler) handleUpdateDeviceRemark(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	h.audit(r, "UPDATE_DEVICE_REMARK", "device_id="+strconv.FormatInt(id, 10))
 	writeJSON(w, http.StatusOK, map[string]string{"message": "device remark updated"})
 }
 
@@ -163,7 +183,6 @@ func (h *Handler) handleUpdateInterfaceRemark(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	h.audit(r, "UPDATE_INTERFACE_REMARK", "interface_id="+strconv.FormatInt(id, 10))
 	writeJSON(w, http.StatusOK, map[string]string{"message": "interface remark updated"})
 }
 
@@ -284,7 +303,6 @@ func (h *Handler) handleSystemRestore(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	h.audit(r, "RESTORE_SYSTEM", "restore sql.gz")
 	writeJSON(w, http.StatusOK, map[string]string{"message": "restore completed"})
 }
 
@@ -295,18 +313,6 @@ func (h *Handler) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
-}
-
-func (h *Handler) audit(r *http.Request, action, detail string) {
-	u := currentUser(r.Context())
-	_ = h.repo.AddAuditLog(r.Context(), db.AuditLog{
-		Username: u.Username,
-		Action:   action,
-		Method:   r.Method,
-		Path:     r.URL.Path,
-		IP:       clientIP(r),
-		Detail:   detail,
-	})
 }
 
 type createUserRequest struct {
@@ -337,7 +343,6 @@ func (h *Handler) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	h.audit(r, "CREATE_USER", "username="+req.Username+",role="+req.Role)
 	writeJSON(w, http.StatusCreated, map[string]string{"message": "user created"})
 }
 
@@ -356,6 +361,39 @@ func parseIDParam(r *http.Request, name string) (int64, error) {
 
 func parseTime(v string) (time.Time, error) {
 	return time.Parse(time.RFC3339, v)
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusRecorder) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (h *Handler) auditMiddleware(action string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			next.ServeHTTP(rec, r)
+			if rec.status >= http.StatusBadRequest {
+				return
+			}
+			u := currentUser(r.Context())
+			var uid *int64
+			if u.ID > 0 {
+				uid = &u.ID
+			}
+			target := r.URL.Path
+			_ = h.repo.AddAuditLog(r.Context(), db.AuditLog{
+				UserID: uid,
+				Action: action,
+				Target: target,
+			})
+		})
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
