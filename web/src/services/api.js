@@ -63,5 +63,37 @@ export const api = {
   },
   listAuditLogs() {
     return http.get("/audit/logs");
+  },
+  importDevicesCSV(csvText) {
+    return http.post("/devices/import", csvText, {
+      headers: { "Content-Type": "text/csv" }
+    });
+  },
+  listTemplates() {
+    return http.get("/templates");
+  },
+  createTemplate(payload) {
+    return http.post("/templates", payload);
+  },
+  listTopology() {
+    return http.get("/topology");
+  },
+  upsertTopology(payload) {
+    return http.post("/topology", payload);
+  },
+  listAlertRules() {
+    return http.get("/alerts/rules");
+  },
+  upsertAlertRule(payload) {
+    return http.post("/alerts/rules", payload);
+  },
+  discoveryScan(payload) {
+    return http.post("/discovery/scan", payload);
+  },
+  backupDrill() {
+    return http.post("/system/backup/drill");
+  },
+  listBackupDrillReports() {
+    return http.get("/system/backup/drill/reports");
   }
 };

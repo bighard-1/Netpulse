@@ -25,6 +25,12 @@
       "default": "514"
     },
     {
+      "key": "SNMP_TRAP_UDP_PORT",
+      "label": "SNMP Trap UDP Port",
+      "type": "number",
+      "default": "9162"
+    },
+    {
       "key": "DB_HOST",
       "label": "Database Host",
       "type": "text",
@@ -69,6 +75,63 @@
       "options": ["disable", "require", "verify-ca", "verify-full"]
     },
     {
+      "key": "JWT_SECRET",
+      "label": "JWT Secret",
+      "type": "password",
+      "required": true,
+      "default": "change-this-secret"
+    },
+    {
+      "key": "ADMIN_USERNAME",
+      "label": "Admin Username",
+      "type": "text",
+      "default": "admin"
+    },
+    {
+      "key": "ADMIN_PASSWORD",
+      "label": "Admin Password",
+      "type": "password",
+      "required": true,
+      "default": "admin123"
+    },
+    {
+      "key": "NETPULSE_CRED_KEY",
+      "label": "Credential Encrypt Key(32 chars)",
+      "type": "password",
+      "required": false,
+      "default": ""
+    },
+    {
+      "key": "SNMP_DEVICE_TIMEOUT_SEC",
+      "label": "SNMP Device Timeout Sec",
+      "type": "number",
+      "default": "15"
+    },
+    {
+      "key": "ALERT_WEBHOOK_URL",
+      "label": "Alert Webhook URL",
+      "type": "text",
+      "default": ""
+    },
+    {
+      "key": "ALERT_CPU_THRESHOLD",
+      "label": "Alert CPU Threshold",
+      "type": "number",
+      "default": "90"
+    },
+    {
+      "key": "ALERT_MEM_THRESHOLD",
+      "label": "Alert Memory Threshold",
+      "type": "number",
+      "default": "90"
+    },
+    {
+      "key": "BACKUP_DRILL_EVERY_HOURS",
+      "label": "Backup Drill Every Hours",
+      "type": "number",
+      "default": "168"
+    },
+    {
       "key": "TZ",
       "label": "Timezone",
       "type": "text",
@@ -76,4 +139,3 @@
     }
   ]
 }
-

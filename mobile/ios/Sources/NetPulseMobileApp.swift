@@ -19,6 +19,7 @@ struct DeviceStatus: Codable, Identifiable {
     let created_at: String
     let last_metric_at: String?
     let status: String
+    let status_reason: String?
     let interfaces: [NetInterface]
 }
 
@@ -341,6 +342,9 @@ struct HomeView: View {
                                         Text(d.ip).font(.headline)
                                             .onLongPressGesture { UIPasteboard.general.string = d.ip }
                                         Text("\(d.brand) · \(d.remark.isEmpty ? "未备注" : d.remark)").font(.subheadline).foregroundStyle(.secondary)
+                                        if let reason = d.status_reason, !reason.isEmpty {
+                                            Text(reason).font(.caption).foregroundStyle(.secondary)
+                                        }
                                     }
                                 }
                             }
@@ -385,10 +389,15 @@ struct DeviceDetailView: View {
                     Text(d.ip)
                         .onLongPressGesture { UIPasteboard.general.string = d.ip }
                     Text("\(d.brand) · \(d.remark)")
+                    if let reason = d.status_reason, !reason.isEmpty {
+                        Text("状态说明：\(reason)")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
-            Section("CPU / Memory") {
+            Section("CPU / 内存") {
                 Chart {
                     ForEach(vm.cpu) { p in
                         LineMark(x: .value("时间", p.timestamp), y: .value("CPU", p.cpu_usage ?? 0))
@@ -403,7 +412,7 @@ struct DeviceDetailView: View {
             }
 
             Section("端口搜索") {
-                TextField("搜索端口 id/index/name/remark", text: $keyword)
+                TextField("搜索端口 id/索引/名称/备注", text: $keyword)
                     .textFieldStyle(.roundedBorder)
             }
 

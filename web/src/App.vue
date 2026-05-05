@@ -21,6 +21,7 @@ const auditVisible = ref(false);
 const auditLogs = ref([]);
 
 const restoreLoading = ref(false);
+const drillLoading = ref(false);
 
 const isAdmin = computed(() => currentUser.value?.role === "admin");
 
@@ -89,6 +90,16 @@ async function onRestore(file) {
   }
 }
 
+async function runBackupDrill() {
+  drillLoading.value = true;
+  try {
+    await api.backupDrill();
+    ElMessage.success("备份校验演练完成");
+  } finally {
+    drillLoading.value = false;
+  }
+}
+
 async function openUsers() {
   usersVisible.value = true;
   const res = await api.listUsers();
@@ -124,6 +135,7 @@ onMounted(() => {
             <el-button text @click="$router.push('/')">资产</el-button>
             <el-button text @click="openAudit">审计日志</el-button>
             <el-button text @click="onBackup">下载备份</el-button>
+            <el-button text :loading="drillLoading" @click="runBackupDrill">备份演练</el-button>
             <el-upload :auto-upload="false" :show-file-list="false" accept=".gz" :on-change="onRestore" :disabled="restoreLoading">
               <el-button text>恢复数据</el-button>
             </el-upload>
@@ -170,19 +182,21 @@ onMounted(() => {
         <el-table-column prop="id" label="ID" width="80" />
         <el-table-column prop="username" label="用户名" />
         <el-table-column prop="role" label="角色" width="120" />
-        <el-table-column prop="enabled" label="启用" width="80" />
       </el-table>
     </el-dialog>
 
     <el-dialog v-model="auditVisible" title="审计日志" width="980">
       <el-table :data="auditLogs" height="520">
-        <el-table-column prop="created_at" label="时间" width="190" />
+        <el-table-column prop="timestamp" label="时间" width="190" />
         <el-table-column prop="username" label="用户名" width="120" />
+        <el-table-column prop="client" label="客户端" width="100" />
         <el-table-column prop="action" label="动作" width="180" />
         <el-table-column prop="method" label="方法" width="90" />
+        <el-table-column prop="status_code" label="状态码" width="90" />
+        <el-table-column prop="duration_ms" label="耗时(ms)" width="110" />
         <el-table-column prop="path" label="路径" min-width="220" />
         <el-table-column prop="ip" label="IP" width="160" />
-        <el-table-column prop="detail" label="详情" min-width="220" />
+        <el-table-column prop="target" label="详情" min-width="220" />
       </el-table>
     </el-dialog>
   </div>

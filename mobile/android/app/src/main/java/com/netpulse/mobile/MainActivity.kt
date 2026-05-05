@@ -181,7 +181,7 @@ fun HomeScreen(devices: List<DeviceStatus>, loading: Boolean, onRefresh: () -> U
     val ctx = LocalContext.current
 
     Scaffold(topBar = {
-        TopAppBar(title = { Text("NetPulse 资产总览") }, actions = {
+        TopAppBar(title = { Text("资产总览") }, actions = {
             TextButton(onClick = onRefresh) { Text("刷新") }
             TextButton(onClick = onLogout) { Text("退出") }
         })
@@ -226,6 +226,9 @@ fun HomeScreen(devices: List<DeviceStatus>, loading: Boolean, onRefresh: () -> U
                                 )
                             }
                             Text("${d.brand} · ${d.remark.ifBlank { "未备注" }}", style = MaterialTheme.typography.bodyMedium)
+                            if (!d.statusReason.isNullOrBlank()) {
+                                Text(d.statusReason!!, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                            }
                         }
                     }
                 }
@@ -275,20 +278,23 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                                 modifier = Modifier.combinedClickable(onClick = {}, onLongClick = { copyToClipboard(ctx, device?.ip ?: "") })
                             )
                             Text("${device?.brand ?: "-"} · ${device?.remark ?: "-"}")
+                            if (!device?.statusReason.isNullOrBlank()) {
+                                Text("状态说明：${device?.statusReason}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                            }
                         }
                     }
                 }
                 item {
                     ElevatedCard(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(UiSpec.cardPadding)) {
-                            Text("CPU / Memory", style = MaterialTheme.typography.titleMedium)
+                            Text("CPU / 内存", style = MaterialTheme.typography.titleMedium)
                             Spacer(Modifier.height(8.dp))
                             MiniLineChart(cpu.map { it.cpuUsage ?: 0.0 }, mem.map { it.memUsage ?: 0.0 })
                         }
                     }
                 }
                 item {
-                    OutlinedTextField(keyword, { keyword = it }, label = { Text("搜索端口 id/index/name/remark") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(keyword, { keyword = it }, label = { Text("搜索端口 id/索引/名称/备注") }, modifier = Modifier.fillMaxWidth())
                 }
                 if (ports.isEmpty()) {
                     item { EmptyStateCard("暂无端口", "SNMP 同步成功后会显示端口列表") }

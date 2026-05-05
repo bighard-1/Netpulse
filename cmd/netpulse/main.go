@@ -42,6 +42,9 @@ func main() {
 	adminUser := getenv("ADMIN_USERNAME", "admin")
 	adminPassword := getenv("ADMIN_PASSWORD", "admin123")
 	jwtSecret := getenv("JWT_SECRET", "change-this-secret")
+	syslogAddr := getenv("SYSLOG_ADDR", ":514")
+	trapAddr := getenv("SNMP_TRAP_ADDR", ":9162")
+	backupDrillHours := getenv("BACKUP_DRILL_EVERY_HOURS", "168")
 
 	dsn := fmt.Sprintf(
 		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
@@ -90,6 +93,11 @@ func main() {
 	defer stop()
 
 	go worker.Start(runCtx)
+	go snmp.StartSyslogServer(runCtx, repo, syslogAddr)
+	go snmp.StartTrapServer(runCtx, repo, trapAddr)
+	if h, err := time.ParseDuration(backupDrillHours + "h"); err == nil {
+		go api.StartBackupDrillLoop(runCtx, systemSvc, repo, h)
+	}
 
 	distFS, err := fs.Sub(embeddedWebFS, "web/dist")
 	if err != nil {

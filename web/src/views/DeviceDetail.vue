@@ -55,12 +55,12 @@ async function renderCpuMem() {
   cpuMemChart?.setOption({
     grid: { left: 45, right: 20, top: 40, bottom: 40 },
     tooltip: { trigger: "axis" },
-    legend: { data: ["CPU %", "Memory %"] },
+    legend: { data: ["CPU利用率", "内存利用率"] },
     xAxis: { type: "category", data: cpuData.map((p) => p.timestamp) },
     yAxis: { type: "value", max: 100 },
     series: [
-      { name: "CPU %", type: "line", smooth: true, data: cpuData.map((p) => Number(p.cpu_usage || 0)) },
-      { name: "Memory %", type: "line", smooth: true, data: memData.map((p) => Number(p.mem_usage || 0)) }
+      { name: "CPU利用率", type: "line", smooth: true, data: cpuData.map((p) => Number(p.cpu_usage || 0)) },
+      { name: "内存利用率", type: "line", smooth: true, data: memData.map((p) => Number(p.mem_usage || 0)) }
     ]
   });
 }
@@ -122,6 +122,9 @@ watch(
         <div><div class="text-xs text-slate-500">IP</div><div class="font-semibold">{{ device.ip }}</div></div>
         <div><div class="text-xs text-slate-500">品牌</div><div class="font-semibold">{{ device.brand }}</div></div>
         <div><div class="text-xs text-slate-500">备注</div><div class="font-semibold">{{ device.remark || '-' }}</div></div>
+      </div>
+      <div v-if="device?.status_reason" class="mt-2 text-sm text-slate-600">
+        状态说明：{{ device.status_reason }}
       </div>
       <el-empty v-else description="设备不存在" />
     </el-card>

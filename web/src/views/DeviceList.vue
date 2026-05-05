@@ -62,10 +62,17 @@ onMounted(loadDevices);
     <el-table v-loading="loading" :data="devices">
       <el-table-column label="状态" width="90">
         <template #default="{ row }">
-          <span
-            class="inline-block h-2.5 w-2.5 rounded-full"
-            :class="row.status === 'online' ? 'bg-emerald-500' : (row.status === 'offline' ? 'bg-rose-500' : 'bg-amber-400')"
-          />
+          <el-tooltip :content="row.status_reason || '暂无状态说明'" placement="top">
+            <span
+              class="inline-block h-2.5 w-2.5 rounded-full"
+              :class="row.status === 'online' ? 'bg-emerald-500' : (row.status === 'offline' ? 'bg-rose-500' : 'bg-amber-400')"
+            />
+          </el-tooltip>
+        </template>
+      </el-table-column>
+      <el-table-column label="状态说明" min-width="240">
+        <template #default="{ row }">
+          <span class="text-slate-600">{{ row.status_reason || "-" }}</span>
         </template>
       </el-table-column>
       <el-table-column prop="ip" label="IP" min-width="180" />

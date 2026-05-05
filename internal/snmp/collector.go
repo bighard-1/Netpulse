@@ -40,6 +40,11 @@ type PollResult struct {
 	PolledAt    time.Time
 }
 
+type OIDProfile struct {
+	CPUOIDs    []string
+	MemoryOIDs []string
+}
+
 type Collector struct {
 	Port      uint16
 	Version   gosnmp.SnmpVersion
@@ -48,6 +53,19 @@ type Collector struct {
 	MaxOids   int
 	MaxRep    uint32
 	LocalBind string
+}
+
+type PollOptions struct {
+	Brand       string
+	SNMPVersion string
+	Port        int
+	Community   string
+	V3Username  string
+	V3AuthProto string
+	V3AuthPass  string
+	V3PrivProto string
+	V3PrivPass  string
+	V3SecLevel  string
 }
 
 func NewCollector() *Collector {
@@ -61,21 +79,68 @@ func NewCollector() *Collector {
 	}
 }
 
-func (c *Collector) newClient(ip, community string) *gosnmp.GoSNMP {
-	return &gosnmp.GoSNMP{
+func selectOIDProfile(brand string) OIDProfile {
+	b := strings.ToLower(strings.TrimSpace(brand))
+	switch b {
+	case "h3c":
+		return OIDProfile{
+			CPUOIDs:    []string{OIDCPUUsageH3C, OIDCPUUsage},
+			MemoryOIDs: []string{OIDMemoryUsageH3C, OIDMemoryUsage},
+		}
+	case "huawei":
+		return OIDProfile{
+			CPUOIDs:    []string{OIDCPUUsage, OIDCPUUsageH3C},
+			MemoryOIDs: []string{OIDMemoryUsage, OIDMemoryUsageH3C},
+		}
+	default:
+		return OIDProfile{
+			CPUOIDs:    []string{OIDCPUUsage, OIDCPUUsageH3C},
+			MemoryOIDs: []string{OIDMemoryUsage, OIDMemoryUsageH3C},
+		}
+	}
+}
+
+func (c *Collector) newClient(ip string, opt PollOptions) *gosnmp.GoSNMP {
+	client := &gosnmp.GoSNMP{
 		Target:         ip,
 		Port:           c.Port,
-		Community:      community,
 		Version:        c.Version,
 		Timeout:        c.Timeout,
 		Retries:        c.Retries,
 		MaxOids:        c.MaxOids,
 		MaxRepetitions: c.MaxRep,
 	}
+	if opt.Port > 0 {
+		client.Port = uint16(opt.Port)
+	}
+	switch strings.ToLower(strings.TrimSpace(opt.SNMPVersion)) {
+	case "1", "v1":
+		client.Version = gosnmp.Version1
+		client.Community = opt.Community
+	case "3", "v3":
+		client.Version = gosnmp.Version3
+		client.SecurityModel = gosnmp.UserSecurityModel
+		client.MsgFlags = v3MsgFlags(opt.V3SecLevel)
+		client.SecurityParameters = &gosnmp.UsmSecurityParameters{
+			UserName:                 opt.V3Username,
+			AuthenticationProtocol:   v3AuthProtocol(opt.V3AuthProto),
+			AuthenticationPassphrase: opt.V3AuthPass,
+			PrivacyProtocol:          v3PrivProtocol(opt.V3PrivProto),
+			PrivacyPassphrase:        opt.V3PrivPass,
+		}
+	default:
+		client.Version = gosnmp.Version2c
+		client.Community = opt.Community
+	}
+	return client
 }
 
 func (c *Collector) FetchInterfaces(ip, community string) ([]InterfaceInfo, error) {
-	client := c.newClient(ip, community)
+	return c.FetchInterfacesWithOptions(ip, PollOptions{SNMPVersion: "2c", Community: community})
+}
+
+func (c *Collector) FetchInterfacesWithOptions(ip string, opt PollOptions) ([]InterfaceInfo, error) {
+	client := c.newClient(ip, opt)
 	if err := client.Connect(); err != nil {
 		return nil, fmt.Errorf("snmp connect: %w", err)
 	}
@@ -100,15 +165,16 @@ func (c *Collector) FetchInterfaces(ip, community string) ([]InterfaceInfo, erro
 	return out, nil
 }
 
-func (c *Collector) PollDevice(ip, community string) (PollResult, error) {
-	client := c.newClient(ip, community)
+func (c *Collector) PollDevice(ip string, opt PollOptions) (PollResult, error) {
+	client := c.newClient(ip, opt)
 	if err := client.Connect(); err != nil {
 		return PollResult{}, fmt.Errorf("snmp connect: %w", err)
 	}
 	defer client.Conn.Close()
 
-	cpuUsage, _ := c.getAverageCPU(client)
-	memUsage, _ := c.getAverageMemory(client)
+	profile := selectOIDProfile(opt.Brand)
+	cpuUsage, _ := c.getAverageCPU(client, profile.CPUOIDs)
+	memUsage, _ := c.getAverageMemory(client, profile.MemoryOIDs)
 
 	ifNames, err := c.fetchIfNames(client)
 	if err != nil {
@@ -141,28 +207,61 @@ func (c *Collector) PollDevice(ip, community string) (PollResult, error) {
 	}, nil
 }
 
-func (c *Collector) getAverageCPU(client *gosnmp.GoSNMP) (float64, error) {
-	pdus, err := client.BulkWalkAll(OIDCPUUsage)
-	if err == nil && len(pdus) > 0 {
-		return averageNumeric(pdus), nil
+func v3MsgFlags(level string) gosnmp.SnmpV3MsgFlags {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "authnopriv", "auth_no_priv":
+		return gosnmp.AuthNoPriv
+	case "authpriv", "auth_priv":
+		return gosnmp.AuthPriv
+	default:
+		return gosnmp.NoAuthNoPriv
 	}
-	pdus, err = client.BulkWalkAll(OIDCPUUsageH3C)
-	if err != nil {
-		return 0, fmt.Errorf("walk cpu oid failed (huawei+h3c): %w", err)
-	}
-	return averageNumeric(pdus), nil
 }
 
-func (c *Collector) getAverageMemory(client *gosnmp.GoSNMP) (float64, error) {
-	pdus, err := client.BulkWalkAll(OIDMemoryUsage)
-	if err == nil && len(pdus) > 0 {
-		return averageNumeric(pdus), nil
+func v3AuthProtocol(p string) gosnmp.SnmpV3AuthProtocol {
+	switch strings.ToLower(strings.TrimSpace(p)) {
+	case "sha", "sha1":
+		return gosnmp.SHA
+	default:
+		return gosnmp.MD5
 	}
-	pdus, err = client.BulkWalkAll(OIDMemoryUsageH3C)
-	if err != nil {
-		return 0, fmt.Errorf("walk memory oid failed (huawei+h3c): %w", err)
+}
+
+func v3PrivProtocol(p string) gosnmp.SnmpV3PrivProtocol {
+	switch strings.ToLower(strings.TrimSpace(p)) {
+	case "aes", "aes128":
+		return gosnmp.AES
+	default:
+		return gosnmp.DES
 	}
-	return averageNumeric(pdus), nil
+}
+
+func (c *Collector) getAverageCPU(client *gosnmp.GoSNMP, oids []string) (float64, error) {
+	var lastErr error
+	for _, oid := range oids {
+		pdus, err := client.BulkWalkAll(oid)
+		if err == nil && len(pdus) > 0 {
+			return averageNumeric(pdus), nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+	}
+	return 0, fmt.Errorf("walk cpu oid failed: %w", lastErr)
+}
+
+func (c *Collector) getAverageMemory(client *gosnmp.GoSNMP, oids []string) (float64, error) {
+	var lastErr error
+	for _, oid := range oids {
+		pdus, err := client.BulkWalkAll(oid)
+		if err == nil && len(pdus) > 0 {
+			return averageNumeric(pdus), nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+	}
+	return 0, fmt.Errorf("walk memory oid failed: %w", lastErr)
 }
 
 func (c *Collector) fetchIfNames(client *gosnmp.GoSNMP) (map[int]string, error) {

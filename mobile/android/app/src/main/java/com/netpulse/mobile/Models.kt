@@ -13,6 +13,7 @@ data class DeviceStatus(
     @SerialName("created_at") val createdAt: String,
     @SerialName("last_metric_at") val lastMetricAt: String? = null,
     val status: String,
+    @SerialName("status_reason") val statusReason: String? = null,
     val interfaces: List<NetInterface> = emptyList()
 )
 

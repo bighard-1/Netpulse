@@ -1,89 +1,190 @@
 # NetPulse
 
-NetPulse 是面向华为/H3C 设备的网络监控系统，包含：
-- Go 后端（SNMP 采集、REST API、自动建表、备份恢复）
-- Vue 3 Web 管理端（中文界面、管理员/用户管理、审计日志）
-- iOS / Android 移动端（普通用户登录、生物识别快捷登录）
+NetPulse 是面向华为/H3C/通用 SNMP 设备的网络监控系统，包含：
+- Go 后端（API + 采集引擎 + 自动建表）
+- TimescaleDB 时序数据库
+- Vue3 Web 管理端
+- iOS/Android 客户端
 
-## 1. 运行前准备
+## 核心功能
 
-- 数据库：`timescale/timescaledb:latest-pg15`
-- 应用镜像：本仓库构建得到 `netpulse:latest`
-- 建议端口：
-  - NetPulse Web/API：`8080`（示例映射到宿主 `18080`）
-  - Syslog UDP：`514`
+### 监控与采集
+- SNMP 全版本支持：`v1 / v2c / v3`
+- CPU/内存/端口流量采集（1 分钟轮询）
+- 端口信息增量同步（保留备注）
+- 设备状态诊断：在线/离线/未知 + 状态原因
+- 连通性双判定：SNMP 失败时自动做 `ICMP + TCP161` 探测
 
-## 2. 环境变量（最新）
+### 资产与运维
+- 资产新增、删除、备注管理
+- 端口备注管理
+- 设备日志（最近 100 条）
+- 批量导入设备（CSV）
+- 设备模板管理
+- 自动发现（CIDR 网段扫描）
+- 拓扑链路管理（Topology Links）
+- 配置快照追踪（Config Snapshot）
 
-部署 NetPulse 容器时请至少填写：
+### 告警与报表
+- 告警规则中心（Alert Rules）
+- 告警事件记录（Alert Events）
+- 阈值告警（CPU/内存）+ Webhook 推送
+- 报表导出（CSV）
 
-- `DB_HOST`：TimescaleDB 主机/IP（如 `timescaledb` 或 `127.0.0.1`）
-- `DB_PORT`：数据库端口（默认 `5432`）
-- `DB_USER`：数据库用户名（建议 `postgres` 或独立账号）
-- `DB_PASSWORD`：数据库密码
-- `DB_NAME`：数据库名（如 `netpulse`）
-- `HTTP_ADDR`：监听地址（默认 `:8080`）
-- `JWT_SECRET`：JWT 密钥（请改为强随机字符串）
-- `ADMIN_USERNAME`：管理员用户名（只允许 Web 登录）
-- `ADMIN_PASSWORD`：管理员密码（首次启动自动写入/更新）
+### 系统能力
+- 备份下载与恢复
+- 备份校验与回滚演练报告（支持定期自动演练）
+- 审计日志增强（方法、路径、IP、状态码、耗时、客户端）
+- RBAC 权限控制（角色-权限）
 
-可选：
-- `TZ`：时区（如 `Asia/Shanghai`）
+### 协议接入
+- Syslog 接收（UDP 514）
+- SNMP Trap 接收（默认 UDP 9162）
 
-## 3. 1Panel 图形化部署（不使用 compose）
+## 目录结构
 
-### 3.1 部署 TimescaleDB
+```text
+cmd/netpulse            # 主程序入口
+internal/api            # API 与认证
+internal/db             # Repository 与自动建表 SQL
+internal/snmp           # SNMP 采集/轮询/Trap/Syslog
+web                     # Vue3 Web 前端
+mobile/ios              # iOS 客户端
+mobile/android          # Android 客户端
+deploy                  # Docker/1Panel 配置
+package                 # 构建产物目录
+scripts                 # 冒烟/辅助脚本
+```
 
-1. 进入 1Panel -> 容器 -> 新建容器。
-2. 镜像填写：`timescale/timescaledb:latest-pg15`。
-3. 启动用户不要填 `root`，保持镜像默认用户。
-4. 环境变量：
-   - `POSTGRES_USER=postgres`
-   - `POSTGRES_PASSWORD=<你的强密码>`
-   - `POSTGRES_DB=netpulse`
-5. 端口映射：
-   - 若仅供内网容器访问，可不映射宿主端口；
-   - 若需要外部工具连接，映射 `5432:5432`（注意冲突）。
-6. 持久化：
-   - 挂载数据目录到 `/var/lib/postgresql/data`。
-7. 启动并确认日志无报错。
+## 快速部署（推荐 Docker / 1Panel）
 
-> 如果出现 `"root" execution of the PostgreSQL server is not permitted`，说明容器以 root 启动，请改回镜像默认用户并重建容器。
+### 1. 准备 TimescaleDB
+- 镜像：`timescale/timescaledb:latest-pg15`
+- 数据目录持久化：`/var/lib/postgresql/data`
+- 运行用户不要设置为 `root`
+- 账号建议：
+  - `DB_USER=postgres`
+  - `DB_PASSWORD=强密码`
+  - `DB_NAME=netpulse`
 
-### 3.2 部署 NetPulse
+### 2. 启动 NetPulse 容器
+- 镜像：`ghcr.io/bighard-1/netpulse:latest`
+- 端口：
+  - `8080/tcp` Web/API
+  - `514/udp` Syslog
+  - `9162/udp` Trap（如果你启用 Trap）
 
-1. 进入 1Panel -> 容器 -> 新建容器。
-2. 镜像填写你导入/拉取的 `netpulse:latest`。
-3. 端口映射：
-   - `18080:8080`（Web/API）
-   - `514:514/udp`（可选，Syslog）
-4. 环境变量按“第2节”填写。
-5. 启动后访问：`http://<服务器IP>:18080`。
+### 3. 必填环境变量
+- `DB_HOST`：TimescaleDB 地址
+- `DB_PORT`：默认 `5432`
+- `DB_USER`
+- `DB_PASSWORD`
+- `DB_NAME`
+- `DB_SSLMODE`：默认 `disable`
+- `JWT_SECRET`：JWT 密钥（务必修改）
+- `ADMIN_USERNAME`：Web 管理员用户名
+- `ADMIN_PASSWORD`：Web 管理员密码
 
-## 4. 首次启动逻辑
+### 4. 强烈建议环境变量
+- `NETPULSE_CRED_KEY`：**32 字节**密钥，用于加密 SNMP 凭据（community/v3 密码）
+- `SNMP_DEVICE_TIMEOUT_SEC`：单设备采集超时（默认 15）
+- `ALERT_WEBHOOK_URL`：告警 webhook
+- `ALERT_CPU_THRESHOLD`：默认 `90`
+- `ALERT_MEM_THRESHOLD`：默认 `90`
+- `BACKUP_DRILL_EVERY_HOURS`：备份演练周期小时（默认 `168`，即每周）
+- `SYSLOG_ADDR`：默认 `:514`
+- `SNMP_TRAP_ADDR`：默认 `:9162`
 
-- 应用会自动执行 `EnsureSchema()`：
-  - 自动创建业务表（devices/interfaces/metrics/device_logs/users/audit_logs）
-  - 自动创建 Timescale 扩展与视图（幂等）
-- 应用会自动 Upsert 管理员账号（来自 `ADMIN_USERNAME/ADMIN_PASSWORD`）。
+## 1Panel 图形化部署步骤（详细）
 
-## 5. 权限与登录规则
+1. 在 1Panel 部署 TimescaleDB（应用商店或容器方式均可）。  
+2. 配置 TimescaleDB 环境变量：`POSTGRES_DB/POSTGRES_USER/POSTGRES_PASSWORD`。  
+3. 绑定 TimescaleDB 数据卷到 `/var/lib/postgresql/data`。  
+4. 部署 NetPulse 容器，镜像填：`ghcr.io/bighard-1/netpulse:latest`。  
+5. 配置 NetPulse 环境变量（见上文必填 + 建议）。  
+6. 配置端口映射：`18080:8080`（示例）、`514:514/udp`、`9162:9162/udp`。  
+7. 启动后访问：`http://你的服务器IP:映射端口`。  
+8. 首次登录用 `ADMIN_USERNAME/ADMIN_PASSWORD`。  
+9. 添加设备时选择 SNMP 版本并填写对应参数。  
 
-- 管理员：仅允许 Web 端登录。
-- 普通用户：可 Web 或移动端登录。
-- 移动端：首次必须账号密码登录；后续可 Face ID/Touch ID（iOS）或指纹（Android）快捷登录。
-- 审计日志：记录登录与关键管理操作。
+## 数据库兼容与防坑说明（重点）
 
-## 6. 构建产物
+- 项目采用 `repo.EnsureSchema()` 自动建表/自动迁移。  
+- 已做 `IF NOT EXISTS` 兼容，避免重复创建报错。  
+- 针对历史版本已兼容常见字段缺失问题（如审计表列变更）。  
+- 建议升级方式：
+  1. 先备份数据库  
+  2. 再替换新镜像  
+  3. 查看容器日志确认 `ensure schema` 成功  
 
-本仓库 `package/` 目录默认保存：
-- `netpulse_latest.tar`（Docker 镜像）
-- `NetPulse_NetPulseMobile_debug.apk`
-- `NetPulse_NetPulseMobile_unsigned.ipa`
+若出现历史表结构异常，优先检查：
+- `users` 表是否有 `password_hash/role`
+- `audit_logs` 是否有 `ts/user_id/action/target`
+- `devices` 是否有 `snmp_version/snmp_port/v3_*`
 
-## 7. 使用建议
+## Web 端功能
 
-- 生产环境务必修改默认管理员密码和 `JWT_SECRET`。
-- 建议通过反向代理绑定域名，并在公网场景启用 HTTPS。
-- TimescaleDB 数据建议单独卷并定期做备份。
-- 移动端连接地址建议固定为网关或域名，避免设备 IP 变更。
+- 资产列表、设备详情、端口详情
+- 告警规则管理（API 已就绪）
+- 拓扑链路管理（API 已就绪）
+- 备份下载、恢复、备份演练
+- 审计日志、用户管理
+
+## 移动端功能
+
+### iOS
+- 用户登录 + 生物识别
+- 资产总览、设备详情、端口流量图
+- 端口备注编辑、日志查看
+- 长按复制 IP
+
+### Android
+- 用户登录 + 生物识别
+- 资产总览、设备详情、端口流量图（支持缩放/拖动）
+- 端口备注编辑、日志查看
+- 长按复制 IP
+
+## 本地构建
+
+### 后端与镜像
+```bash
+./build_release.sh
+```
+
+### Android
+```bash
+cd mobile/android
+./gradlew --no-daemon :app:assembleRelease
+./gradlew --no-daemon :app:assembleDebug
+```
+
+### iOS（无签名 IPA）
+```bash
+xcodebuild -project mobile/ios/NetPulseMobile.xcodeproj \
+  -scheme NetPulseMobile -configuration Release -sdk iphoneos \
+  -derivedDataPath mobile/ios/build \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+```
+
+## 冒烟测试
+
+```bash
+chmod +x scripts/smoke_e2e.sh
+BASE_URL=http://127.0.0.1:8080/api ADMIN_USER=admin ADMIN_PASS=admin123 ./scripts/smoke_e2e.sh
+```
+
+脚本会校验：
+- 登录
+- 添加设备
+- 查询设备详情
+- 更新端口备注（有端口时）
+- 查询设备日志
+
+## 当前版本产物约定
+
+`package/` 目录会放置：
+- `NetPulse_v0.5.0_linux_amd64.tar`
+- `NetPulse_v0.5.0_android_universal.apk`
+- `NetPulse_v0.5.0_android_amd64.apk`
+- `NetPulse_v0.5.0_ios_unsigned.ipa`
+

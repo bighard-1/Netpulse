@@ -28,6 +28,7 @@ type AuthUser struct {
 	ID       int64  `json:"id"`
 	Username string `json:"username"`
 	Role     string `json:"role"`
+	Client   string `json:"client"`
 }
 
 type loginRequest struct {
@@ -42,15 +43,22 @@ func (h *Handler) handleLogin(client string) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid json body")
 			return
 		}
+		if h.isLocked(req.Username) {
+			writeError(w, http.StatusTooManyRequests, "account temporarily locked, retry later")
+			return
+		}
 		u, err := h.repo.GetUserByUsername(r.Context(), req.Username)
 		if err != nil || u == nil {
+			h.recordFail(req.Username)
 			writeError(w, http.StatusUnauthorized, "invalid username or password")
 			return
 		}
 		if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password)) != nil {
+			h.recordFail(req.Username)
 			writeError(w, http.StatusUnauthorized, "invalid username or password")
 			return
 		}
+		h.clearFail(req.Username)
 		if client == "mobile" && u.Role != "user" {
 			writeError(w, http.StatusForbidden, "mobile only supports normal user login")
 			return
@@ -63,7 +71,17 @@ func (h *Handler) handleLogin(client string) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "token issue failed")
 			return
 		}
-		_ = h.repo.AddAuditLog(r.Context(), db.AuditLog{UserID: &u.ID, Action: "LOGIN", Target: "client=" + client})
+		_ = h.repo.AddAuditLog(r.Context(), db.AuditLog{
+			UserID:     &u.ID,
+			Action:     "LOGIN",
+			Target:     "client=" + client,
+			Method:     r.Method,
+			Path:       r.URL.Path,
+			IP:         clientIP(r),
+			StatusCode: http.StatusOK,
+			DurationMS: 0,
+			Client:     client,
+		})
 		writeJSON(w, http.StatusOK, map[string]any{
 			"token": token,
 			"user": map[string]string{
@@ -72,6 +90,36 @@ func (h *Handler) handleLogin(client string) http.HandlerFunc {
 			},
 		})
 	}
+}
+
+func (h *Handler) isLocked(username string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	until, ok := h.lockedUntil[username]
+	return ok && until.After(time.Now())
+}
+
+func (h *Handler) recordFail(username string) {
+	if username == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.fails[username]++
+	if h.fails[username] >= 5 {
+		h.lockedUntil[username] = time.Now().Add(15 * time.Minute)
+		h.fails[username] = 0
+	}
+}
+
+func (h *Handler) clearFail(username string) {
+	if username == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.fails, username)
+	delete(h.lockedUntil, username)
 }
 
 func (h *Handler) issueToken(username, role, client string) (string, error) {
@@ -113,7 +161,7 @@ func (h *Handler) authMiddleware(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "invalid token user")
 			return
 		}
-		u := AuthUser{ID: dbUser.ID, Username: claims.Username, Role: claims.Role}
+		u := AuthUser{ID: dbUser.ID, Username: claims.Username, Role: claims.Role, Client: claims.Client}
 		ctx := context.WithValue(r.Context(), userCtxKey, u)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -137,6 +185,14 @@ func currentUser(ctx context.Context) AuthUser {
 	}
 	u, _ := v.(AuthUser)
 	return u
+}
+
+func tokenClient(ctx context.Context) string {
+	u := currentUser(ctx)
+	if u.Client == "" {
+		return "unknown"
+	}
+	return u.Client
 }
 
 func clientIP(r *http.Request) string {

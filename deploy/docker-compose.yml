@@ -32,12 +32,24 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-netpulse123}
       DB_NAME: ${DB_NAME:-netpulse}
       DB_SSLMODE: ${DB_SSLMODE:-disable}
+      JWT_SECRET: ${JWT_SECRET:-change-this-secret}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      NETPULSE_CRED_KEY: ${NETPULSE_CRED_KEY:-}
+      SNMP_DEVICE_TIMEOUT_SEC: ${SNMP_DEVICE_TIMEOUT_SEC:-15}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      ALERT_CPU_THRESHOLD: ${ALERT_CPU_THRESHOLD:-90}
+      ALERT_MEM_THRESHOLD: ${ALERT_MEM_THRESHOLD:-90}
+      BACKUP_DRILL_EVERY_HOURS: ${BACKUP_DRILL_EVERY_HOURS:-168}
+      SYSLOG_ADDR: ${SYSLOG_ADDR:-:514}
+      SNMP_TRAP_ADDR: ${SNMP_TRAP_ADDR:-:9162}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - netpulse_app_data:/app/data
     ports:
       - "${WEB_PORT:-8080}:8080"
       - "${SYSLOG_UDP_PORT:-514}:514/udp"
+      - "${SNMP_TRAP_UDP_PORT:-9162}:9162/udp"
 
 volumes:
   netpulse_db_data:
