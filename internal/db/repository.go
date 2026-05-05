@@ -85,6 +85,46 @@ CREATE TABLE IF NOT EXISTS users (
     role VARCHAR(16) NOT NULL CHECK (role IN ('admin','user'))
 );
 
+-- Compatibility migration for old users schemas.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'users'
+    ) THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'password_hash'
+        ) THEN
+            ALTER TABLE users ADD COLUMN password_hash TEXT;
+            IF EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'password'
+            ) THEN
+                UPDATE users SET password_hash = password WHERE password_hash IS NULL;
+            END IF;
+            UPDATE users SET password_hash = crypt('changeme123', gen_salt('bf')) WHERE password_hash IS NULL;
+            ALTER TABLE users ALTER COLUMN password_hash SET NOT NULL;
+        END IF;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'role'
+        ) THEN
+            ALTER TABLE users ADD COLUMN role VARCHAR(16);
+            UPDATE users SET role = 'user' WHERE role IS NULL;
+            ALTER TABLE users ALTER COLUMN role SET NOT NULL;
+            ALTER TABLE users
+                ADD CONSTRAINT users_role_check
+                CHECK (role IN ('admin','user'));
+        END IF;
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS audit_logs (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
@@ -126,6 +166,56 @@ BEGIN
             UPDATE audit_logs SET ts = NOW() WHERE ts IS NULL;
             ALTER TABLE audit_logs ALTER COLUMN ts SET NOT NULL;
             ALTER TABLE audit_logs ALTER COLUMN ts SET DEFAULT NOW();
+        END IF;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'user_id'
+        ) THEN
+            ALTER TABLE audit_logs ADD COLUMN user_id BIGINT;
+        END IF;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'action'
+        ) THEN
+            ALTER TABLE audit_logs ADD COLUMN action VARCHAR(64);
+            UPDATE audit_logs SET action = 'LEGACY_ACTION' WHERE action IS NULL;
+            ALTER TABLE audit_logs ALTER COLUMN action SET NOT NULL;
+        END IF;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'target'
+        ) THEN
+            ALTER TABLE audit_logs ADD COLUMN target TEXT;
+        END IF;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'user_id'
+    ) THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'audit_logs_user_id_fkey'
+        ) THEN
+            BEGIN
+                ALTER TABLE audit_logs
+                    ADD CONSTRAINT audit_logs_user_id_fkey
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL;
+            EXCEPTION
+                WHEN duplicate_object THEN
+                    NULL;
+            END;
         END IF;
     END IF;
 END $$;
