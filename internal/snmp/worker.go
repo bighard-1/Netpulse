@@ -62,6 +62,7 @@ func (w *Worker) runOnce(ctx context.Context) {
 		result, err := w.collector.PollDevice(d.IP, d.Community)
 		if err != nil {
 			log.Printf("snmp poll failed device=%d ip=%s: %v", d.ID, d.IP, err)
+			_ = w.repo.AddDeviceLog(ctx, d.ID, "ERROR", fmt.Sprintf("SNMP采集失败: %v", err))
 			continue
 		}
 
@@ -75,6 +76,7 @@ func (w *Worker) runOnce(ctx context.Context) {
 		}
 		if err := w.repo.SyncInterfaces(ctx, d.ID, interfaces); err != nil {
 			log.Printf("sync interfaces failed device=%d: %v", d.ID, err)
+			_ = w.repo.AddDeviceLog(ctx, d.ID, "ERROR", fmt.Sprintf("端口同步失败: %v", err))
 			continue
 		}
 
@@ -92,8 +94,10 @@ func (w *Worker) runOnce(ctx context.Context) {
 
 		if err := w.repo.SaveMetrics(ctx, d.ID, result.PolledAt, mList); err != nil {
 			log.Printf("save metrics failed device=%d: %v", d.ID, err)
+			_ = w.repo.AddDeviceLog(ctx, d.ID, "ERROR", fmt.Sprintf("指标入库失败: %v", err))
 			continue
 		}
+		_ = w.repo.AddDeviceLog(ctx, d.ID, "INFO", "设备轮询成功")
 	}
 }
 

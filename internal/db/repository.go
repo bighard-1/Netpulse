@@ -422,7 +422,7 @@ func (r *Repository) ListUsers(ctx context.Context) ([]User, error) {
 
 func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus, error) {
 	const q = `
-		SELECT d.id, d.ip::text, d.brand, d.community, COALESCE(d.remark, ''), d.created_at, lm.last_ts
+		SELECT d.id, host(d.ip), d.brand, d.community, COALESCE(d.remark, ''), d.created_at, lm.last_ts
 		FROM devices d
 		LEFT JOIN (
 			SELECT device_id, MAX(ts) AS last_ts
@@ -496,7 +496,7 @@ func (r *Repository) DeleteDevice(ctx context.Context, id int64) error {
 
 func (r *Repository) ListDevices(ctx context.Context) ([]Device, error) {
 	const q = `
-		SELECT id, ip::text, brand, community, COALESCE(remark, ''), created_at
+		SELECT id, host(ip), brand, community, COALESCE(remark, ''), created_at
 		FROM devices
 		ORDER BY id;
 	`
@@ -522,7 +522,7 @@ func (r *Repository) ListDevices(ctx context.Context) ([]Device, error) {
 
 func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus, error) {
 	const q = `
-		SELECT d.id, d.ip::text, d.brand, d.community, COALESCE(d.remark, ''), d.created_at, lm.last_ts
+		SELECT d.id, host(d.ip), d.brand, d.community, COALESCE(d.remark, ''), d.created_at, lm.last_ts
 		FROM devices d
 		LEFT JOIN (
 			SELECT device_id, MAX(ts) AS last_ts
@@ -594,8 +594,8 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 	return out, nil
 }
 
-// SyncInterfaces replaces the current interface snapshot for one device.
-// Call this right after device onboarding SNMP discovery.
+// SyncInterfaces upserts interface snapshot for one device and preserves existing remarks.
+// It also removes stale interfaces that no longer exist on device.
 func (r *Repository) SyncInterfaces(ctx context.Context, deviceID int64, interfaces []Interface) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -605,17 +605,33 @@ func (r *Repository) SyncInterfaces(ctx context.Context, deviceID int64, interfa
 		_ = tx.Rollback()
 	}()
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM interfaces WHERE device_id = $1;`, deviceID); err != nil {
-		return fmt.Errorf("clear interfaces: %w", err)
-	}
-
 	const q = `
 		INSERT INTO interfaces (device_id, "index", name, remark)
-		VALUES ($1, $2, $3, $4);
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (device_id, "index")
+		DO UPDATE SET
+			name = EXCLUDED.name,
+			remark = COALESCE(interfaces.remark, EXCLUDED.remark);
 	`
+	seen := make(map[int]struct{}, len(interfaces))
 	for _, itf := range interfaces {
+		seen[itf.Index] = struct{}{}
 		if _, err := tx.ExecContext(ctx, q, deviceID, itf.Index, itf.Name, itf.Remark); err != nil {
 			return fmt.Errorf("insert interface index=%d: %w", itf.Index, err)
+		}
+	}
+	if len(seen) > 0 {
+		indexes := make([]int, 0, len(seen))
+		for idx := range seen {
+			indexes = append(indexes, idx)
+		}
+		if _, err := tx.ExecContext(
+			ctx,
+			`DELETE FROM interfaces WHERE device_id = $1 AND NOT ("index" = ANY($2));`,
+			deviceID,
+			indexes,
+		); err != nil {
+			return fmt.Errorf("delete stale interfaces: %w", err)
 		}
 	}
 
@@ -804,4 +820,29 @@ func (r *Repository) GetDeviceLogs(ctx context.Context, deviceID int64) ([]Devic
 		return nil, fmt.Errorf("iterate device logs: %w", err)
 	}
 	return out, nil
+}
+
+func (r *Repository) AddDeviceLog(ctx context.Context, deviceID int64, level, message string) error {
+	const ins = `
+		INSERT INTO device_logs (device_id, level, message)
+		VALUES ($1, $2, $3);
+	`
+	if _, err := r.db.ExecContext(ctx, ins, deviceID, level, message); err != nil {
+		return fmt.Errorf("add device log: %w", err)
+	}
+	const trim = `
+		DELETE FROM device_logs
+		WHERE device_id = $1
+		AND id NOT IN (
+			SELECT id
+			FROM device_logs
+			WHERE device_id = $1
+			ORDER BY created_at DESC
+			LIMIT 100
+		);
+	`
+	if _, err := r.db.ExecContext(ctx, trim, deviceID); err != nil {
+		return fmt.Errorf("trim device log: %w", err)
+	}
+	return nil
 }

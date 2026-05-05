@@ -130,6 +130,25 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = h.repo.SyncInterfaces(context.Background(), deviceID, list)
 	}
+	// Trigger immediate polling once, so status and charts are available without waiting for next worker tick.
+	if poll, err := h.collector.PollDevice(req.IP, req.Community); err == nil {
+		metrics := make([]db.InterfaceMetric, 0, len(poll.Interfaces))
+		for _, itf := range poll.Interfaces {
+			metrics = append(metrics, db.InterfaceMetric{
+				IfIndex:       itf.IfIndex,
+				CPUUsage:      poll.CPUUsage,
+				MemoryUsage:   poll.MemoryUsage,
+				TrafficInBps:  0,
+				TrafficOutBps: 0,
+			})
+		}
+		if len(metrics) > 0 {
+			_ = h.repo.SaveMetrics(context.Background(), deviceID, poll.PolledAt, metrics)
+		}
+		_ = h.repo.AddDeviceLog(context.Background(), deviceID, "INFO", "设备添加后首次采集成功")
+	} else {
+		_ = h.repo.AddDeviceLog(context.Background(), deviceID, "ERROR", fmt.Sprintf("设备添加后首次采集失败: %v", err))
+	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":      deviceID,

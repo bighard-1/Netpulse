@@ -1,7 +1,6 @@
 <script setup>
 import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
-import * as echarts from "echarts";
 import { api } from "../services/api";
 
 const props = defineProps({ id: { type: [String, Number], required: true } });
@@ -11,6 +10,7 @@ const loading = ref(false);
 const range = ref([]);
 const chartRef = ref(null);
 const portMeta = ref({ id: props.id, name: route.query.portName || `端口-${props.id}` });
+let echarts = null;
 let chart = null;
 
 const shortcuts = [
@@ -50,6 +50,8 @@ async function loadHistory() {
 
 onMounted(async () => {
   await nextTick();
+  const m = await import("echarts");
+  echarts = m;
   chart = echarts.init(chartRef.value);
   await loadHistory();
   window.addEventListener("resize", resizeChart);

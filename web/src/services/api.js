@@ -22,9 +22,8 @@ export const api = {
     return http.get("/devices");
   },
   async getDeviceById(id) {
-    const res = await http.get("/devices");
-    const list = res.data || [];
-    return list.find((d) => String(d.id) === String(id)) || null;
+    const res = await http.get(`/devices/${id}`);
+    return res.data || null;
   },
   addDevice(payload) {
     return http.post("/devices", payload);

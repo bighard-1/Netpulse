@@ -2,7 +2,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
-import * as echarts from "echarts";
 import { api } from "../services/api";
 
 const props = defineProps({ id: { type: [String, Number], required: true } });
@@ -16,6 +15,7 @@ const portKeyword = ref("");
 const remarkDialogVisible = ref(false);
 const remarkForm = ref({ id: null, name: "", remark: "" });
 const cpuMemRef = ref(null);
+let echarts = null;
 let cpuMemChart = null;
 
 const filteredPorts = computed(() => {
@@ -90,6 +90,8 @@ async function saveRemark() {
 
 onMounted(async () => {
   await nextTick();
+  const m = await import("echarts");
+  echarts = m;
   cpuMemChart = echarts.init(cpuMemRef.value);
   await loadDevice();
   window.addEventListener("resize", resizeChart);

@@ -1,26 +1,23 @@
 import { createRouter, createWebHistory } from "vue-router";
-import DeviceList from "../views/DeviceList.vue";
-import DeviceDetail from "../views/DeviceDetail.vue";
-import PortDetail from "../views/PortDetail.vue";
 
 const routes = [
   {
     path: "/",
     name: "assets",
-    component: DeviceList,
+    component: () => import("../views/DeviceList.vue"),
     meta: { title: "资产列表" }
   },
   {
     path: "/device/:id",
     name: "device-detail",
-    component: DeviceDetail,
+    component: () => import("../views/DeviceDetail.vue"),
     props: true,
     meta: { title: "设备详情" }
   },
   {
     path: "/port/:id",
     name: "port-detail",
-    component: PortDetail,
+    component: () => import("../views/PortDetail.vue"),
     props: true,
     meta: { title: "端口详情" }
   }

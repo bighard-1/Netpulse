@@ -7,6 +7,9 @@ import { api } from "../services/api";
 const router = useRouter();
 const loading = ref(false);
 const devices = ref([]);
+const addVisible = ref(false);
+const addLoading = ref(false);
+const addForm = ref({ ip: "", brand: "H3C", community: "public", remark: "" });
 
 async function loadDevices() {
   loading.value = true;
@@ -24,6 +27,19 @@ async function deleteDevice(id) {
   await loadDevices();
 }
 
+async function addDevice() {
+  addLoading.value = true;
+  try {
+    await api.addDevice(addForm.value);
+    ElMessage.success("资产添加成功");
+    addVisible.value = false;
+    addForm.value = { ip: "", brand: "H3C", community: "public", remark: "" };
+    await loadDevices();
+  } finally {
+    addLoading.value = false;
+  }
+}
+
 function goDetail(row) {
   router.push({ path: `/device/${row.id}`, query: { ip: row.ip } });
 }
@@ -36,7 +52,10 @@ onMounted(loadDevices);
     <template #header>
       <div class="flex items-center justify-between">
         <span class="text-lg font-semibold">资产列表</span>
-        <el-button @click="loadDevices">刷新</el-button>
+        <div class="flex items-center gap-2">
+          <el-button type="primary" @click="addVisible = true">添加资产</el-button>
+          <el-button @click="loadDevices">刷新</el-button>
+        </div>
       </div>
     </template>
 
@@ -59,5 +78,29 @@ onMounted(loadDevices);
         </template>
       </el-table-column>
     </el-table>
+
+    <el-dialog v-model="addVisible" title="添加资产" width="520">
+      <el-form label-position="top">
+        <el-form-item label="设备 IP">
+          <el-input v-model="addForm.ip" placeholder="例如 172.24.134.45" />
+        </el-form-item>
+        <el-form-item label="品牌">
+          <el-select v-model="addForm.brand" class="w-full">
+            <el-option label="H3C" value="H3C" />
+            <el-option label="Huawei" value="Huawei" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="SNMP Community">
+          <el-input v-model="addForm.community" placeholder="默认 public" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="addForm.remark" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="addVisible = false">取消</el-button>
+        <el-button type="primary" :loading="addLoading" @click="addDevice">保存</el-button>
+      </template>
+    </el-dialog>
   </el-card>
 </template>

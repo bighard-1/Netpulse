@@ -10,11 +10,15 @@ import (
 )
 
 const (
-	OIDCPUUsage      = ".1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5"
-	OIDMemoryUsage   = ".1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7"
-	OIDIfName        = ".1.3.6.1.2.1.31.1.1.1.1"
-	OIDIfHCInOctets  = ".1.3.6.1.2.1.31.1.1.1.6"
-	OIDIfHCOutOctets = ".1.3.6.1.2.1.31.1.1.1.10"
+	OIDCPUUsage       = ".1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5"
+	OIDMemoryUsage    = ".1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7"
+	OIDCPUUsageH3C    = ".1.3.6.1.4.1.25506.2.6.1.1.1.1.8"
+	OIDMemoryUsageH3C = ".1.3.6.1.4.1.25506.2.6.1.1.1.1.12"
+	OIDIfName         = ".1.3.6.1.2.1.31.1.1.1.1"
+	OIDIfHCInOctets   = ".1.3.6.1.2.1.31.1.1.1.6"
+	OIDIfHCOutOctets  = ".1.3.6.1.2.1.31.1.1.1.10"
+	OIDIfInOctets     = ".1.3.6.1.2.1.2.2.1.10"
+	OIDIfOutOctets    = ".1.3.6.1.2.1.2.2.1.16"
 )
 
 type InterfaceInfo struct {
@@ -103,14 +107,8 @@ func (c *Collector) PollDevice(ip, community string) (PollResult, error) {
 	}
 	defer client.Conn.Close()
 
-	cpuUsage, err := c.getAverageCPU(client)
-	if err != nil {
-		return PollResult{}, err
-	}
-	memUsage, err := c.getAverageMemory(client)
-	if err != nil {
-		return PollResult{}, err
-	}
+	cpuUsage, _ := c.getAverageCPU(client)
+	memUsage, _ := c.getAverageMemory(client)
 
 	ifNames, err := c.fetchIfNames(client)
 	if err != nil {
@@ -145,16 +143,24 @@ func (c *Collector) PollDevice(ip, community string) (PollResult, error) {
 
 func (c *Collector) getAverageCPU(client *gosnmp.GoSNMP) (float64, error) {
 	pdus, err := client.BulkWalkAll(OIDCPUUsage)
+	if err == nil && len(pdus) > 0 {
+		return averageNumeric(pdus), nil
+	}
+	pdus, err = client.BulkWalkAll(OIDCPUUsageH3C)
 	if err != nil {
-		return 0, fmt.Errorf("walk cpu oid: %w", err)
+		return 0, fmt.Errorf("walk cpu oid failed (huawei+h3c): %w", err)
 	}
 	return averageNumeric(pdus), nil
 }
 
 func (c *Collector) getAverageMemory(client *gosnmp.GoSNMP) (float64, error) {
 	pdus, err := client.BulkWalkAll(OIDMemoryUsage)
+	if err == nil && len(pdus) > 0 {
+		return averageNumeric(pdus), nil
+	}
+	pdus, err = client.BulkWalkAll(OIDMemoryUsageH3C)
 	if err != nil {
-		return 0, fmt.Errorf("walk memory oid: %w", err)
+		return 0, fmt.Errorf("walk memory oid failed (huawei+h3c): %w", err)
 	}
 	return averageNumeric(pdus), nil
 }
@@ -177,8 +183,19 @@ func (c *Collector) fetchIfNames(client *gosnmp.GoSNMP) (map[int]string, error) 
 
 func (c *Collector) fetchCounterMap(client *gosnmp.GoSNMP, oid string) (map[int]uint64, error) {
 	pdus, err := client.BulkWalkAll(oid)
+	if err != nil || len(pdus) == 0 {
+		fallback := ""
+		if oid == OIDIfHCInOctets {
+			fallback = OIDIfInOctets
+		} else if oid == OIDIfHCOutOctets {
+			fallback = OIDIfOutOctets
+		}
+		if fallback != "" {
+			pdus, err = client.BulkWalkAll(fallback)
+		}
+	}
 	if err != nil {
-		return nil, fmt.Errorf("walk counter oid=%s: %w", oid, err)
+		return nil, fmt.Errorf("walk counter oid=%s failed: %w", oid, err)
 	}
 	m := make(map[int]uint64, len(pdus))
 	for _, p := range pdus {
