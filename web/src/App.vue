@@ -25,28 +25,28 @@ const restoreLoading = ref(false);
 const isAdmin = computed(() => currentUser.value?.role === "admin");
 
 const breadcrumbs = computed(() => {
-  if (route.name === "assets") return [{ label: "Assets", to: "/" }];
+  if (route.name === "assets") return [{ label: "资产列表", to: "/" }];
 
   if (route.name === "device-detail") {
-    const name = route.query.ip || `Device-${route.params.id}`;
+    const name = route.query.ip || `设备-${route.params.id}`;
     return [
-      { label: "Assets", to: "/" },
+      { label: "资产列表", to: "/" },
       { label: String(name), to: route.fullPath }
     ];
   }
 
   if (route.name === "port-detail") {
-    const device = route.query.deviceIp || route.query.deviceName || "Device";
-    const port = route.query.portName || `Port-${route.params.id}`;
+    const device = route.query.deviceIp || route.query.deviceName || "设备";
+    const port = route.query.portName || `端口-${route.params.id}`;
     const deviceId = route.query.deviceId;
     return [
-      { label: "Assets", to: "/" },
+      { label: "资产列表", to: "/" },
       { label: String(device), to: deviceId ? `/device/${deviceId}` : "/" },
       { label: String(port), to: route.fullPath }
     ];
   }
 
-  return [{ label: "Assets", to: "/" }];
+  return [{ label: "资产列表", to: "/" }];
 });
 
 async function doLogin() {
@@ -121,17 +121,17 @@ onMounted(() => {
         <div class="flex items-center gap-6">
           <h1 class="text-2xl font-bold text-slate-900">NetPulse</h1>
           <nav class="flex items-center gap-2">
-            <el-button text @click="$router.push('/')">Assets</el-button>
-            <el-button text @click="openAudit">Logs</el-button>
-            <el-button text @click="onBackup">Backup</el-button>
+            <el-button text @click="$router.push('/')">资产</el-button>
+            <el-button text @click="openAudit">审计日志</el-button>
+            <el-button text @click="onBackup">下载备份</el-button>
             <el-upload :auto-upload="false" :show-file-list="false" accept=".gz" :on-change="onRestore" :disabled="restoreLoading">
-              <el-button text>Restore</el-button>
+              <el-button text>恢复数据</el-button>
             </el-upload>
           </nav>
         </div>
 
         <div class="flex items-center gap-2">
-          <el-button v-if="isAdmin" @click="openUsers">User Management</el-button>
+          <el-button v-if="isAdmin" @click="openUsers">用户管理</el-button>
           <el-button type="danger" plain @click="logout">退出</el-button>
         </div>
       </div>

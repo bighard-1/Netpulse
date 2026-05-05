@@ -176,7 +176,8 @@ fun LoginScreen(loading: Boolean, onLogin: (String, String) -> Unit, onBio: () -
 fun HomeScreen(devices: List<DeviceStatus>, loading: Boolean, onRefresh: () -> Unit, onOpen: (Long) -> Unit, onLogout: () -> Unit) {
     val total = devices.size
     val online = devices.count { it.status == "online" }
-    val offline = total - online
+    val offline = devices.count { it.status == "offline" }
+    val unknown = total - online - offline
     val ctx = LocalContext.current
 
     Scaffold(topBar = {
@@ -191,6 +192,7 @@ fun HomeScreen(devices: List<DeviceStatus>, loading: Boolean, onRefresh: () -> U
                     Text("总数 $total")
                     Text("在线 $online", color = Color(0xFF2E7D32))
                     Text("离线 $offline", color = Color(0xFFC62828))
+                    Text("未知 $unknown", color = Color(0xFFD97706))
                 }
             }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -204,7 +206,11 @@ fun HomeScreen(devices: List<DeviceStatus>, loading: Boolean, onRefresh: () -> U
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Box(Modifier.size(10.dp)) {
                                     Surface(
-                                        color = if (d.status == "online") Color(0xFF2E7D32) else Color(0xFFC62828),
+                                        color = when (d.status) {
+                                            "online" -> Color(0xFF2E7D32)
+                                            "offline" -> Color(0xFFC62828)
+                                            else -> Color(0xFFD97706)
+                                        },
                                         shape = MaterialTheme.shapes.small,
                                         modifier = Modifier.fillMaxSize()
                                     ) {}
@@ -299,7 +305,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                     ) {
                         Column(Modifier.padding(UiSpec.cardPadding)) {
                             Text(itf.name, fontWeight = FontWeight.SemiBold)
-                            Text("index: ${itf.index} · 备注: ${itf.remark.ifBlank { "-" }}")
+                            Text("索引: ${itf.index} · 备注: ${itf.remark.ifBlank { "-" }}")
                             Text("点击看流量，长按改备注", color = Color.Gray)
                         }
                     }
@@ -455,13 +461,13 @@ fun MpTrafficChart(points: List<InterfaceHistoryPoint>, modifier: Modifier = Mod
         val inEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficInBps ?: 0.0).toFloat()) }
         val outEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficOutBps ?: 0.0).toFloat()) }
 
-        val inSet = LineDataSet(inEntries, "Inbound").apply {
+        val inSet = LineDataSet(inEntries, "入方向").apply {
             color = android.graphics.Color.parseColor("#2E7D32")
             setDrawCircles(false)
             lineWidth = 1.8f
             mode = LineDataSet.Mode.LINEAR
         }
-        val outSet = LineDataSet(outEntries, "Outbound").apply {
+        val outSet = LineDataSet(outEntries, "出方向").apply {
             color = android.graphics.Color.parseColor("#EF6C00")
             setDrawCircles(false)
             lineWidth = 1.8f
@@ -478,7 +484,7 @@ class TrafficMarkerView(context: Context, private val points: List<InterfaceHist
         if (e == null || points.isEmpty()) return
         val i = e.x.toInt().coerceIn(0, points.lastIndex)
         val p = points[i]
-        tv.text = "${p.timestamp}\nIn: ${(p.trafficInBps ?: 0.0).toLong()} bps\nOut: ${(p.trafficOutBps ?: 0.0).toLong()} bps"
+        tv.text = "${p.timestamp}\n入: ${(p.trafficInBps ?: 0.0).toLong()} bps\n出: ${(p.trafficOutBps ?: 0.0).toLong()} bps"
         super.refreshContent(e, highlight)
     }
     override fun getOffset(): MPPointF = MPPointF(-(width / 2f), -height.toFloat())

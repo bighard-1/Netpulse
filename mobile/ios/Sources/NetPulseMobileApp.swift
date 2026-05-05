@@ -314,7 +314,8 @@ struct LoginView: View {
 struct HomeView: View {
     @EnvironmentObject var vm: AppVM
     private var onlineCount: Int { vm.devices.filter { $0.status == "online" }.count }
-    private var offlineCount: Int { vm.devices.count - onlineCount }
+    private var offlineCount: Int { vm.devices.filter { $0.status == "offline" }.count }
+    private var unknownCount: Int { vm.devices.count - onlineCount - offlineCount }
 
     var body: some View {
         NavigationStack {
@@ -323,6 +324,7 @@ struct HomeView: View {
                     Stat(title: "总数", value: "\(vm.devices.count)", color: .blue)
                     Stat(title: "在线", value: "\(onlineCount)", color: .green)
                     Stat(title: "离线", value: "\(offlineCount)", color: .red)
+                    Stat(title: "未知", value: "\(unknownCount)", color: .orange)
                 }
                 .padding(.horizontal)
 
@@ -334,7 +336,7 @@ struct HomeView: View {
                         ForEach(vm.devices) { d in
                             NavigationLink(value: d.id) {
                                 HStack(spacing: 10) {
-                                    Circle().fill(d.status == "online" ? .green : .red).frame(width: 10, height: 10)
+                                    Circle().fill(statusColor(d.status)).frame(width: 10, height: 10)
                                     VStack(alignment: .leading) {
                                         Text(d.ip).font(.headline)
                                             .onLongPressGesture { UIPasteboard.general.string = d.ip }
@@ -389,11 +391,11 @@ struct DeviceDetailView: View {
             Section("CPU / Memory") {
                 Chart {
                     ForEach(vm.cpu) { p in
-                        LineMark(x: .value("Time", p.timestamp), y: .value("CPU", p.cpu_usage ?? 0))
+                        LineMark(x: .value("时间", p.timestamp), y: .value("CPU", p.cpu_usage ?? 0))
                             .foregroundStyle(.red)
                     }
                     ForEach(vm.mem) { p in
-                        LineMark(x: .value("Time", p.timestamp), y: .value("Memory", p.mem_usage ?? 0))
+                        LineMark(x: .value("时间", p.timestamp), y: .value("内存", p.mem_usage ?? 0))
                             .foregroundStyle(.blue)
                     }
                 }
@@ -413,7 +415,7 @@ struct DeviceDetailView: View {
                     NavigationLink(value: p.id) {
                         VStack(alignment: .leading) {
                             Text(p.name)
-                            Text("index:\(p.index) · \(p.remark.isEmpty ? "-" : p.remark)")
+                            Text("索引:\(p.index) · \(p.remark.isEmpty ? "-" : p.remark)")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                             Text("点击看流量，长按改备注")
@@ -526,9 +528,9 @@ struct PortDetailView: View {
             } else {
                 Chart {
                     ForEach(vm.traffic) { p in
-                        LineMark(x: .value("Time", p.timestamp), y: .value("Inbound", p.traffic_in_bps ?? 0))
+                        LineMark(x: .value("时间", p.timestamp), y: .value("入方向", p.traffic_in_bps ?? 0))
                             .foregroundStyle(.green)
-                        LineMark(x: .value("Time", p.timestamp), y: .value("Outbound", p.traffic_out_bps ?? 0))
+                        LineMark(x: .value("时间", p.timestamp), y: .value("出方向", p.traffic_out_bps ?? 0))
                             .foregroundStyle(.orange)
                     }
                 }
@@ -585,5 +587,16 @@ func logLevelColor(_ level: String) -> Color {
         return .orange
     default:
         return .green
+    }
+}
+
+func statusColor(_ status: String) -> Color {
+    switch status {
+    case "online":
+        return .green
+    case "offline":
+        return .red
+    default:
+        return .orange
     }
 }

@@ -440,9 +440,13 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 		}
 		return nil, fmt.Errorf("get device by id: %w", err)
 	}
-	ds.Status = "offline"
-	if ds.LastMetricAt != nil && time.Since(*ds.LastMetricAt) <= 2*time.Minute {
-		ds.Status = "online"
+	ds.Status = "unknown"
+	if ds.LastMetricAt != nil {
+		if time.Since(*ds.LastMetricAt) <= 5*time.Minute {
+			ds.Status = "online"
+		} else {
+			ds.Status = "offline"
+		}
 	}
 
 	const iq = `
@@ -542,9 +546,13 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		); err != nil {
 			return nil, fmt.Errorf("scan device status: %w", err)
 		}
-		ds.Status = "offline"
-		if ds.LastMetricAt != nil && now.Sub(*ds.LastMetricAt) <= 2*time.Minute {
-			ds.Status = "online"
+		ds.Status = "unknown"
+		if ds.LastMetricAt != nil {
+			if now.Sub(*ds.LastMetricAt) <= 5*time.Minute {
+				ds.Status = "online"
+			} else {
+				ds.Status = "offline"
+			}
 		}
 		out = append(out, ds)
 	}
