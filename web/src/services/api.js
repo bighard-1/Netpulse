@@ -14,6 +14,15 @@ http.interceptors.request.use((config) => {
   return config;
 });
 
+export function getApiError(err, fallback = "请求失败") {
+  return (
+    err?.response?.data?.error ||
+    err?.response?.data?.message ||
+    err?.message ||
+    fallback
+  );
+}
+
 export const api = {
   login(username, password) {
     return http.post("/auth/login", { username, password });
@@ -60,6 +69,18 @@ export const api = {
   },
   createUser(payload) {
     return http.post("/admin/users", payload);
+  },
+  updateUser(id, payload) {
+    return http.put(`/users/${id}`, payload);
+  },
+  deleteUser(id) {
+    return http.delete(`/users/${id}`);
+  },
+  getUserPermissions(id) {
+    return http.get(`/users/${id}/permissions`);
+  },
+  setUserPermissions(id, permissions) {
+    return http.put(`/users/${id}/permissions`, { permissions });
   },
   listAuditLogs() {
     return http.get("/audit/logs");

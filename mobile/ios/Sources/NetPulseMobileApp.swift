@@ -10,6 +10,14 @@ enum UiSpec {
     static let cardRadius: CGFloat = 12
 }
 
+enum NpColor {
+    static let bg = Color(red: 248/255, green: 250/255, blue: 252/255)
+    static let indigo = Color(red: 99/255, green: 102/255, blue: 241/255)
+    static let success = Color(red: 16/255, green: 185/255, blue: 129/255)
+    static let danger = Color(red: 239/255, green: 68/255, blue: 68/255)
+    static let warning = Color(red: 245/255, green: 158/255, blue: 11/255)
+}
+
 struct DeviceStatus: Codable, Identifiable {
     let id: Int64
     let ip: String
@@ -37,6 +45,13 @@ struct DeviceLog: Codable, Identifiable {
     let level: String
     let message: String
     let created_at: String
+}
+
+struct AuditLog: Codable, Identifiable {
+    let id: Int64
+    let action: String
+    let target: String?
+    let timestamp: String
 }
 
 struct DeviceHistoryPoint: Codable, Identifiable {
@@ -69,6 +84,7 @@ struct LoginResponse: Codable {
 final class AppVM: ObservableObject {
     @Published var token: String = KeychainStore.shared.get("netpulse_jwt") ?? ""
     @Published var devices: [DeviceStatus] = []
+    @Published var recentEvents: [AuditLog] = []
     @Published var deviceDetail: DeviceStatus?
     @Published var logs: [DeviceLog] = []
     @Published var cpu: [DeviceHistoryPoint] = []
@@ -84,9 +100,7 @@ final class AppVM: ObservableObject {
 
     private func authorizedRequest(_ url: URL) -> URLRequest {
         var req = URLRequest(url: url)
-        if !token.isEmpty {
-            req.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        if !token.isEmpty { req.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         return req
     }
 
@@ -140,6 +154,7 @@ final class AppVM: ObservableObject {
     func logout() {
         token = ""
         devices = []
+        recentEvents = []
         deviceDetail = nil
         KeychainStore.shared.delete("netpulse_jwt")
     }
@@ -152,6 +167,7 @@ final class AppVM: ObservableObject {
             let req = authorizedRequest(URL(string: "\(baseURL)/devices")!)
             let d = try await dataWithAuth(req)
             devices = try JSONDecoder().decode([DeviceStatus].self, from: d)
+            recentEvents = try await fetchAuditLogs().prefix(5).map { $0 }
         } catch {
             err = "加载设备失败"
         }
@@ -210,10 +226,30 @@ final class AppVM: ObservableObject {
         }
     }
 
+    func updateDeviceRemark(deviceID: Int64, remark: String) async {
+        do {
+            let url = URL(string: "\(baseURL)/devices/\(deviceID)/remark")!
+            var req = authorizedRequest(url)
+            req.httpMethod = "PUT"
+            req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONSerialization.data(withJSONObject: ["remark": remark])
+            _ = try await dataWithAuth(req)
+            await refreshDevices()
+        } catch {
+            err = "更新设备备注失败"
+        }
+    }
+
     private func fetchLogs(deviceID: Int64) async throws -> [DeviceLog] {
         let req = authorizedRequest(URL(string: "\(baseURL)/devices/\(deviceID)/logs")!)
         let d = try await dataWithAuth(req)
         return try JSONDecoder().decode([DeviceLog].self, from: d)
+    }
+
+    private func fetchAuditLogs() async throws -> [AuditLog] {
+        let req = authorizedRequest(URL(string: "\(baseURL)/audit-logs")!)
+        let d = try await dataWithAuth(req)
+        return try JSONDecoder().decode([AuditLog].self, from: d)
     }
 
     private func fetchHistory<T: Codable>(type: String, id: Int64, start: String, end: String) async throws -> [T] {
@@ -280,9 +316,42 @@ struct NetPulseMobileApp: App {
             if vm.token.isEmpty {
                 LoginView().environmentObject(vm)
             } else {
-                HomeView().environmentObject(vm)
+                MainTabView().environmentObject(vm)
             }
         }
+    }
+}
+
+struct MainTabView: View {
+    @EnvironmentObject var vm: AppVM
+
+    var body: some View {
+        TabView {
+            HomeView()
+                .environmentObject(vm)
+                .tabItem {
+                    Label("Assets", systemImage: "rectangle.grid.1x2")
+                }
+
+            NavigationStack {
+                VStack(spacing: 12) {
+                    Text("NetPulse")
+                        .font(.title2.bold())
+                    Text(vm.baseURL)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("退出登录", role: .destructive) { vm.logout() }
+                        .buttonStyle(.borderedProminent)
+                }
+                .padding()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(NpColor.bg)
+            }
+            .tabItem {
+                Label("Me", systemImage: "person.crop.circle")
+            }
+        }
+        .tint(NpColor.indigo)
     }
 }
 
@@ -294,7 +363,8 @@ struct LoginView: View {
 
     var body: some View {
         VStack(spacing: UiSpec.sectionGap) {
-            Text("NetPulse 移动端").font(.title2.bold())
+            Text("NetPulse").font(.title.bold())
+            Text("Modern SaaS Mobile").foregroundStyle(.secondary)
             TextField("用户名", text: $u).textFieldStyle(.roundedBorder)
             SecureField("密码", text: $p).textFieldStyle(.roundedBorder)
             TextField("服务器 API 地址", text: $base).textFieldStyle(.roundedBorder)
@@ -302,64 +372,115 @@ struct LoginView: View {
                 Button("登录") {
                     vm.baseURL = base
                     Task { await vm.login(u: u, p: p) }
-                }.buttonStyle(.borderedProminent)
-                Button("生物识别快速登录") { Task { await vm.biometricLogin() } }.buttonStyle(.bordered)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(NpColor.indigo)
+
+                Button("Face ID / Touch ID") { Task { await vm.biometricLogin() } }
+                    .buttonStyle(.bordered)
             }
             Text("首次登录必须使用用户名密码").font(.footnote).foregroundStyle(.secondary)
             if !vm.err.isEmpty { Text(vm.err).foregroundStyle(.red) }
         }
         .padding(UiSpec.pagePadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(NpColor.bg)
     }
 }
 
 struct HomeView: View {
     @EnvironmentObject var vm: AppVM
+    @State private var editingDevice: DeviceStatus?
+    @State private var editingRemark = ""
+
     private var onlineCount: Int { vm.devices.filter { $0.status == "online" }.count }
-    private var offlineCount: Int { vm.devices.filter { $0.status == "offline" }.count }
-    private var unknownCount: Int { vm.devices.count - onlineCount - offlineCount }
+    private var offlineCount: Int { vm.devices.filter { $0.status != "online" }.count }
+    private var criticalCount: Int { vm.recentEvents.filter { severity(of: $0) == .error }.count }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: UiSpec.sectionGap) {
-                HStack {
-                    Stat(title: "总数", value: "\(vm.devices.count)", color: .blue)
-                    Stat(title: "在线", value: "\(onlineCount)", color: .green)
-                    Stat(title: "离线", value: "\(offlineCount)", color: .red)
-                    Stat(title: "未知", value: "\(unknownCount)", color: .orange)
-                }
-                .padding(.horizontal)
+            ScrollView {
+                VStack(spacing: UiSpec.sectionGap) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            StatCard(title: "Total", value: "\(vm.devices.count)", gradient: [.slate1, .slate2])
+                            StatCard(title: "Online", value: "\(onlineCount)", gradient: [.teal1, .teal2], pulse: true)
+                            StatCard(title: "Offline", value: "\(offlineCount)", gradient: [.red1, .red2])
+                            StatCard(title: "Critical", value: "\(criticalCount)", gradient: [.indigo1, .indigo2])
+                        }
+                        .padding(.horizontal, UiSpec.pagePadding)
+                    }
 
-                List {
-                    if vm.devices.isEmpty {
-                        EmptyStateCard(title: "暂无资产", desc: "请先在 Web 端创建普通用户并添加设备")
-                            .listRowSeparator(.hidden)
-                    } else {
+                    VStack(spacing: 8) {
                         ForEach(vm.devices) { d in
                             NavigationLink(value: d.id) {
-                                HStack(spacing: 10) {
-                                    Circle().fill(statusColor(d.status)).frame(width: 10, height: 10)
-                                    VStack(alignment: .leading) {
-                                        Text(d.ip).font(.headline)
-                                            .onLongPressGesture { UIPasteboard.general.string = d.ip }
-                                        Text("\(d.brand) · \(d.remark.isEmpty ? "未备注" : d.remark)").font(.subheadline).foregroundStyle(.secondary)
-                                        if let reason = d.status_reason, !reason.isEmpty {
-                                            Text(reason).font(.caption).foregroundStyle(.secondary)
-                                        }
-                                    }
+                                DeviceRow(device: d)
+                            }
+                            .buttonStyle(.plain)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button("Edit Remark") {
+                                    editingDevice = d
+                                    editingRemark = d.remark
+                                }
+                                .tint(NpColor.indigo)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, UiSpec.pagePadding)
+
+                    NpCard {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Recent Events").font(.headline)
+                            if vm.recentEvents.isEmpty {
+                                Text("暂无关键事件").foregroundStyle(.secondary)
+                            } else {
+                                ForEach(vm.recentEvents.prefix(5)) { event in
+                                    let sev = severity(of: event)
+                                    Text("[\(sev.rawValue.uppercased())] \(event.action) · \(event.target ?? "-")")
+                                        .font(.footnote)
+                                        .foregroundStyle(severityColor(sev))
+                                }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, UiSpec.pagePadding)
+                }
+                .padding(.vertical, 8)
+            }
+            .background(NpColor.bg)
+            .navigationTitle("Assets")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("刷新") { Task { await vm.refreshDevices() } }
+                }
+            }
+            .navigationDestination(for: Int64.self) { id in
+                DeviceDetailView(deviceID: id).environmentObject(vm)
+            }
+            .task { await vm.refreshDevices() }
+            .refreshable { await vm.refreshDevices() }
+            .sheet(item: $editingDevice) { device in
+                NavigationStack {
+                    Form {
+                        Section("设备") { Text(device.ip) }
+                        Section("备注") { TextField("请输入备注", text: $editingRemark) }
+                    }
+                    .navigationTitle("编辑备注")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("取消") { editingDevice = nil }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("保存") {
+                                Task {
+                                    await vm.updateDeviceRemark(deviceID: device.id, remark: editingRemark.trimmingCharacters(in: .whitespacesAndNewlines))
+                                    editingDevice = nil
                                 }
                             }
                         }
                     }
                 }
-                .listStyle(.insetGrouped)
-                .refreshable { await vm.refreshDevices() }
             }
-            .navigationTitle("资产总览")
-            .navigationDestination(for: Int64.self) { id in
-                DeviceDetailView(deviceID: id).environmentObject(vm)
-            }
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("退出") { vm.logout() } } }
-            .task { await vm.refreshDevices() }
         }
     }
 }
@@ -377,93 +498,89 @@ struct DeviceDetailView: View {
         let list = vm.deviceDetail?.interfaces ?? []
         let key = keyword.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if key.isEmpty { return list }
-        return list.filter {
-            "\($0.id) \($0.index) \($0.name) \($0.remark)".lowercased().contains(key)
-        }
+        return list.filter { "\($0.id) \($0.index) \($0.name) \($0.remark)".lowercased().contains(key) }
     }
 
     var body: some View {
-        List {
-            Section("设备信息") {
-                if let d = vm.deviceDetail {
-                    Text(d.ip)
-                        .onLongPressGesture { UIPasteboard.general.string = d.ip }
-                    Text("\(d.brand) · \(d.remark)")
-                    if let reason = d.status_reason, !reason.isEmpty {
-                        Text("状态说明：\(reason)")
-                            .font(.footnote)
+        ScrollView {
+            VStack(spacing: UiSpec.sectionGap) {
+                NpCard {
+                    if let d = vm.deviceDetail {
+                        HStack {
+                            PulseDot(status: d.status)
+                            Text(d.ip).font(.headline)
+                            Spacer()
+                        }
+                        Text("\(d.brand) · \(d.remark.isEmpty ? "未备注" : d.remark)")
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                 }
-            }
 
-            Section("CPU / 内存") {
-                Chart {
-                    ForEach(vm.cpu) { p in
-                        LineMark(x: .value("时间", p.timestamp), y: .value("CPU", p.cpu_usage ?? 0))
-                            .foregroundStyle(.red)
-                    }
-                    ForEach(vm.mem) { p in
-                        LineMark(x: .value("时间", p.timestamp), y: .value("内存", p.mem_usage ?? 0))
-                            .foregroundStyle(.blue)
-                    }
-                }
-                .frame(height: 260)
-            }
-
-            Section("端口搜索") {
-                TextField("搜索端口 id/索引/名称/备注", text: $keyword)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            Section("端口列表") {
-                if filteredPorts.isEmpty {
-                    EmptyStateCard(title: "暂无端口", desc: "SNMP 同步成功后会显示端口列表")
-                }
-                ForEach(filteredPorts) { p in
-                    NavigationLink(value: p.id) {
-                        VStack(alignment: .leading) {
-                            Text(p.name)
-                            Text("索引:\(p.index) · \(p.remark.isEmpty ? "-" : p.remark)")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                            Text("点击看流量，长按改备注")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                NpCard {
+                    Text("CPU / 内存").font(.headline)
+                    if vm.loading {
+                        ShimmerRect(height: 240)
+                    } else {
+                        Chart {
+                            ForEach(vm.cpu) { p in
+                                LineMark(x: .value("时间", p.timestamp), y: .value("CPU", p.cpu_usage ?? 0))
+                                    .foregroundStyle(NpColor.indigo)
+                            }
+                            ForEach(vm.mem) { p in
+                                LineMark(x: .value("时间", p.timestamp), y: .value("内存", p.mem_usage ?? 0))
+                                    .foregroundStyle(NpColor.success)
+                            }
                         }
-                    }
-                    .contextMenu {
-                        Button("编辑端口备注") {
-                            editingPort = p
-                            editingRemark = p.remark
-                        }
+                        .frame(height: 260)
                     }
                 }
-            }
 
-            Section("最近日志") {
-                if vm.logs.isEmpty {
-                    Text("暂无日志").foregroundStyle(.secondary)
+                NpCard {
+                    TextField("搜索端口", text: $keyword).textFieldStyle(.roundedBorder)
+                }
+
+                if vm.loading {
+                    ForEach(0..<3, id: \.self) { _ in ShimmerRect(height: 80) }
                 } else {
-                    ForEach(vm.logs.prefix(100)) { log in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("[\(log.level)]")
-                                .font(.caption.bold())
-                                .foregroundStyle(logLevelColor(log.level))
-                            Text(log.message).font(.footnote)
-                            Text(log.created_at).font(.caption2).foregroundStyle(.secondary)
+                    ForEach(filteredPorts) { p in
+                        NavigationLink(value: p.id) {
+                            NpCard {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(p.name)
+                                    Text("索引:\(p.index) · \(p.remark.isEmpty ? "-" : p.remark)")
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button("编辑端口备注") {
+                                editingPort = p
+                                editingRemark = p.remark
+                            }
                         }
                     }
                 }
+
+                NpCard {
+                    Text("Recent Events").font(.headline)
+                    ForEach(vm.logs.prefix(5)) { log in
+                        Text("[\(log.level)] \(log.message)")
+                            .font(.footnote)
+                            .foregroundStyle(logLevelColor(log.level))
+                    }
+                }
             }
+            .padding(UiSpec.pagePadding)
         }
-        .navigationTitle("设备详情")
+        .background(NpColor.bg)
+        .navigationTitle("Device Detail")
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(for: Int64.self) { portID in
-            PortDetailView(deviceID: deviceID, portID: portID)
-                .environmentObject(vm)
+            PortDetailView(deviceID: deviceID, portID: portID).environmentObject(vm)
         }
-        .toolbar { ToolbarItem(placement: .topBarLeading) { Text("返回设备").font(.footnote).foregroundStyle(.secondary) } }
         .task {
             await vm.fetchDeviceDetail(deviceID: deviceID)
             dateEnd = Date()
@@ -472,8 +589,6 @@ struct DeviceDetailView: View {
         }
         .refreshable {
             await vm.fetchDeviceDetail(deviceID: deviceID)
-            dateEnd = Date()
-            dateStart = Calendar.current.date(byAdding: .day, value: -1, to: dateEnd) ?? dateEnd
             await vm.fetchDeviceHistory(deviceID: deviceID, start: dateStart, end: dateEnd)
         }
         .sheet(item: $editingPort) { port in
@@ -484,19 +599,11 @@ struct DeviceDetailView: View {
                 }
                 .navigationTitle("编辑端口备注")
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("取消") { editingPort = nil }
-                    }
+                    ToolbarItem(placement: .cancellationAction) { Button("取消") { editingPort = nil } }
                     ToolbarItem(placement: .confirmationAction) {
                         Button("保存") {
                             Task {
-                                await vm.updateInterfaceRemark(
-                                    interfaceID: port.id,
-                                    remark: editingRemark.trimmingCharacters(in: .whitespacesAndNewlines),
-                                    deviceID: deviceID,
-                                    start: dateStart,
-                                    end: dateEnd
-                                )
+                                await vm.updateInterfaceRemark(interfaceID: port.id, remark: editingRemark.trimmingCharacters(in: .whitespacesAndNewlines), deviceID: deviceID, start: dateStart, end: dateEnd)
                                 editingPort = nil
                             }
                         }
@@ -526,46 +633,142 @@ struct PortDetailView: View {
             }
             .padding(.horizontal)
 
-            Button("刷新流量") {
-                Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
-            }
-            .buttonStyle(.borderedProminent)
+            Button("刷新流量") { Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) } }
+                .buttonStyle(.borderedProminent)
+                .tint(NpColor.indigo)
 
-            if vm.traffic.isEmpty {
+            if vm.loading {
+                ShimmerRect(height: 360)
+                    .padding(.horizontal)
+            } else if vm.traffic.isEmpty {
                 EmptyStateCard(title: "暂无流量数据", desc: "请调整时间范围后刷新")
                     .padding(.horizontal, UiSpec.pagePadding)
             } else {
                 Chart {
                     ForEach(vm.traffic) { p in
                         LineMark(x: .value("时间", p.timestamp), y: .value("入方向", p.traffic_in_bps ?? 0))
-                            .foregroundStyle(.green)
+                            .foregroundStyle(NpColor.indigo)
                         LineMark(x: .value("时间", p.timestamp), y: .value("出方向", p.traffic_out_bps ?? 0))
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(NpColor.success)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(.horizontal)
             }
         }
-        .navigationTitle("端口流量")
+        .background(NpColor.bg)
+        .navigationTitle("Port Detail")
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
     }
 }
 
-struct Stat: View {
+struct NpCard<Content: View>: View {
+    @ViewBuilder var content: Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) { content }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: UiSpec.cardRadius))
+            .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 2)
+    }
+}
+
+struct ShimmerRect: View {
+    let height: CGFloat
+    @State private var opacity: Double = 0.35
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: UiSpec.cardRadius)
+            .fill(Color.gray.opacity(opacity))
+            .frame(height: height)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                    opacity = 0.72
+                }
+            }
+    }
+}
+
+struct PulseDot: View {
+    let status: String
+    @State private var scale: CGFloat = 0.85
+
+    var body: some View {
+        let color = status == "online" ? NpColor.success : (status == "offline" ? NpColor.danger : NpColor.warning)
+        Circle()
+            .fill(color)
+            .frame(width: 10, height: 10)
+            .overlay(Circle().stroke(color.opacity(0.45), lineWidth: 6).scaleEffect(scale).opacity(1.6 - scale))
+            .onAppear {
+                withAnimation(.easeOut(duration: 1.2).repeatForever(autoreverses: false)) {
+                    scale = 1.8
+                }
+            }
+    }
+}
+
+struct StatCard: View {
     let title: String
     let value: String
-    let color: Color
+    let gradient: [Color]
+    var pulse: Bool = false
+
     var body: some View {
-        VStack {
-            Text(value).font(.title3.bold()).foregroundStyle(color)
-            Text(title).font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.caption).foregroundStyle(.white.opacity(0.9))
+            HStack(spacing: 6) {
+                if pulse { PulseDot(status: "online") }
+                Text(value).font(.title3.bold()).foregroundStyle(.white)
+            }
         }
-        .frame(maxWidth: .infinity)
-        .padding(10)
-        .background(.thinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .padding(12)
+        .frame(width: 150, alignment: .leading)
+        .background(LinearGradient(colors: gradient, startPoint: .topLeading, endPoint: .bottomTrailing))
+        .clipShape(RoundedRectangle(cornerRadius: UiSpec.cardRadius))
+        .shadow(color: .black.opacity(0.1), radius: 6, x: 0, y: 2)
+    }
+}
+
+extension Color {
+    static let slate1 = Color(red: 51/255, green: 65/255, blue: 85/255)
+    static let slate2 = Color(red: 30/255, green: 41/255, blue: 59/255)
+    static let teal1 = Color(red: 15/255, green: 118/255, blue: 110/255)
+    static let teal2 = Color(red: 6/255, green: 95/255, blue: 70/255)
+    static let red1 = Color(red: 153/255, green: 27/255, blue: 27/255)
+    static let red2 = Color(red: 127/255, green: 29/255, blue: 29/255)
+    static let indigo1 = Color(red: 124/255, green: 58/255, blue: 237/255)
+    static let indigo2 = Color(red: 79/255, green: 70/255, blue: 229/255)
+}
+
+enum Severity: String {
+    case info, warning, error
+}
+
+func severity(of event: AuditLog) -> Severity {
+    let txt = (event.action + " " + (event.target ?? "")).uppercased()
+    if txt.contains("OFFLINE") || txt.contains("ERROR") || txt.contains("RESTORE") { return .error }
+    if txt.contains("WARN") || txt.contains("BGP") || txt.contains("OSPF") || txt.contains("FLAP") { return .warning }
+    return .info
+}
+
+func severityColor(_ s: Severity) -> Color {
+    switch s {
+    case .error: return NpColor.danger
+    case .warning: return NpColor.warning
+    case .info: return NpColor.success
+    }
+}
+
+func logLevelColor(_ level: String) -> Color {
+    switch level.uppercased() {
+    case "ERROR":
+        return NpColor.danger
+    case "WARNING", "WARN":
+        return NpColor.warning
+    default:
+        return NpColor.success
     }
 }
 
@@ -577,35 +780,36 @@ struct EmptyStateCard: View {
         VStack(spacing: 8) {
             Image(systemName: "tray")
                 .font(.title2)
-                .foregroundStyle(.blue)
+                .foregroundStyle(NpColor.indigo)
             Text(title).font(.headline)
             Text(desc).font(.footnote).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
         .padding(20)
-        .background(Color(.systemGray6))
+        .background(Color.white)
         .clipShape(RoundedRectangle(cornerRadius: UiSpec.cardRadius))
+        .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 2)
     }
 }
 
-func logLevelColor(_ level: String) -> Color {
-    switch level.uppercased() {
-    case "ERROR":
-        return .red
-    case "WARNING", "WARN":
-        return .orange
-    default:
-        return .green
-    }
-}
-
-func statusColor(_ status: String) -> Color {
-    switch status {
-    case "online":
-        return .green
-    case "offline":
-        return .red
-    default:
-        return .orange
+struct DeviceRow: View {
+    let device: DeviceStatus
+    var body: some View {
+        NpCard {
+            HStack(spacing: 8) {
+                PulseDot(status: device.status)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(device.ip)
+                        .font(.headline)
+                        .onLongPressGesture { UIPasteboard.general.string = device.ip }
+                    Text("\(device.brand) · \(device.remark.isEmpty ? "未备注" : device.remark)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    if let reason = device.status_reason, !reason.isEmpty {
+                        Text(reason).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
     }
 }

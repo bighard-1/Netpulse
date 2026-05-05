@@ -70,6 +70,14 @@ class NetPulseClient(
         }
     }
 
+    fun fetchAuditLogs(): List<AuditLog> {
+        val req = reqBuilder("/audit-logs").get().build()
+        http.newCall(req).execute().use { resp ->
+            ensureOk(resp.code, "获取审计日志失败")
+            return json.decodeFromString(resp.body!!.string())
+        }
+    }
+
     fun fetchDeviceHistory(type: String, deviceID: Long, start: String, end: String): List<DeviceHistoryPoint> {
         val s = URLEncoder.encode(start, StandardCharsets.UTF_8)
         val e = URLEncoder.encode(end, StandardCharsets.UTF_8)
@@ -96,6 +104,15 @@ class NetPulseClient(
         val req = reqBuilder("/interfaces/$interfaceID/remark").put(body).build()
         http.newCall(req).execute().use { resp ->
             ensureOk(resp.code, "更新端口备注失败")
+        }
+    }
+
+    fun updateDeviceRemark(deviceID: Long, remark: String) {
+        val body = """{"remark":${json.encodeToString(remark)}}"""
+            .toRequestBody("application/json".toMediaType())
+        val req = reqBuilder("/devices/$deviceID/remark").put(body).build()
+        http.newCall(req).execute().use { resp ->
+            ensureOk(resp.code, "更新设备备注失败")
         }
     }
 }

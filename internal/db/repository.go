@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -222,6 +223,13 @@ CREATE TABLE IF NOT EXISTS role_permissions (
     role VARCHAR(32) NOT NULL,
     permission VARCHAR(128) NOT NULL,
     UNIQUE(role, permission)
+);
+
+CREATE TABLE IF NOT EXISTS user_permissions (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    permission VARCHAR(128) NOT NULL,
+    UNIQUE(user_id, permission)
 );
 
 CREATE TABLE IF NOT EXISTS config_snapshots (
@@ -905,9 +913,16 @@ func (r *Repository) decryptOpt(v string) string {
 	return string(plain)
 }
 
-func (r *Repository) HasPermission(ctx context.Context, role, permission string) (bool, error) {
+func (r *Repository) HasPermission(ctx context.Context, userID int64, role, permission string) (bool, error) {
 	if role == "admin" {
 		return true, nil
+	}
+	if userID > 0 {
+		const uq = `SELECT EXISTS(SELECT 1 FROM user_permissions WHERE user_id=$1 AND permission=$2);`
+		var ok bool
+		if err := r.db.QueryRowContext(ctx, uq, userID, permission).Scan(&ok); err == nil && ok {
+			return true, nil
+		}
 	}
 	const q = `SELECT EXISTS(SELECT 1 FROM role_permissions WHERE role=$1 AND (permission=$2 OR permission='*'));`
 	var ok bool
@@ -915,6 +930,57 @@ func (r *Repository) HasPermission(ctx context.Context, role, permission string)
 		return false, fmt.Errorf("check permission: %w", err)
 	}
 	return ok, nil
+}
+
+func (r *Repository) UpdateUser(ctx context.Context, id int64, username, role string, passwordHash *string) error {
+	if passwordHash != nil && *passwordHash != "" {
+		_, err := r.db.ExecContext(ctx, `UPDATE users SET username=$2, role=$3, password_hash=$4 WHERE id=$1;`, id, username, role, *passwordHash)
+		return err
+	}
+	_, err := r.db.ExecContext(ctx, `UPDATE users SET username=$2, role=$3 WHERE id=$1;`, id, username, role)
+	return err
+}
+
+func (r *Repository) DeleteUser(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM users WHERE id=$1;`, id)
+	return err
+}
+
+func (r *Repository) ListUserPermissions(ctx context.Context, userID int64) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT permission FROM user_permissions WHERE user_id=$1 ORDER BY permission;`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (r *Repository) ReplaceUserPermissions(ctx context.Context, userID int64, permissions []string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM user_permissions WHERE user_id=$1;`, userID); err != nil {
+		return err
+	}
+	for _, p := range permissions {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO user_permissions(user_id,permission) VALUES($1,$2) ON CONFLICT (user_id,permission) DO NOTHING;`, userID, p); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (r *Repository) CreateTemplate(ctx context.Context, t DeviceTemplate) (int64, error) {

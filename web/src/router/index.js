@@ -5,7 +5,25 @@ const routes = [
     path: "/",
     name: "assets",
     component: () => import("../views/DeviceList.vue"),
-    meta: { title: "资产列表" }
+    meta: { title: "资产总览" }
+  },
+  {
+    path: "/logs",
+    name: "global-logs",
+    component: () => import("../views/GlobalLogs.vue"),
+    meta: { title: "全局日志" }
+  },
+  {
+    path: "/topology",
+    name: "topology",
+    component: () => import("../views/Topology.vue"),
+    meta: { title: "拓扑" }
+  },
+  {
+    path: "/settings",
+    name: "system-settings",
+    component: () => import("../views/SystemSettings.vue"),
+    meta: { title: "系统设置" }
   },
   {
     path: "/device/:id",

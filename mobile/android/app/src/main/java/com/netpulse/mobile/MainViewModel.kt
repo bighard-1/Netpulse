@@ -44,6 +44,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _logs = MutableStateFlow<List<DeviceLog>>(emptyList())
     val logs: StateFlow<List<DeviceLog>> = _logs
+    private val _auditLogs = MutableStateFlow<List<AuditLog>>(emptyList())
+    val auditLogs: StateFlow<List<AuditLog>> = _auditLogs
 
     fun saveBaseUrl(url: String) {
         base = url.trim().ifBlank { "http://119.40.55.18:18080/api" }
@@ -97,6 +99,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _loading.value = true
             try {
                 _devices.value = withContext(Dispatchers.IO) { client.fetchDevices() }
+                _auditLogs.value = withContext(Dispatchers.IO) { client.fetchAuditLogs() }.take(5)
             } catch (e: Exception) {
                 handleApiError(e, "加载设备失败")
             } finally {
@@ -149,6 +152,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 loadDeviceDetail(deviceId, start, end)
             } catch (ex: Exception) {
                 handleApiError(ex, "更新端口备注失败")
+            }
+        }
+    }
+
+    fun updateDeviceRemark(deviceId: Long, remark: String) {
+        if (_token.value.isBlank()) return
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { client.updateDeviceRemark(deviceId, remark) }
+                _message.value = "设备备注已更新"
+                refreshDevices()
+            } catch (ex: Exception) {
+                handleApiError(ex, "更新设备备注失败")
             }
         }
     }

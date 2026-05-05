@@ -59,6 +59,10 @@ func (h *Handler) Router() http.Handler {
 		pr.With(h.adminOnly).Get("/api/audit/logs", h.handleAuditLogs)
 		pr.With(h.adminOnly).Get("/api/users", h.handleListUsers)
 		pr.With(h.adminOnly).Post("/api/users", h.handleCreateUser)
+		pr.With(h.adminOnly).Put("/api/users/{id}", h.handleUpdateUser)
+		pr.With(h.adminOnly).Delete("/api/users/{id}", h.handleDeleteUser)
+		pr.With(h.adminOnly).Get("/api/users/{id}/permissions", h.handleListUserPermissions)
+		pr.With(h.adminOnly).Put("/api/users/{id}/permissions", h.handleReplaceUserPermissions)
 		pr.With(h.adminOnly).Get("/api/admin/users", h.handleListUsers)
 		pr.With(h.adminOnly).Post("/api/admin/users", h.handleCreateUser)
 		pr.With(h.adminOnly).Get("/api/templates", h.handleListTemplates)
@@ -457,6 +461,101 @@ func (h *Handler) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, users)
 }
 
+type updateUserRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Role     string `json:"role"`
+}
+
+func (h *Handler) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	id, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	var req updateUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Username == "" {
+		writeError(w, http.StatusBadRequest, "username required")
+		return
+	}
+	if req.Role != "admin" && req.Role != "user" {
+		req.Role = "user"
+	}
+	var hashPtr *string
+	if req.Password != "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "hash error")
+			return
+		}
+		s := string(hash)
+		hashPtr = &s
+	}
+	if err := h.repo.UpdateUser(r.Context(), id, req.Username, req.Role, hashPtr); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "user updated"})
+}
+
+func (h *Handler) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	id, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	u := currentUser(r.Context())
+	if u.ID == id {
+		writeError(w, http.StatusBadRequest, "cannot delete self")
+		return
+	}
+	if err := h.repo.DeleteUser(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "user deleted"})
+}
+
+func (h *Handler) handleListUserPermissions(w http.ResponseWriter, r *http.Request) {
+	id, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	items, err := h.repo.ListUserPermissions(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"permissions": items})
+}
+
+type userPermissionsReq struct {
+	Permissions []string `json:"permissions"`
+}
+
+func (h *Handler) handleReplaceUserPermissions(w http.ResponseWriter, r *http.Request) {
+	id, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	var req userPermissionsReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := h.repo.ReplaceUserPermissions(r.Context(), id, req.Permissions); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "permissions updated"})
+}
+
 func parseIDParam(r *http.Request, name string) (int64, error) {
 	return strconv.ParseInt(chi.URLParam(r, name), 10, 64)
 }
@@ -509,7 +608,7 @@ func (h *Handler) requirePermission(permission string) func(http.Handler) http.H
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			u := currentUser(r.Context())
-			ok, err := h.repo.HasPermission(r.Context(), u.Role, permission)
+			ok, err := h.repo.HasPermission(r.Context(), u.ID, u.Role, permission)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "permission check failed")
 				return

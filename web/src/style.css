@@ -2,7 +2,232 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+:root {
+  --np-bg: #f8fafc;
+  --np-sidebar: #0f172a;
+  --np-primary: #6366f1;
+  --np-success: #10b981;
+  --np-danger: #ef4444;
+  --np-warning: #f59e0b;
+  --np-card-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
 }
 
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  min-height: 100%;
+  background: var(--np-bg);
+  color: #0f172a;
+  font-family: "Manrope", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
+.np-app {
+  min-height: 100vh;
+  display: flex;
+  background: var(--np-bg);
+}
+
+.sidebar {
+  width: 260px;
+  background-color: var(--np-sidebar);
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.2s ease;
+  z-index: 30;
+}
+
+.np-menu {
+  border-right: none !important;
+}
+
+.np-menu .el-menu-item {
+  margin: 4px 10px;
+  border-radius: 10px;
+}
+
+.np-menu .el-menu-item.is-active {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.5), rgba(59, 130, 246, 0.35));
+}
+
+.np-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.np-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(248, 250, 252, 0.92);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid #e2e8f0;
+  padding: 16px 24px;
+}
+
+.np-content {
+  padding: 24px;
+  overflow-x: auto;
+}
+
+.el-card {
+  border: none !important;
+  border-radius: 12px !important;
+  box-shadow: var(--np-card-shadow) !important;
+  background: #ffffff;
+}
+
+.np-borderless-table .el-table__inner-wrapper::before,
+.np-borderless-table::before {
+  display: none;
+}
+
+.np-borderless-table .el-table__cell {
+  border-bottom: none !important;
+}
+
+@keyframes pulse-green {
+  0% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(16, 185, 129, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+
+.status-dot-online {
+  width: 8px;
+  height: 8px;
+  background: var(--np-success);
+  border-radius: 50%;
+  animation: pulse-green 2s infinite;
+}
+
+.log-item {
+  border-left: 3px solid transparent;
+  transition: all 0.2s;
+}
+
+.log-item:hover {
+  background: #f1f5f9;
+}
+
+.log-error {
+  border-left-color: var(--np-danger);
+  background: #fef2f2;
+}
+
+.log-warning {
+  border-left-color: var(--np-warning);
+  background: #fffbeb;
+}
+
+.np-stat {
+  color: #fff;
+}
+
+.np-stat-total {
+  background: linear-gradient(135deg, #334155, #1e293b);
+}
+
+.np-stat-online {
+  background: linear-gradient(135deg, #0f766e, #065f46);
+}
+
+.np-stat-offline {
+  background: linear-gradient(135deg, #7f1d1d, #991b1b);
+}
+
+.np-stat-latency {
+  background: linear-gradient(135deg, #1d4ed8, #3730a3);
+}
+
+.np-stat-title {
+  font-size: 13px;
+  opacity: 0.9;
+}
+
+.np-stat-value {
+  margin-top: 10px;
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.np-login-dialog .el-dialog {
+  border-radius: 14px;
+  overflow: hidden;
+  max-width: calc(100vw - 24px);
+}
+
+.np-login-dialog .el-dialog__header {
+  background: linear-gradient(135deg, #0f172a, #1e293b);
+  margin: 0;
+  padding: 16px 20px;
+}
+
+.np-login-dialog .el-dialog__title {
+  color: #fff;
+  font-weight: 600;
+}
+
+.np-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  z-index: 20;
+}
+
+.np-menu-trigger {
+  min-width: 64px;
+}
+
+.el-dialog {
+  max-width: calc(100vw - 24px);
+}
+
+@media (max-width: 1024px) {
+  .sidebar {
+    width: 210px;
+  }
+
+  .np-content {
+    padding: 16px;
+  }
+}
+
+@media (max-width: 959px) {
+  .sidebar.mobile {
+    position: fixed;
+    left: 0;
+    transform: translateX(-100%);
+    width: min(82vw, 280px);
+  }
+
+  .sidebar.mobile.open {
+    transform: translateX(0);
+  }
+
+  .np-topbar {
+    padding: 12px 14px;
+  }
+
+  .np-content {
+    padding: 12px;
+  }
+
+  .np-stat-value {
+    font-size: 26px;
+  }
+}

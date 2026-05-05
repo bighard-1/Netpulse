@@ -9,14 +9,18 @@ import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
-import androidx.compose.animation.AnimatedContentTransitionScope
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
@@ -24,10 +28,15 @@ import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -39,6 +48,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.github.mikephil.charting.charts.LineChart
@@ -55,7 +65,12 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Date
 
-private object UiSpec {
+private object Np {
+    val Bg = Color(0xFFF8FAFC)
+    val Indigo = Color(0xFF6366F1)
+    val Success = Color(0xFF10B981)
+    val Danger = Color(0xFFEF4444)
+    val Warning = Color(0xFFF59E0B)
     val screenPadding = 16.dp
     val sectionGap = 12.dp
     val cardPadding = 14.dp
@@ -68,8 +83,10 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
-                NetPulseApp(vm = vm, onBiometricLogin = { triggerBiometricLogin() })
+            MaterialTheme(colorScheme = lightColorScheme(primary = Np.Indigo, background = Np.Bg)) {
+                Surface(color = Np.Bg) {
+                    NetPulseApp(vm = vm, onBiometricLogin = { triggerBiometricLogin() })
+                }
             }
         }
     }
@@ -97,55 +114,77 @@ class MainActivity : FragmentActivity() {
 fun NetPulseApp(vm: MainViewModel, onBiometricLogin: () -> Unit) {
     val nav = rememberNavController()
     val token by vm.token.collectAsStateWithLifecycle()
-    val devices by vm.devices.collectAsStateWithLifecycle()
     val msg by vm.message.collectAsStateWithLifecycle()
     val loading by vm.loading.collectAsStateWithLifecycle()
-
-    LaunchedEffect(token) { if (token.isNotBlank()) vm.refreshDevices() }
     val snackState = remember { SnackbarHostState() }
+
     LaunchedEffect(msg) { if (msg.isNotBlank()) snackState.showSnackbar(msg) }
     LaunchedEffect(token) {
         if (token.isBlank()) nav.navigate("login") { popUpTo(0) }
         else if (nav.currentDestination?.route == "login") nav.navigate("home") { popUpTo("login") { inclusive = true } }
     }
 
-    Scaffold(snackbarHost = { SnackbarHost(hostState = snackState) }) {
-        NavHost(navController = nav, startDestination = if (token.isBlank()) "login" else "home") {
-            composable("login") {
-                LoginScreen(
-                    loading = loading,
-                    onLogin = { u, p -> vm.login(u, p) },
-                    onBio = onBiometricLogin,
-                    onSaveBase = { vm.saveBaseUrl(it) },
-                    hint = "默认地址: http://119.40.55.18:18080/api"
-                )
-            }
-            composable(
-                route = "home",
-                enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Left, tween(220)) },
-                exitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Left, tween(220)) }
-            ) {
-                HomeScreen(devices, loading, vm::refreshDevices, { id -> nav.navigate("device/$id") }, vm::logout)
-            }
-            composable(
-                route = "device/{id}",
-                arguments = listOf(navArgument("id") { type = NavType.LongType }),
-                enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Left, tween(220)) },
-                popExitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Right, tween(220)) }
-            ) { backStack ->
-                val id = backStack.arguments?.getLong("id") ?: 0L
-                DeviceDetailScreen(id, vm, onBack = { nav.popBackStack() }, onOpenPort = { portId -> nav.navigate("port/$portId") })
-            }
-            composable(
-                route = "port/{id}",
-                arguments = listOf(navArgument("id") { type = NavType.LongType }),
-                enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Left, tween(220)) },
-                popExitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Right, tween(220)) }
-            ) { backStack ->
-                val id = backStack.arguments?.getLong("id") ?: 0L
-                PortDetailScreen(id, vm, onBack = { nav.popBackStack() })
+    Scaffold(snackbarHost = { SnackbarHost(hostState = snackState) }) { p ->
+        Box(Modifier.padding(p)) {
+            NavHost(navController = nav, startDestination = if (token.isBlank()) "login" else "home") {
+                composable("login") {
+                    LoginScreen(
+                        loading = loading,
+                        onLogin = { u, pw -> vm.login(u, pw) },
+                        onBio = onBiometricLogin,
+                        onSaveBase = vm::saveBaseUrl,
+                        hint = "默认地址: http://119.40.55.18:18080/api"
+                    )
+                }
+                composable("home") { MainShell(vm = vm, nav = nav) }
+                composable("device/{id}", arguments = listOf(navArgument("id") { type = NavType.LongType })) {
+                    val id = it.arguments?.getLong("id") ?: 0L
+                    DeviceDetailScreen(id, vm, onBack = { nav.popBackStack() }, onOpenPort = { portId -> nav.navigate("port/$portId") })
+                }
+                composable("port/{id}", arguments = listOf(navArgument("id") { type = NavType.LongType })) {
+                    val id = it.arguments?.getLong("id") ?: 0L
+                    PortDetailScreen(id, vm, onBack = { nav.popBackStack() })
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun MainShell(vm: MainViewModel, nav: androidx.navigation.NavHostController) {
+    val devices by vm.devices.collectAsStateWithLifecycle()
+    val loading by vm.loading.collectAsStateWithLifecycle()
+    val auditLogs by vm.auditLogs.collectAsStateWithLifecycle()
+    val entry by nav.currentBackStackEntryAsState()
+    val current = entry?.destination?.route ?: "home-tab"
+
+    Scaffold(
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(
+                    selected = current == "home-tab" || current == "home",
+                    onClick = {},
+                    icon = { Icon(Icons.Default.Home, contentDescription = null) },
+                    label = { Text("资产") }
+                )
+                NavigationBarItem(
+                    selected = current == "me-tab",
+                    onClick = { vm.logout() },
+                    icon = { Icon(Icons.Default.Person, contentDescription = null) },
+                    label = { Text("退出") }
+                )
+            }
+        }
+    ) { p ->
+        HomeScreen(
+            devices = devices,
+            loading = loading,
+            recentEvents = auditLogs,
+            onRefresh = vm::refreshDevices,
+            onOpen = { id -> nav.navigate("device/$id") },
+            onEditRemark = vm::updateDeviceRemark,
+            modifier = Modifier.padding(p)
+        )
     }
 }
 
@@ -154,90 +193,129 @@ fun LoginScreen(loading: Boolean, onLogin: (String, String) -> Unit, onBio: () -
     var u by remember { mutableStateOf("") }
     var p by remember { mutableStateOf("") }
     var base by remember { mutableStateOf("http://119.40.55.18:18080/api") }
-    Column(Modifier.fillMaxSize().padding(UiSpec.screenPadding), verticalArrangement = Arrangement.Center) {
-        Text("NetPulse 移动端", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(UiSpec.sectionGap))
+    Column(Modifier.fillMaxSize().padding(Np.screenPadding), verticalArrangement = Arrangement.Center) {
+        Text("NetPulse", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text("Modern SaaS Mobile", color = Color.Gray)
+        Spacer(Modifier.height(Np.sectionGap))
         OutlinedTextField(u, { u = it }, label = { Text("用户名") }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(p, { p = it }, label = { Text("密码") }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(base, { base = it }, label = { Text("服务器 API 地址") }, modifier = Modifier.fillMaxWidth())
         Text(hint, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-        Spacer(Modifier.height(UiSpec.sectionGap))
+        Spacer(Modifier.height(Np.sectionGap))
         Button(onClick = { onSaveBase(base); onLogin(u, p) }, modifier = Modifier.fillMaxWidth(), enabled = !loading) { Text("登录") }
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = onBio, modifier = Modifier.fillMaxWidth()) { Text("生物识别快速登录") }
+        OutlinedButton(onClick = onBio, modifier = Modifier.fillMaxWidth()) { Text("Face ID / Touch ID") }
         Text("首次登录必须输入用户名密码", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun HomeScreen(devices: List<DeviceStatus>, loading: Boolean, onRefresh: () -> Unit, onOpen: (Long) -> Unit, onLogout: () -> Unit) {
+fun HomeScreen(
+    devices: List<DeviceStatus>,
+    loading: Boolean,
+    recentEvents: List<AuditLog>,
+    onRefresh: () -> Unit,
+    onOpen: (Long) -> Unit,
+    onEditRemark: (Long, String) -> Unit,
+    modifier: Modifier = Modifier
+) {
     val total = devices.size
     val online = devices.count { it.status == "online" }
-    val offline = devices.count { it.status == "offline" }
-    val unknown = total - online - offline
+    val offline = devices.count { it.status == "offline" || it.status == "unknown" }
+    val critical = recentEvents.count { severityOf(it) == "error" }
     val ctx = LocalContext.current
+    var editingDevice by remember { mutableStateOf<DeviceStatus?>(null) }
+    var newRemark by remember { mutableStateOf("") }
 
-    Scaffold(topBar = {
-        TopAppBar(title = { Text("资产总览") }, actions = {
-            TextButton(onClick = onRefresh) { Text("刷新") }
-            TextButton(onClick = onLogout) { Text("退出") }
-        })
-    }) { p ->
-        Column(Modifier.padding(p).fillMaxSize().padding(UiSpec.screenPadding), verticalArrangement = Arrangement.spacedBy(UiSpec.sectionGap)) {
-            Surface(tonalElevation = 2.dp, shape = MaterialTheme.shapes.medium) {
-                Row(Modifier.fillMaxWidth().padding(UiSpec.cardPadding), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("总数 $total")
-                    Text("在线 $online", color = Color(0xFF2E7D32))
-                    Text("离线 $offline", color = Color(0xFFC62828))
-                    Text("未知 $unknown", color = Color(0xFFD97706))
-                }
-            }
-            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-            if (!loading && devices.isEmpty()) {
-                EmptyStateCard("暂无资产", "请先在 Web 端创建普通用户并添加设备")
-            }
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(modifier.fillMaxSize().padding(Np.screenPadding), verticalArrangement = Arrangement.spacedBy(Np.sectionGap)) {
+        Text("资产总览", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            MiniStatCard("Total", "$total", Brush.linearGradient(listOf(Color(0xFF334155), Color(0xFF1E293B))))
+            MiniStatCard("Online", "$online", Brush.linearGradient(listOf(Color(0xFF0F766E), Color(0xFF065F46))), showPulse = true)
+            MiniStatCard("Offline", "$offline", Brush.linearGradient(listOf(Color(0xFF991B1B), Color(0xFF7F1D1D))))
+            MiniStatCard("Critical", "$critical", Brush.linearGradient(listOf(Color(0xFF7C3AED), Color(0xFF4F46E5))))
+        }
+
+        if (loading) {
+            repeat(3) { SkeletonCard() }
+        } else {
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(devices, key = { it.id }) { d ->
-                    ElevatedCard(modifier = Modifier.fillMaxWidth().clickable { onOpen(d.id) }, shape = RoundedCornerShape(UiSpec.corner)) {
-                        Column(Modifier.padding(UiSpec.cardPadding)) {
+                    ElevatedCard(
+                        modifier = Modifier.fillMaxWidth().combinedClickable(
+                            onClick = { onOpen(d.id) },
+                            onLongClick = {
+                                editingDevice = d
+                                newRemark = d.remark
+                            }
+                        ),
+                        shape = RoundedCornerShape(Np.corner),
+                        colors = CardDefaults.elevatedCardColors(containerColor = Color.White)
+                    ) {
+                        Column(Modifier.padding(Np.cardPadding)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(Modifier.size(10.dp)) {
-                                    Surface(
-                                        color = when (d.status) {
-                                            "online" -> Color(0xFF2E7D32)
-                                            "offline" -> Color(0xFFC62828)
-                                            else -> Color(0xFFD97706)
-                                        },
-                                        shape = MaterialTheme.shapes.small,
-                                        modifier = Modifier.fillMaxSize()
-                                    ) {}
-                                }
+                                PulseDot(d.status)
                                 Spacer(Modifier.width(8.dp))
                                 Text(
                                     d.ip,
                                     style = MaterialTheme.typography.titleMedium,
-                                    modifier = Modifier.combinedClickable(
-                                        onClick = {},
-                                        onLongClick = { copyToClipboard(ctx, d.ip) }
-                                    )
+                                    modifier = Modifier.combinedClickable(onClick = {}, onLongClick = { copyToClipboard(ctx, d.ip) })
                                 )
                             }
                             Text("${d.brand} · ${d.remark.ifBlank { "未备注" }}", style = MaterialTheme.typography.bodyMedium)
-                            if (!d.statusReason.isNullOrBlank()) {
-                                Text(d.statusReason!!, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                            }
+                            if (!d.statusReason.isNullOrBlank()) Text(d.statusReason, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                         }
                     }
                 }
             }
         }
+
+        ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color.White)) {
+            Column(Modifier.fillMaxWidth().padding(Np.cardPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Recent Events", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    TextButton(onClick = onRefresh) { Text("刷新") }
+                }
+                if (recentEvents.isEmpty()) {
+                    Text("暂无关键事件", color = Color.Gray)
+                } else {
+                    recentEvents.take(5).forEach { event ->
+                        val sev = severityOf(event)
+                        val color = when (sev) {
+                            "error" -> Np.Danger
+                            "warning" -> Np.Warning
+                            else -> Np.Success
+                        }
+                        Text("[${sev.uppercase()}] ${event.action} · ${event.target ?: "-"}", color = color, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+    }
+
+    if (editingDevice != null) {
+        AlertDialog(
+            onDismissRequest = { editingDevice = null },
+            title = { Text("编辑备注") },
+            text = {
+                OutlinedTextField(value = newRemark, onValueChange = { newRemark = it }, label = { Text("备注") }, modifier = Modifier.fillMaxWidth())
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val target = editingDevice ?: return@TextButton
+                    onEditRemark(target.id, newRemark.trim())
+                    editingDevice = null
+                }) { Text("保存") }
+            },
+            dismissButton = { TextButton(onClick = { editingDevice = null }) { Text("取消") } }
+        )
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterialApi::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterialApi::class, ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, onOpenPort: (Long) -> Unit) {
     val device by vm.deviceDetail.collectAsStateWithLifecycle()
@@ -253,13 +331,14 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
     val ctx = LocalContext.current
 
     LaunchedEffect(deviceId) { vm.loadDeviceDetail(deviceId, start, end) }
-
     val ports = device?.interfaces.orEmpty().filter {
         val k = keyword.lowercase().trim()
         if (k.isBlank()) true else "${it.id} ${it.index} ${it.name} ${it.remark}".lowercase().contains(k)
     }
-
-    val refreshState = rememberPullRefreshState(loading, { vm.loadDeviceDetail(deviceId, start, end) })
+    val refreshState = rememberPullRefreshState(
+        refreshing = loading,
+        onRefresh = { vm.loadDeviceDetail(deviceId, start, end) }
+    )
 
     Scaffold(topBar = {
         TopAppBar(
@@ -268,73 +347,60 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
         )
     }) { p ->
         Box(Modifier.padding(p).fillMaxSize().pullRefresh(refreshState)) {
-            LazyColumn(Modifier.fillMaxSize().padding(UiSpec.screenPadding), verticalArrangement = Arrangement.spacedBy(UiSpec.sectionGap)) {
+            LazyColumn(Modifier.fillMaxSize().padding(Np.screenPadding), verticalArrangement = Arrangement.spacedBy(Np.sectionGap)) {
                 item {
-                    ElevatedCard(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(UiSpec.cardPadding)) {
-                            Text(
-                                device?.ip ?: "-",
-                                style = MaterialTheme.typography.titleMedium,
-                                modifier = Modifier.combinedClickable(onClick = {}, onLongClick = { copyToClipboard(ctx, device?.ip ?: "") })
-                            )
-                            Text("${device?.brand ?: "-"} · ${device?.remark ?: "-"}")
-                            if (!device?.statusReason.isNullOrBlank()) {
-                                Text("状态说明：${device?.statusReason}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color.White)) {
+                        Column(Modifier.padding(Np.cardPadding)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                PulseDot(device?.status ?: "unknown")
+                                Spacer(Modifier.width(8.dp))
+                                Text(device?.ip ?: "-", fontWeight = FontWeight.SemiBold, modifier = Modifier.combinedClickable(onClick = {}, onLongClick = { copyToClipboard(ctx, device?.ip ?: "") }))
                             }
+                            Text("${device?.brand ?: "-"} · ${device?.remark ?: "-"}")
                         }
                     }
                 }
                 item {
-                    ElevatedCard(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(UiSpec.cardPadding)) {
+                    ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color.White)) {
+                        Column(Modifier.padding(Np.cardPadding)) {
                             Text("CPU / 内存", style = MaterialTheme.typography.titleMedium)
                             Spacer(Modifier.height(8.dp))
-                            MiniLineChart(cpu.map { it.cpuUsage ?: 0.0 }, mem.map { it.memUsage ?: 0.0 })
+                            if (loading) SkeletonBox(Modifier.fillMaxWidth().height(220.dp))
+                            else MiniLineChart(cpu.map { it.cpuUsage ?: 0.0 }, mem.map { it.memUsage ?: 0.0 })
                         }
                     }
                 }
-                item {
-                    OutlinedTextField(keyword, { keyword = it }, label = { Text("搜索端口 id/索引/名称/备注") }, modifier = Modifier.fillMaxWidth())
-                }
-                if (ports.isEmpty()) {
-                    item { EmptyStateCard("暂无端口", "SNMP 同步成功后会显示端口列表") }
-                }
-                items(ports, key = { it.id }) { itf ->
-                    ElevatedCard(
-                        Modifier.fillMaxWidth().combinedClickable(
-                            onClick = { onOpenPort(itf.id) },
-                            onLongClick = {
-                                editingPort = itf
-                                portRemark = itf.remark
+                item { OutlinedTextField(keyword, { keyword = it }, label = { Text("搜索端口") }, modifier = Modifier.fillMaxWidth()) }
+                if (loading) {
+                    items(3) { SkeletonCard() }
+                } else {
+                    items(ports, key = { it.id }) { itf ->
+                        ElevatedCard(
+                            modifier = Modifier.fillMaxWidth().combinedClickable(
+                                onClick = { onOpenPort(itf.id) },
+                                onLongClick = { editingPort = itf; portRemark = itf.remark }
+                            ),
+                            shape = RoundedCornerShape(Np.corner),
+                            colors = CardDefaults.elevatedCardColors(containerColor = Color.White)
+                        ) {
+                            Column(Modifier.padding(Np.cardPadding)) {
+                                Text(itf.name, fontWeight = FontWeight.SemiBold)
+                                Text("索引: ${itf.index} · 备注: ${itf.remark.ifBlank { "-" }}")
                             }
-                        )
-                    ) {
-                        Column(Modifier.padding(UiSpec.cardPadding)) {
-                            Text(itf.name, fontWeight = FontWeight.SemiBold)
-                            Text("索引: ${itf.index} · 备注: ${itf.remark.ifBlank { "-" }}")
-                            Text("点击看流量，长按改备注", color = Color.Gray)
                         }
                     }
                 }
                 item {
-                    ElevatedCard(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(UiSpec.cardPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("最近日志", style = MaterialTheme.typography.titleMedium)
-                            if (logs.isEmpty()) {
-                                Text("暂无日志", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
-                            } else {
-                                logs.take(100).forEach { log ->
-                                    val c = when (log.level.uppercase()) {
-                                        "ERROR" -> Color(0xFFC62828)
-                                        "WARNING", "WARN" -> Color(0xFFEF6C00)
-                                        else -> Color(0xFF2E7D32)
-                                    }
-                                    Text(
-                                        "[${log.level}] ${log.message}",
-                                        color = c,
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
+                    ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color.White)) {
+                        Column(Modifier.padding(Np.cardPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Recent Events", style = MaterialTheme.typography.titleMedium)
+                            logs.take(5).forEach { log ->
+                                val c = when (log.level.uppercase()) {
+                                    "ERROR" -> Np.Danger
+                                    "WARNING", "WARN" -> Np.Warning
+                                    else -> Np.Success
                                 }
+                                Text("[${log.level}] ${log.message}", color = c, style = MaterialTheme.typography.bodySmall)
                             }
                         }
                     }
@@ -349,15 +415,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
             onDismissRequest = { editingPort = null },
             title = { Text("编辑端口备注") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(editingPort?.name ?: "")
-                    OutlinedTextField(
-                        value = portRemark,
-                        onValueChange = { portRemark = it },
-                        label = { Text("备注") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+                OutlinedTextField(value = portRemark, onValueChange = { portRemark = it }, label = { Text("备注") }, modifier = Modifier.fillMaxWidth())
             },
             confirmButton = {
                 TextButton(onClick = {
@@ -366,9 +424,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                     editingPort = null
                 }) { Text("保存") }
             },
-            dismissButton = {
-                TextButton(onClick = { editingPort = null }) { Text("取消") }
-            }
+            dismissButton = { TextButton(onClick = { editingPort = null }) { Text("取消") } }
         )
     }
 }
@@ -377,12 +433,9 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
 @Composable
 fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
     val traffic by vm.traffic.collectAsStateWithLifecycle()
+    val loading by vm.loading.collectAsStateWithLifecycle()
     var start by remember { mutableStateOf(OffsetDateTime.now().minusDays(1)) }
     var end by remember { mutableStateOf(OffsetDateTime.now()) }
-    val nowMs = System.currentTimeMillis()
-    val minMs = nowMs - 3L * 365 * 24 * 3600 * 1000
-    var showStartPicker by remember { mutableStateOf(false) }
-    var showEndPicker by remember { mutableStateOf(false) }
 
     LaunchedEffect(portId) { vm.loadPortTraffic(portId, start, end) }
 
@@ -393,46 +446,22 @@ fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
             actions = { TextButton(onClick = { vm.loadPortTraffic(portId, start, end) }) { Text("刷新") } }
         )
     }) { p ->
-        Column(Modifier.padding(p).fillMaxSize().padding(UiSpec.screenPadding), verticalArrangement = Arrangement.spacedBy(UiSpec.sectionGap)) {
+        Column(Modifier.padding(p).fillMaxSize().padding(Np.screenPadding), verticalArrangement = Arrangement.spacedBy(Np.sectionGap)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { showStartPicker = true }) { Text("开始: ${start.toLocalDate()}") }
-                OutlinedButton(onClick = { showEndPicker = true }) { Text("结束: ${end.toLocalDate()}") }
+                OutlinedButton(onClick = { start = OffsetDateTime.now().minusDays(30) }) { Text("近30天") }
+                OutlinedButton(onClick = { start = OffsetDateTime.now().minusDays(365 * 3L) }) { Text("近3年") }
             }
-            Text("支持 3 年查询范围", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
-            Surface(tonalElevation = 2.dp, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth().weight(1f)) {
-                if (traffic.isEmpty()) {
-                    EmptyStateCard("暂无流量数据", "请调整时间范围后刷新", modifier = Modifier.fillMaxSize())
+            ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().weight(1f)) {
+                if (loading) {
+                    SkeletonBox(Modifier.fillMaxSize().padding(12.dp))
+                } else if (traffic.isEmpty()) {
+                    EmptyStateCard(title = "暂无流量数据", desc = "请调整时间范围后刷新", modifier = Modifier.fillMaxSize())
                 } else {
                     val decimated = remember(traffic) { decimateTraffic(traffic, 1800) }
                     MpTrafficChart(points = decimated, modifier = Modifier.fillMaxSize().padding(10.dp))
                 }
             }
         }
-    }
-
-    if (showStartPicker) {
-        val state = rememberDatePickerState(initialSelectedDateMillis = start.toInstant().toEpochMilli(), yearRange = IntRange(OffsetDateTime.now().year - 3, OffsetDateTime.now().year))
-        DatePickerDialog(onDismissRequest = { showStartPicker = false }, confirmButton = {
-            TextButton(onClick = {
-                state.selectedDateMillis?.let {
-                    val clamped = it.coerceIn(minMs, nowMs)
-                    start = Date(clamped).toInstant().atZone(ZoneId.systemDefault()).toOffsetDateTime()
-                }
-                showStartPicker = false
-            }) { Text("确定") }
-        }) { DatePicker(state = state) }
-    }
-    if (showEndPicker) {
-        val state = rememberDatePickerState(initialSelectedDateMillis = end.toInstant().toEpochMilli(), yearRange = IntRange(OffsetDateTime.now().year - 3, OffsetDateTime.now().year))
-        DatePickerDialog(onDismissRequest = { showEndPicker = false }, confirmButton = {
-            TextButton(onClick = {
-                state.selectedDateMillis?.let {
-                    val clamped = it.coerceIn(minMs, nowMs)
-                    end = Date(clamped).toInstant().atZone(ZoneId.systemDefault()).toOffsetDateTime()
-                }
-                showEndPicker = false
-            }) { Text("确定") }
-        }) { DatePicker(state = state) }
     }
 }
 
@@ -453,8 +482,7 @@ fun MpTrafficChart(points: List<InterfaceHistoryPoint>, modifier: Modifier = Mod
             xAxis.valueFormatter = object : ValueFormatter() {
                 override fun getFormattedValue(value: Float): String {
                     val i = value.toInt().coerceIn(0, points.lastIndex)
-                    val dt = parseTs(points[i].timestamp)
-                    return dt.format(formatter)
+                    return parseTs(points[i].timestamp).format(formatter)
                 }
             }
             marker = TrafficMarkerView(ctx, points)
@@ -468,15 +496,15 @@ fun MpTrafficChart(points: List<InterfaceHistoryPoint>, modifier: Modifier = Mod
         val outEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficOutBps ?: 0.0).toFloat()) }
 
         val inSet = LineDataSet(inEntries, "入方向").apply {
-            color = android.graphics.Color.parseColor("#2E7D32")
+            color = android.graphics.Color.parseColor("#6366F1")
             setDrawCircles(false)
-            lineWidth = 1.8f
+            lineWidth = 2f
             mode = LineDataSet.Mode.LINEAR
         }
         val outSet = LineDataSet(outEntries, "出方向").apply {
-            color = android.graphics.Color.parseColor("#EF6C00")
+            color = android.graphics.Color.parseColor("#22C55E")
             setDrawCircles(false)
-            lineWidth = 1.8f
+            lineWidth = 2f
             mode = LineDataSet.Mode.LINEAR
         }
         chart.data = LineData(inSet, outSet)
@@ -513,14 +541,69 @@ fun decimateTraffic(src: List<InterfaceHistoryPoint>, maxPoints: Int): List<Inte
     return out
 }
 
-fun parseTs(ts: String): OffsetDateTime {
-    return try { OffsetDateTime.parse(ts) } catch (_: Exception) { OffsetDateTime.now() }
-}
+fun parseTs(ts: String): OffsetDateTime = try { OffsetDateTime.parse(ts) } catch (_: Exception) { OffsetDateTime.now() }
 
 @Composable
 fun MiniLineChart(cpu: List<Double>, mem: List<Double>) {
-    val pts = cpu.indices.map { i -> InterfaceHistoryPoint(timestamp = i.toString(), trafficInBps = cpu[i], trafficOutBps = mem.getOrElse(i) { 0.0 }) }
+    val pts = cpu.indices.map { i ->
+        InterfaceHistoryPoint(timestamp = i.toString(), trafficInBps = cpu[i], trafficOutBps = mem.getOrElse(i) { 0.0 })
+    }
     MpTrafficChart(points = decimateTraffic(pts, 400), modifier = Modifier.fillMaxWidth().height(220.dp))
+}
+
+@Composable
+fun MiniStatCard(title: String, value: String, brush: Brush, showPulse: Boolean = false) {
+    ElevatedCard(
+        shape = RoundedCornerShape(Np.corner),
+        colors = CardDefaults.elevatedCardColors(containerColor = Color.Transparent),
+        modifier = Modifier.width(150.dp)
+    ) {
+        Box(Modifier.background(brush).padding(12.dp)) {
+            Column {
+                Text(title, color = Color.White.copy(alpha = 0.9f), style = MaterialTheme.typography.bodySmall)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (showPulse) {
+                        PulseDot("online")
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(value, color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PulseDot(status: String) {
+    val base = if (status == "online") Np.Success else if (status == "offline") Np.Danger else Np.Warning
+    val infinite = rememberInfiniteTransition(label = "pulse")
+    val alpha by infinite.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(animation = tween(900), repeatMode = RepeatMode.Reverse),
+        label = "pulseAlpha"
+    )
+    Box(
+        Modifier.size(10.dp).clip(CircleShape).background(base.copy(alpha = alpha))
+    )
+}
+
+@Composable
+fun SkeletonBox(modifier: Modifier = Modifier) {
+    val infinite = rememberInfiniteTransition(label = "shimmer")
+    val alpha by infinite.animateFloat(0.35f, 0.85f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "alpha")
+    Box(modifier.clip(RoundedCornerShape(Np.corner)).background(Color(0xFFE2E8F0).copy(alpha = alpha)))
+}
+
+@Composable
+fun SkeletonCard() {
+    ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color.White)) {
+        Column(Modifier.fillMaxWidth().padding(Np.cardPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SkeletonBox(Modifier.fillMaxWidth(0.45f).height(14.dp))
+            SkeletonBox(Modifier.fillMaxWidth(0.8f).height(12.dp))
+            SkeletonBox(Modifier.fillMaxWidth(0.6f).height(12.dp))
+        }
+    }
 }
 
 fun copyToClipboard(context: Context, value: String) {
@@ -531,15 +614,24 @@ fun copyToClipboard(context: Context, value: String) {
 
 @Composable
 fun EmptyStateCard(title: String, desc: String, modifier: Modifier = Modifier) {
-    Card(modifier, shape = RoundedCornerShape(UiSpec.corner), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))) {
+    Card(modifier, shape = RoundedCornerShape(Np.corner), colors = CardDefaults.cardColors(containerColor = Color.White)) {
         Column(
             Modifier.fillMaxWidth().padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text("□", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
+            Text("◻", style = MaterialTheme.typography.headlineSmall, color = Np.Indigo)
             Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            Text(desc, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(desc, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
         }
+    }
+}
+
+private fun severityOf(item: AuditLog): String {
+    val txt = (item.action + " " + (item.target ?: "")).uppercase()
+    return when {
+        txt.contains("OFFLINE") || txt.contains("ERROR") || txt.contains("RESTORE") -> "error"
+        txt.contains("WARN") || txt.contains("BGP") || txt.contains("OSPF") || txt.contains("FLAP") -> "warning"
+        else -> "info"
     }
 }

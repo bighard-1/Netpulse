@@ -36,6 +36,15 @@ data class DeviceLog(
 )
 
 @Serializable
+data class AuditLog(
+    val id: Long,
+    val action: String,
+    val target: String? = null,
+    val timestamp: String,
+    @SerialName("status_code") val statusCode: Int? = null
+)
+
+@Serializable
 data class InterfaceHistoryPoint(
     val timestamp: String,
     @SerialName("traffic_in_bps") val trafficInBps: Double? = null,
