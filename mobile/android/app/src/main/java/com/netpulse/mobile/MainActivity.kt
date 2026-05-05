@@ -17,6 +17,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
 import androidx.compose.material.pullrefresh.pullRefresh
@@ -53,6 +54,13 @@ import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Date
+
+private object UiSpec {
+    val screenPadding = 16.dp
+    val sectionGap = 12.dp
+    val cardPadding = 14.dp
+    val corner = 12.dp
+}
 
 class MainActivity : FragmentActivity() {
     private val vm: MainViewModel by viewModels()
@@ -146,19 +154,19 @@ fun LoginScreen(loading: Boolean, onLogin: (String, String) -> Unit, onBio: () -
     var u by remember { mutableStateOf("") }
     var p by remember { mutableStateOf("") }
     var base by remember { mutableStateOf("http://119.40.55.18:18080/api") }
-    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.Center) {
+    Column(Modifier.fillMaxSize().padding(UiSpec.screenPadding), verticalArrangement = Arrangement.Center) {
         Text("NetPulse 移动端", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(UiSpec.sectionGap))
         OutlinedTextField(u, { u = it }, label = { Text("用户名") }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(p, { p = it }, label = { Text("密码") }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(base, { base = it }, label = { Text("服务器 API 地址") }, modifier = Modifier.fillMaxWidth())
         Text(hint, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(UiSpec.sectionGap))
         Button(onClick = { onSaveBase(base); onLogin(u, p) }, modifier = Modifier.fillMaxWidth(), enabled = !loading) { Text("登录") }
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = onBio, modifier = Modifier.fillMaxWidth()) { Text("Face ID / 指纹快速登录") }
+        OutlinedButton(onClick = onBio, modifier = Modifier.fillMaxWidth()) { Text("生物识别快速登录") }
         Text("首次登录必须输入用户名密码", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
     }
 }
@@ -177,19 +185,22 @@ fun HomeScreen(devices: List<DeviceStatus>, loading: Boolean, onRefresh: () -> U
             TextButton(onClick = onLogout) { Text("退出") }
         })
     }) { p ->
-        Column(Modifier.padding(p).fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.padding(p).fillMaxSize().padding(UiSpec.screenPadding), verticalArrangement = Arrangement.spacedBy(UiSpec.sectionGap)) {
             Surface(tonalElevation = 2.dp, shape = MaterialTheme.shapes.medium) {
-                Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                Row(Modifier.fillMaxWidth().padding(UiSpec.cardPadding), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("总数 $total")
                     Text("在线 $online", color = Color(0xFF2E7D32))
                     Text("离线 $offline", color = Color(0xFFC62828))
                 }
             }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (!loading && devices.isEmpty()) {
+                EmptyStateCard("暂无资产", "请先在 Web 端创建普通用户并添加设备")
+            }
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(devices, key = { it.id }) { d ->
-                    ElevatedCard(Modifier.fillMaxWidth().clickable { onOpen(d.id) }) {
-                        Column(Modifier.padding(12.dp)) {
+                    ElevatedCard(modifier = Modifier.fillMaxWidth().clickable { onOpen(d.id) }, shape = RoundedCornerShape(UiSpec.corner)) {
+                        Column(Modifier.padding(UiSpec.cardPadding)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Box(Modifier.size(10.dp)) {
                                     Surface(
@@ -208,7 +219,7 @@ fun HomeScreen(devices: List<DeviceStatus>, loading: Boolean, onRefresh: () -> U
                                     )
                                 )
                             }
-                            Text("${d.brand} · ${d.remark}")
+                            Text("${d.brand} · ${d.remark.ifBlank { "未备注" }}", style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                 }
@@ -248,10 +259,10 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
         )
     }) { p ->
         Box(Modifier.padding(p).fillMaxSize().pullRefresh(refreshState)) {
-            LazyColumn(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            LazyColumn(Modifier.fillMaxSize().padding(UiSpec.screenPadding), verticalArrangement = Arrangement.spacedBy(UiSpec.sectionGap)) {
                 item {
                     ElevatedCard(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp)) {
+                        Column(Modifier.padding(UiSpec.cardPadding)) {
                             Text(
                                 device?.ip ?: "-",
                                 style = MaterialTheme.typography.titleMedium,
@@ -263,7 +274,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                 }
                 item {
                     ElevatedCard(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp)) {
+                        Column(Modifier.padding(UiSpec.cardPadding)) {
                             Text("CPU / Memory", style = MaterialTheme.typography.titleMedium)
                             Spacer(Modifier.height(8.dp))
                             MiniLineChart(cpu.map { it.cpuUsage ?: 0.0 }, mem.map { it.memUsage ?: 0.0 })
@@ -272,6 +283,9 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                 }
                 item {
                     OutlinedTextField(keyword, { keyword = it }, label = { Text("搜索端口 id/index/name/remark") }, modifier = Modifier.fillMaxWidth())
+                }
+                if (ports.isEmpty()) {
+                    item { EmptyStateCard("暂无端口", "SNMP 同步成功后会显示端口列表") }
                 }
                 items(ports, key = { it.id }) { itf ->
                     ElevatedCard(
@@ -283,7 +297,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                             }
                         )
                     ) {
-                        Column(Modifier.padding(12.dp)) {
+                        Column(Modifier.padding(UiSpec.cardPadding)) {
                             Text(itf.name, fontWeight = FontWeight.SemiBold)
                             Text("index: ${itf.index} · 备注: ${itf.remark.ifBlank { "-" }}")
                             Text("点击看流量，长按改备注", color = Color.Gray)
@@ -292,10 +306,10 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                 }
                 item {
                     ElevatedCard(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(Modifier.padding(UiSpec.cardPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("最近日志", style = MaterialTheme.typography.titleMedium)
                             if (logs.isEmpty()) {
-                                Text("暂无日志", color = Color.Gray)
+                                Text("暂无日志", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
                             } else {
                                 logs.take(100).forEach { log ->
                                     val c = when (log.level.uppercase()) {
@@ -367,15 +381,19 @@ fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
             actions = { TextButton(onClick = { vm.loadPortTraffic(portId, start, end) }) { Text("刷新") } }
         )
     }) { p ->
-        Column(Modifier.padding(p).fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.padding(p).fillMaxSize().padding(UiSpec.screenPadding), verticalArrangement = Arrangement.spacedBy(UiSpec.sectionGap)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { showStartPicker = true }) { Text("开始: ${start.toLocalDate()}") }
                 OutlinedButton(onClick = { showEndPicker = true }) { Text("结束: ${end.toLocalDate()}") }
             }
             Text("支持 3 年查询范围", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
             Surface(tonalElevation = 2.dp, shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth().weight(1f)) {
-                val decimated = remember(traffic) { decimateTraffic(traffic, 1800) }
-                MpTrafficChart(points = decimated, modifier = Modifier.fillMaxSize().padding(10.dp))
+                if (traffic.isEmpty()) {
+                    EmptyStateCard("暂无流量数据", "请调整时间范围后刷新", modifier = Modifier.fillMaxSize())
+                } else {
+                    val decimated = remember(traffic) { decimateTraffic(traffic, 1800) }
+                    MpTrafficChart(points = decimated, modifier = Modifier.fillMaxSize().padding(10.dp))
+                }
             }
         }
     }
@@ -497,4 +515,19 @@ fun copyToClipboard(context: Context, value: String) {
     if (value.isBlank()) return
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     cm.setPrimaryClip(ClipData.newPlainText("ip", value))
+}
+
+@Composable
+fun EmptyStateCard(title: String, desc: String, modifier: Modifier = Modifier) {
+    Card(modifier, shape = RoundedCornerShape(UiSpec.corner), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))) {
+        Column(
+            Modifier.fillMaxWidth().padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text("□", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
+            Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(desc, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
 }

@@ -93,6 +93,43 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     ts TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Compatibility migration for old audit_logs schemas:
+-- Some older versions used "timestamp" (or created_at) instead of "ts".
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'audit_logs'
+    ) THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'ts'
+        ) THEN
+            ALTER TABLE audit_logs ADD COLUMN ts TIMESTAMPTZ;
+
+            IF EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'timestamp'
+            ) THEN
+                EXECUTE 'UPDATE audit_logs SET ts = "timestamp" WHERE ts IS NULL';
+            ELSIF EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'created_at'
+            ) THEN
+                UPDATE audit_logs SET ts = created_at WHERE ts IS NULL;
+            END IF;
+
+            UPDATE audit_logs SET ts = NOW() WHERE ts IS NULL;
+            ALTER TABLE audit_logs ALTER COLUMN ts SET NOT NULL;
+            ALTER TABLE audit_logs ALTER COLUMN ts SET DEFAULT NOW();
+        END IF;
+    END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_audit_logs_ts ON audit_logs (ts DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_user_ts ON audit_logs (user_id, ts DESC);
 

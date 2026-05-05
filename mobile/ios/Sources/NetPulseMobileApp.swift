@@ -4,6 +4,12 @@ import Charts
 import Security
 import UIKit
 
+enum UiSpec {
+    static let pagePadding: CGFloat = 16
+    static let sectionGap: CGFloat = 12
+    static let cardRadius: CGFloat = 12
+}
+
 struct DeviceStatus: Codable, Identifiable {
     let id: Int64
     let ip: String
@@ -286,7 +292,7 @@ struct LoginView: View {
     @State private var base = "http://119.40.55.18:18080/api"
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: UiSpec.sectionGap) {
             Text("NetPulse 移动端").font(.title2.bold())
             TextField("用户名", text: $u).textFieldStyle(.roundedBorder)
             SecureField("密码", text: $p).textFieldStyle(.roundedBorder)
@@ -296,12 +302,12 @@ struct LoginView: View {
                     vm.baseURL = base
                     Task { await vm.login(u: u, p: p) }
                 }.buttonStyle(.borderedProminent)
-                Button("Face ID / Touch ID") { Task { await vm.biometricLogin() } }.buttonStyle(.bordered)
+                Button("生物识别快速登录") { Task { await vm.biometricLogin() } }.buttonStyle(.bordered)
             }
             Text("首次登录必须使用用户名密码").font(.footnote).foregroundStyle(.secondary)
             if !vm.err.isEmpty { Text(vm.err).foregroundStyle(.red) }
         }
-        .padding()
+        .padding(UiSpec.pagePadding)
     }
 }
 
@@ -312,7 +318,7 @@ struct HomeView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 10) {
+            VStack(spacing: UiSpec.sectionGap) {
                 HStack {
                     Stat(title: "总数", value: "\(vm.devices.count)", color: .blue)
                     Stat(title: "在线", value: "\(onlineCount)", color: .green)
@@ -320,18 +326,26 @@ struct HomeView: View {
                 }
                 .padding(.horizontal)
 
-                List(vm.devices) { d in
-                    NavigationLink(value: d.id) {
-                        HStack(spacing: 10) {
-                            Circle().fill(d.status == "online" ? .green : .red).frame(width: 10, height: 10)
-                            VStack(alignment: .leading) {
-                                Text(d.ip).font(.headline)
-                                    .onLongPressGesture { UIPasteboard.general.string = d.ip }
-                                Text("\(d.brand) · \(d.remark)").font(.subheadline).foregroundStyle(.secondary)
+                List {
+                    if vm.devices.isEmpty {
+                        EmptyStateCard(title: "暂无资产", desc: "请先在 Web 端创建普通用户并添加设备")
+                            .listRowSeparator(.hidden)
+                    } else {
+                        ForEach(vm.devices) { d in
+                            NavigationLink(value: d.id) {
+                                HStack(spacing: 10) {
+                                    Circle().fill(d.status == "online" ? .green : .red).frame(width: 10, height: 10)
+                                    VStack(alignment: .leading) {
+                                        Text(d.ip).font(.headline)
+                                            .onLongPressGesture { UIPasteboard.general.string = d.ip }
+                                        Text("\(d.brand) · \(d.remark.isEmpty ? "未备注" : d.remark)").font(.subheadline).foregroundStyle(.secondary)
+                                    }
+                                }
                             }
                         }
                     }
                 }
+                .listStyle(.insetGrouped)
                 .refreshable { await vm.refreshDevices() }
             }
             .navigationTitle("资产总览")
@@ -392,6 +406,9 @@ struct DeviceDetailView: View {
             }
 
             Section("端口列表") {
+                if filteredPorts.isEmpty {
+                    EmptyStateCard(title: "暂无端口", desc: "SNMP 同步成功后会显示端口列表")
+                }
                 ForEach(filteredPorts) { p in
                     NavigationLink(value: p.id) {
                         VStack(alignment: .leading) {
@@ -435,7 +452,7 @@ struct DeviceDetailView: View {
             PortDetailView(deviceID: deviceID, portID: portID)
                 .environmentObject(vm)
         }
-        .toolbar { ToolbarItem(placement: .topBarLeading) { Text("Back to Device").font(.footnote).foregroundStyle(.secondary) } }
+        .toolbar { ToolbarItem(placement: .topBarLeading) { Text("返回设备").font(.footnote).foregroundStyle(.secondary) } }
         .task {
             await vm.fetchDeviceDetail(deviceID: deviceID)
             dateEnd = Date()
@@ -491,10 +508,10 @@ struct PortDetailView: View {
     }
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: UiSpec.sectionGap) {
             HStack {
-                DatePicker("Start", selection: $start, in: minDate...Date(), displayedComponents: [.date, .hourAndMinute])
-                DatePicker("End", selection: $end, in: minDate...Date(), displayedComponents: [.date, .hourAndMinute])
+                DatePicker("开始", selection: $start, in: minDate...Date(), displayedComponents: [.date, .hourAndMinute])
+                DatePicker("结束", selection: $end, in: minDate...Date(), displayedComponents: [.date, .hourAndMinute])
             }
             .padding(.horizontal)
 
@@ -503,16 +520,21 @@ struct PortDetailView: View {
             }
             .buttonStyle(.borderedProminent)
 
-            Chart {
-                ForEach(vm.traffic) { p in
-                    LineMark(x: .value("Time", p.timestamp), y: .value("Inbound", p.traffic_in_bps ?? 0))
-                        .foregroundStyle(.green)
-                    LineMark(x: .value("Time", p.timestamp), y: .value("Outbound", p.traffic_out_bps ?? 0))
-                        .foregroundStyle(.orange)
+            if vm.traffic.isEmpty {
+                EmptyStateCard(title: "暂无流量数据", desc: "请调整时间范围后刷新")
+                    .padding(.horizontal, UiSpec.pagePadding)
+            } else {
+                Chart {
+                    ForEach(vm.traffic) { p in
+                        LineMark(x: .value("Time", p.timestamp), y: .value("Inbound", p.traffic_in_bps ?? 0))
+                            .foregroundStyle(.green)
+                        LineMark(x: .value("Time", p.timestamp), y: .value("Outbound", p.traffic_out_bps ?? 0))
+                            .foregroundStyle(.orange)
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.horizontal)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.horizontal)
         }
         .navigationTitle("端口流量")
         .navigationBarTitleDisplayMode(.inline)
@@ -533,6 +555,25 @@ struct Stat: View {
         .padding(10)
         .background(.thinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+struct EmptyStateCard: View {
+    let title: String
+    let desc: String
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "tray")
+                .font(.title2)
+                .foregroundStyle(.blue)
+            Text(title).font(.headline)
+            Text(desc).font(.footnote).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(20)
+        .background(Color(.systemGray6))
+        .clipShape(RoundedRectangle(cornerRadius: UiSpec.cardRadius))
     }
 }
 
