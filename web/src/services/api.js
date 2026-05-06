@@ -54,6 +54,15 @@ export const api = {
   getDeviceLogs(id) {
     return http.get(`/devices/${id}/logs`);
   },
+  diagnoseDevice(id) {
+    return http.get(`/devices/${id}/diagnose`);
+  },
+  exportDiagnosis(id, format = "txt") {
+    return http.get(`/devices/${id}/diagnose`, {
+      params: { format, download: 1 },
+      responseType: "blob"
+    });
+  },
   downloadBackup() {
     return http.get("/system/backup", { responseType: "blob" });
   },
@@ -116,5 +125,11 @@ export const api = {
   },
   listBackupDrillReports() {
     return http.get("/system/backup/drill/reports");
+  },
+  getRuntimeSettings() {
+    return http.get("/settings/runtime");
+  },
+  updateRuntimeSettings(payload) {
+    return http.put("/settings/runtime", payload);
   }
 };

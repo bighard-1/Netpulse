@@ -45,6 +45,8 @@ func main() {
 	syslogAddr := getenv("SYSLOG_ADDR", ":514")
 	trapAddr := getenv("SNMP_TRAP_ADDR", ":9162")
 	backupDrillHours := getenv("BACKUP_DRILL_EVERY_HOURS", "168")
+	pollIntervalSec := getenv("SNMP_POLL_INTERVAL_SEC", "60")
+	onlineWindowSec := getenv("STATUS_ONLINE_WINDOW_SEC", "300")
 
 	dsn := fmt.Sprintf(
 		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
@@ -67,6 +69,16 @@ func main() {
 	repo := db.NewRepository(conn)
 	if err := repo.EnsureSchema(); err != nil {
 		log.Fatalf("ensure schema failed: %v", err)
+	}
+	if err := repo.EnsureRuntimeSettings(context.Background(), map[string]string{
+		"snmp_poll_interval_sec":   pollIntervalSec,
+		"snmp_device_timeout_sec":  getenv("SNMP_DEVICE_TIMEOUT_SEC", "15"),
+		"status_online_window_sec": onlineWindowSec,
+		"alert_cpu_threshold":      getenv("ALERT_CPU_THRESHOLD", "90"),
+		"alert_mem_threshold":      getenv("ALERT_MEM_THRESHOLD", "90"),
+		"alert_webhook_url":        getenv("ALERT_WEBHOOK_URL", ""),
+	}); err != nil {
+		log.Fatalf("ensure runtime settings failed: %v", err)
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(adminPassword), bcrypt.DefaultCost)
 	if err != nil {

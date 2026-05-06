@@ -46,6 +46,7 @@ func (h *Handler) Router() http.Handler {
 		pr.Use(h.authMiddleware)
 		pr.With(h.requirePermission("device.read")).Get("/api/devices", h.handleListDevices)
 		pr.Get("/api/devices/{id}", h.handleGetDevice)
+		pr.With(h.requirePermission("device.read")).Get("/api/devices/{id}/diagnose", h.handleDiagnoseDevice)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("ADD_DEVICE")).Post("/api/devices", h.handleAddDevice)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("IMPORT_DEVICES")).Post("/api/devices/import", h.handleImportDevices)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("DELETE_DEVICE")).Delete("/api/devices/{id}", h.handleDeleteDevice)
@@ -76,6 +77,8 @@ func (h *Handler) Router() http.Handler {
 		pr.With(h.adminOnly).Post("/api/devices/{id}/config/snapshot", h.handleConfigSnapshot)
 		pr.With(h.adminOnly).Post("/api/system/backup/drill", h.handleBackupDrill)
 		pr.With(h.adminOnly).Get("/api/system/backup/drill/reports", h.handleBackupDrillReports)
+		pr.With(h.adminOnly).Get("/api/settings/runtime", h.handleGetRuntimeSettings)
+		pr.With(h.adminOnly).Put("/api/settings/runtime", h.handleUpdateRuntimeSettings)
 	})
 
 	return r
@@ -223,6 +226,7 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 		for _, itf := range poll.Interfaces {
 			metrics = append(metrics, db.InterfaceMetric{
 				IfIndex:       itf.IfIndex,
+				IfName:        itf.IfName,
 				CPUUsage:      poll.CPUUsage,
 				MemoryUsage:   poll.MemoryUsage,
 				TrafficInBps:  0,

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -82,19 +83,47 @@ func NewWorker(repo *db.Repository, collector *Collector, interval time.Duration
 
 func (w *Worker) Start(ctx context.Context) {
 	w.runOnce(ctx)
-
-	ticker := time.NewTicker(w.interval)
-	defer ticker.Stop()
-
 	for {
+		wait := w.nextInterval(ctx)
 		select {
 		case <-ctx.Done():
 			log.Printf("snmp worker stopped: %v", ctx.Err())
 			return
-		case <-ticker.C:
+		case <-time.After(wait):
 			w.runOnce(ctx)
 		}
 	}
+}
+
+func (w *Worker) applyRuntimeSettings(ctx context.Context) {
+	cfg, err := w.repo.GetRuntimeSettings(ctx)
+	if err != nil {
+		return
+	}
+	if cfg.SNMPPollIntervalSec >= 5 {
+		w.interval = time.Duration(cfg.SNMPPollIntervalSec) * time.Second
+	}
+	if cfg.SNMPDeviceTimeoutSec >= 2 {
+		w.deviceTimeout = time.Duration(cfg.SNMPDeviceTimeoutSec) * time.Second
+	}
+	if cfg.AlertCPUThreshold > 0 {
+		w.cpuThreshold = cfg.AlertCPUThreshold
+	}
+	if cfg.AlertMemThreshold > 0 {
+		w.memThreshold = cfg.AlertMemThreshold
+	}
+	w.alertWebhook = cfg.AlertWebhookURL
+}
+
+func (w *Worker) nextInterval(ctx context.Context) time.Duration {
+	w.applyRuntimeSettings(ctx)
+	if w.interval < 5*time.Second {
+		return 5 * time.Second
+	}
+	if w.interval > time.Hour {
+		return time.Hour
+	}
+	return w.interval
 }
 
 func (w *Worker) runOnce(ctx context.Context) {
@@ -168,7 +197,14 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 	mList := make([]db.InterfaceMetric, 0, len(result.Interfaces))
 	for _, itf := range result.Interfaces {
 		inBps, outBps := w.calcBps(d.ID, itf.IfIndex, itf.InOctets, itf.OutOctets, result.PolledAt)
-		mList = append(mList, db.InterfaceMetric{IfIndex: itf.IfIndex, CPUUsage: result.CPUUsage, MemoryUsage: result.MemoryUsage, TrafficInBps: inBps, TrafficOutBps: outBps})
+		mList = append(mList, db.InterfaceMetric{
+			IfIndex:       itf.IfIndex,
+			IfName:        itf.IfName,
+			CPUUsage:      result.CPUUsage,
+			MemoryUsage:   result.MemoryUsage,
+			TrafficInBps:  inBps,
+			TrafficOutBps: outBps,
+		})
 	}
 
 	if err := w.repo.SaveMetrics(ctx, d.ID, result.PolledAt, mList); err != nil {
@@ -278,8 +314,8 @@ func (w *Worker) calcBps(deviceID int64, ifIndex int, inOctets, outOctets uint64
 
 	inDelta := safeDelta(inOctets, prev.inOctets)
 	outDelta := safeDelta(outOctets, prev.outOctets)
-	inBps := int64(float64(inDelta*8) / seconds)
-	outBps := int64(float64(outDelta*8) / seconds)
+	inBps := safeBps(inDelta, seconds)
+	outBps := safeBps(outDelta, seconds)
 	return inBps, outBps
 }
 
@@ -290,4 +326,19 @@ func safeDelta(curr, prev uint64) uint64 {
 		return 0
 	}
 	return curr - prev
+}
+
+func safeBps(deltaOctets uint64, seconds float64) int64 {
+	if seconds <= 0 {
+		return 0
+	}
+	v := (float64(deltaOctets) * 8) / seconds
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return 0
+	}
+	const maxReasonableBps = float64(9_000_000_000_000_000)
+	if v > maxReasonableBps {
+		return 0
+	}
+	return int64(v)
 }

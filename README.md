@@ -10,7 +10,7 @@ NetPulse 是面向华为/H3C/通用 SNMP 设备的网络监控系统，包含：
 
 ### 监控与采集
 - SNMP 全版本支持：`v1 / v2c / v3`
-- CPU/内存/端口流量采集（1 分钟轮询）
+- CPU/内存/端口流量采集（轮询间隔可配置）
 - 端口信息增量同步（保留备注）
 - 设备状态诊断：在线/离线/未知 + 状态原因
 - 连通性双判定：SNMP 失败时自动做 `ICMP + TCP161` 探测
@@ -87,10 +87,12 @@ scripts                 # 冒烟/辅助脚本
 
 ### 4. 强烈建议环境变量
 - `NETPULSE_CRED_KEY`：**32 字节**密钥，用于加密 SNMP 凭据（community/v3 密码）
-- `SNMP_DEVICE_TIMEOUT_SEC`：单设备采集超时（默认 15）
-- `ALERT_WEBHOOK_URL`：告警 webhook
-- `ALERT_CPU_THRESHOLD`：默认 `90`
-- `ALERT_MEM_THRESHOLD`：默认 `90`
+- `SNMP_POLL_INTERVAL_SEC`：轮询间隔默认值（仅首次写入，后续可在 Web 设置里修改）
+- `SNMP_DEVICE_TIMEOUT_SEC`：采集超时默认值（仅首次写入，后续可在 Web 设置里修改）
+- `STATUS_ONLINE_WINDOW_SEC`：在线判定窗口默认值（仅首次写入，后续可在 Web 设置里修改）
+- `ALERT_WEBHOOK_URL`：告警 webhook 默认值（后续可在 Web 设置里修改）
+- `ALERT_CPU_THRESHOLD`：CPU 告警阈值默认值（后续可在 Web 设置里修改）
+- `ALERT_MEM_THRESHOLD`：内存告警阈值默认值（后续可在 Web 设置里修改）
 - `BACKUP_DRILL_EVERY_HOURS`：备份演练周期小时（默认 `168`，即每周）
 - `SYSLOG_ADDR`：默认 `:514`
 - `SNMP_TRAP_ADDR`：默认 `:9162`
@@ -125,6 +127,7 @@ scripts                 # 冒烟/辅助脚本
 ## Web 端功能
 
 - 资产列表、设备详情、端口详情
+- 系统设置中心（运行参数在线修改：轮询/超时/在线窗口/告警阈值/Webhook）
 - 告警规则管理（API 已就绪）
 - 拓扑链路管理（API 已就绪）
 - 备份下载、恢复、备份演练
@@ -187,4 +190,3 @@ BASE_URL=http://127.0.0.1:8080/api ADMIN_USER=admin ADMIN_PASS=admin123 ./script
 - `NetPulse_v0.5.0_android_universal.apk`
 - `NetPulse_v0.5.0_android_amd64.apk`
 - `NetPulse_v0.5.0_ios_unsigned.ipa`
-

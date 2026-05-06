@@ -9,7 +9,9 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -54,6 +56,51 @@ CREATE TABLE IF NOT EXISTS metrics (
     traffic_in_bps BIGINT,
     traffic_out_bps BIGINT
 );
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'metrics'
+    ) THEN
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'metrics' AND column_name = 'traffic_in_bps'
+              AND data_type <> 'bigint'
+        ) OR EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'metrics' AND column_name = 'traffic_out_bps'
+              AND data_type <> 'bigint'
+        ) THEN
+            IF EXISTS (
+                SELECT 1
+                FROM pg_matviews
+                WHERE schemaname = 'public' AND matviewname = 'metrics_1m'
+            ) THEN
+                DROP MATERIALIZED VIEW metrics_1m CASCADE;
+            END IF;
+        END IF;
+
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'metrics' AND column_name = 'traffic_in_bps'
+              AND data_type <> 'bigint'
+        ) THEN
+            ALTER TABLE metrics
+                ALTER COLUMN traffic_in_bps TYPE BIGINT
+                USING COALESCE(traffic_in_bps::BIGINT, 0);
+        END IF;
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'metrics' AND column_name = 'traffic_out_bps'
+              AND data_type <> 'bigint'
+        ) THEN
+            ALTER TABLE metrics
+                ALTER COLUMN traffic_out_bps TYPE BIGINT
+                USING COALESCE(traffic_out_bps::BIGINT, 0);
+        END IF;
+    END IF;
+END $$;
 
 SELECT create_hypertable('metrics', 'ts', if_not_exists => TRUE);
 
@@ -258,6 +305,12 @@ CREATE TABLE IF NOT EXISTS backup_drill_reports (
     message TEXT NOT NULL,
     detail JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS system_settings (
+    key VARCHAR(128) PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Compatibility migration for old audit_logs schemas:
@@ -497,6 +550,7 @@ type Interface struct {
 
 type InterfaceMetric struct {
 	IfIndex       int
+	IfName        string
 	CPUUsage      float64
 	MemoryUsage   float64
 	TrafficInBps  int64
@@ -608,6 +662,15 @@ type BackupDrillReport struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type RuntimeSettings struct {
+	SNMPPollIntervalSec   int     `json:"snmp_poll_interval_sec"`
+	SNMPDeviceTimeoutSec  int     `json:"snmp_device_timeout_sec"`
+	StatusOnlineWindowSec int     `json:"status_online_window_sec"`
+	AlertCPUThreshold     float64 `json:"alert_cpu_threshold"`
+	AlertMemThreshold     float64 `json:"alert_mem_threshold"`
+	AlertWebhookURL       string  `json:"alert_webhook_url"`
+}
+
 func NewRepository(db *sql.DB) *Repository {
 	key := []byte(os.Getenv("NETPULSE_CRED_KEY"))
 	if len(key) != 32 {
@@ -625,6 +688,124 @@ func (r *Repository) EnsureSchema() error {
 		return fmt.Errorf("schema bootstrap failed: %w", err)
 	}
 	return nil
+}
+
+func (r *Repository) EnsureRuntimeSettings(ctx context.Context, defaults map[string]string) error {
+	if len(defaults) == 0 {
+		return nil
+	}
+	const q = `
+		INSERT INTO system_settings(key, value, updated_at)
+		VALUES($1, $2, NOW())
+		ON CONFLICT (key) DO NOTHING;
+	`
+	for k, v := range defaults {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		if _, err := r.db.ExecContext(ctx, q, k, strings.TrimSpace(v)); err != nil {
+			return fmt.Errorf("ensure runtime setting %s: %w", k, err)
+		}
+	}
+	return nil
+}
+
+func (r *Repository) GetSystemSettings(ctx context.Context) (map[string]string, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT key, value FROM system_settings ORDER BY key;`)
+	if err != nil {
+		return nil, fmt.Errorf("query system settings: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, fmt.Errorf("scan system settings: %w", err)
+		}
+		out[k] = v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate system settings: %w", err)
+	}
+	return out, nil
+}
+
+func (r *Repository) UpsertSystemSettings(ctx context.Context, kv map[string]string) error {
+	if len(kv) == 0 {
+		return nil
+	}
+	const q = `
+		INSERT INTO system_settings(key, value, updated_at)
+		VALUES($1, $2, NOW())
+		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();
+	`
+	for k, v := range kv {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		if _, err := r.db.ExecContext(ctx, q, k, strings.TrimSpace(v)); err != nil {
+			return fmt.Errorf("upsert system setting %s: %w", k, err)
+		}
+	}
+	return nil
+}
+
+func parseIntSetting(raw string, fallback int) int {
+	v, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || v <= 0 {
+		return fallback
+	}
+	return v
+}
+
+func parseFloatSetting(raw string, fallback float64) float64 {
+	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || v < 0 {
+		return fallback
+	}
+	return v
+}
+
+func (r *Repository) GetRuntimeSettings(ctx context.Context) (RuntimeSettings, error) {
+	kv, err := r.GetSystemSettings(ctx)
+	if err != nil {
+		return RuntimeSettings{}, err
+	}
+	out := RuntimeSettings{
+		SNMPPollIntervalSec:   parseIntSetting(kv["snmp_poll_interval_sec"], 60),
+		SNMPDeviceTimeoutSec:  parseIntSetting(kv["snmp_device_timeout_sec"], 15),
+		StatusOnlineWindowSec: parseIntSetting(kv["status_online_window_sec"], 300),
+		AlertCPUThreshold:     parseFloatSetting(kv["alert_cpu_threshold"], 90),
+		AlertMemThreshold:     parseFloatSetting(kv["alert_mem_threshold"], 90),
+		AlertWebhookURL:       kv["alert_webhook_url"],
+	}
+	if out.SNMPPollIntervalSec < 5 {
+		out.SNMPPollIntervalSec = 5
+	}
+	if out.SNMPPollIntervalSec > 3600 {
+		out.SNMPPollIntervalSec = 3600
+	}
+	if out.SNMPDeviceTimeoutSec < 2 {
+		out.SNMPDeviceTimeoutSec = 2
+	}
+	if out.SNMPDeviceTimeoutSec > 120 {
+		out.SNMPDeviceTimeoutSec = 120
+	}
+	if out.StatusOnlineWindowSec < 30 {
+		out.StatusOnlineWindowSec = 30
+	}
+	if out.StatusOnlineWindowSec > 3600 {
+		out.StatusOnlineWindowSec = 3600
+	}
+	if out.AlertCPUThreshold > 100 {
+		out.AlertCPUThreshold = 100
+	}
+	if out.AlertMemThreshold > 100 {
+		out.AlertMemThreshold = 100
+	}
+	return out, nil
 }
 
 func (r *Repository) UpsertAdmin(username, passwordHash string) error {
@@ -735,6 +916,11 @@ func (r *Repository) ListUsers(ctx context.Context) ([]User, error) {
 }
 
 func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus, error) {
+	runtime, _ := r.GetRuntimeSettings(ctx)
+	onlineWindow := time.Duration(runtime.StatusOnlineWindowSec) * time.Second
+	if onlineWindow <= 0 {
+		onlineWindow = 5 * time.Minute
+	}
 	const q = `
 		SELECT d.id, host(d.ip), d.brand, d.community, d.snmp_version, d.snmp_port,
 		       COALESCE(d.v3_username,''), COALESCE(d.v3_auth_protocol,''), COALESCE(d.v3_auth_password,''),
@@ -771,7 +957,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 	ds.V3AuthPass = r.decryptOpt(ds.V3AuthPass)
 	ds.V3PrivPass = r.decryptOpt(ds.V3PrivPass)
 	if ds.LastMetricAt != nil {
-		if time.Since(*ds.LastMetricAt) <= 5*time.Minute {
+		if time.Since(*ds.LastMetricAt) <= onlineWindow {
 			ds.Status = "online"
 			ds.StatusReason = ""
 		} else {
@@ -1132,6 +1318,11 @@ func (r *Repository) ListBackupDrillReports(ctx context.Context, limit int) ([]B
 }
 
 func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus, error) {
+	runtime, _ := r.GetRuntimeSettings(ctx)
+	onlineWindow := time.Duration(runtime.StatusOnlineWindowSec) * time.Second
+	if onlineWindow <= 0 {
+		onlineWindow = 5 * time.Minute
+	}
 	const q = `
 		SELECT d.id, host(d.ip), d.brand, d.community, d.snmp_version, d.snmp_port,
 		       COALESCE(d.v3_username,''), COALESCE(d.v3_auth_protocol,''), COALESCE(d.v3_auth_password,''),
@@ -1174,7 +1365,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		ds.V3AuthPass = r.decryptOpt(ds.V3AuthPass)
 		ds.V3PrivPass = r.decryptOpt(ds.V3PrivPass)
 		if ds.LastMetricAt != nil {
-			if now.Sub(*ds.LastMetricAt) <= 5*time.Minute {
+			if now.Sub(*ds.LastMetricAt) <= onlineWindow {
 				ds.Status = "online"
 				ds.StatusReason = ""
 			} else {
@@ -1297,6 +1488,16 @@ func (r *Repository) SaveMetrics(
 	ts time.Time,
 	metrics []InterfaceMetric,
 ) error {
+	const ensureInterfaceQ = `
+		INSERT INTO interfaces (device_id, "index", name, remark)
+		VALUES ($1, $2, $3, '')
+		ON CONFLICT (device_id, "index")
+		DO UPDATE SET
+			name = CASE
+				WHEN EXCLUDED.name <> '' THEN EXCLUDED.name
+				ELSE interfaces.name
+			END;
+	`
 	const q = `
 		INSERT INTO metrics (
 			ts, device_id, interface_id, cpu_usage, memory_usage, traffic_in_bps, traffic_out_bps
@@ -1314,8 +1515,16 @@ func (r *Repository) SaveMetrics(
 	}()
 
 	for _, m := range metrics {
+		cpu := clampPercent(m.CPUUsage)
+		mem := clampPercent(m.MemoryUsage)
+		inBps := clampTrafficBps(m.TrafficInBps)
+		outBps := clampTrafficBps(m.TrafficOutBps)
+		if _, err := tx.ExecContext(ctx, ensureInterfaceQ, deviceID, m.IfIndex, m.IfName); err != nil {
+			return fmt.Errorf("ensure interface ifIndex=%d: %w", m.IfIndex, err)
+		}
+
 		if _, err := tx.ExecContext(
-			ctx, q, ts, deviceID, m.IfIndex, m.CPUUsage, m.MemoryUsage, m.TrafficInBps, m.TrafficOutBps,
+			ctx, q, ts, deviceID, m.IfIndex, cpu, mem, inBps, outBps,
 		); err != nil {
 			return fmt.Errorf("insert metric ifIndex=%d: %w", m.IfIndex, err)
 		}
@@ -1325,6 +1534,30 @@ func (r *Repository) SaveMetrics(
 		return fmt.Errorf("commit save metrics: %w", err)
 	}
 	return nil
+}
+
+func clampPercent(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	if v < 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
+}
+
+func clampTrafficBps(v int64) int64 {
+	if v < 0 {
+		return 0
+	}
+	const maxReasonableBps int64 = 9_000_000_000_000_000
+	if v > maxReasonableBps {
+		return 0
+	}
+	return v
 }
 
 func (r *Repository) UpdateDeviceRemark(ctx context.Context, id int64, remark string) error {
