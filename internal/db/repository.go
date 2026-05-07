@@ -123,6 +123,11 @@ FROM metrics
 GROUP BY bucket, device_id, interface_id
 WITH NO DATA;
 
+SELECT remove_continuous_aggregate_policy(
+    'metrics_1m',
+    if_exists => TRUE
+);
+
 SELECT add_continuous_aggregate_policy(
     'metrics_1m',
     start_offset => INTERVAL '30 days',
