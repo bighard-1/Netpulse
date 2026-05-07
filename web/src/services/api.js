@@ -8,11 +8,44 @@ const http = axios.create({
   timeout: 20000
 });
 
+function normalizeToken(raw) {
+  if (!raw) return "";
+  const v = String(raw).trim();
+  if (!v) return "";
+  if (v.startsWith('"') && v.endsWith('"')) {
+    try {
+      return JSON.parse(v);
+    } catch {
+      return v.slice(1, -1);
+    }
+  }
+  return v;
+}
+
 http.interceptors.request.use((config) => {
-  const token = localStorage.getItem("netpulse_token");
+  const token = normalizeToken(localStorage.getItem("netpulse_token"));
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
+
+http.interceptors.response.use(
+  (resp) => resp,
+  (err) => {
+    const status = err?.response?.status;
+    const msg = String(err?.response?.data?.error || "").toLowerCase();
+    if (
+      status === 401 &&
+      (msg.includes("invalid token") || msg.includes("missing bearer token"))
+    ) {
+      localStorage.removeItem("netpulse_token");
+      localStorage.removeItem("netpulse_user");
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("netpulse-auth-expired"));
+      }
+    }
+    return Promise.reject(err);
+  }
+);
 
 export function getApiError(err, fallback = "请求失败") {
   return (
@@ -110,15 +143,6 @@ export const api = {
   },
   createTemplate(payload) {
     return http.post("/templates", payload);
-  },
-  listTopology() {
-    return http.get("/topology");
-  },
-  upsertTopology(payload) {
-    return http.post("/topology", payload);
-  },
-  deleteTopology(id) {
-    return http.delete(`/topology/${id}`);
   },
   listAlertRules() {
     return http.get("/alerts/rules");

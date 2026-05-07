@@ -126,15 +126,24 @@ function goSearchResult(item) {
   quickSearchVisible.value = false;
 }
 
+function onAuthExpired() {
+  auth.logout();
+  loginVisible.value = true;
+  loginForm.value = { username: "", password: "" };
+  ElMessage.warning("登录已失效，请重新登录");
+}
+
 onMounted(() => {
   onResize();
   window.addEventListener("resize", onResize);
   window.addEventListener("keydown", onGlobalKeydown);
+  window.addEventListener("netpulse-auth-expired", onAuthExpired);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
   window.removeEventListener("keydown", onGlobalKeydown);
+  window.removeEventListener("netpulse-auth-expired", onAuthExpired);
 });
 </script>
 
