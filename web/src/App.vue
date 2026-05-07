@@ -29,10 +29,10 @@ const isAdmin = computed(() => currentUser.value?.role === "admin");
 const pageTitle = computed(() => String(route.meta?.title || "NetPulse"));
 
 const menuItems = [
-  { key: "assets", path: "/", label: "Dashboard (Assets)" },
-  { key: "logs", path: "/logs", label: "Global Logs" },
-  { key: "topology", path: "/topology", label: "Topology" },
-  { key: "settings", path: "/settings", label: "System Settings" }
+  { key: "assets", path: "/", label: "资产总览" },
+  { key: "logs", path: "/logs", label: "全局日志" },
+  { key: "topology", path: "/topology", label: "网络拓扑" },
+  { key: "settings", path: "/settings", label: "系统设置" }
 ];
 
 const activeMenu = computed(() => {
@@ -72,6 +72,8 @@ function logout() {
   ElMessage.success("已退出登录");
   router.push("/");
 }
+
+const isAuthed = computed(() => !!token.value);
 
 function onResize() {
   isMobile.value = window.innerWidth < 960;
@@ -176,7 +178,7 @@ onBeforeUnmount(() => {
     <aside class="sidebar" :class="mainSidebarClass">
       <div class="px-5 pb-5 pt-6">
         <div class="text-2xl font-semibold tracking-wide text-white">NetPulse</div>
-        <div class="mt-1 text-xs text-slate-400">NOC Dashboard</div>
+        <div class="mt-1 text-xs text-slate-400">网络运维中心</div>
       </div>
       <el-menu
         :default-active="activeMenu"
@@ -208,13 +210,14 @@ onBeforeUnmount(() => {
           <el-button v-if="isMobile" class="np-menu-trigger" @click="sidebarOpen = !sidebarOpen">菜单</el-button>
           <div>
           <h2 class="text-xl font-semibold text-slate-900">{{ pageTitle }}</h2>
-          <div class="text-xs text-slate-500">Professional Network Operations Center</div>
+          <div class="text-xs text-slate-500">专业网络运维中心</div>
           </div>
         </div>
       </header>
 
       <section class="np-content">
-        <router-view />
+        <router-view v-if="isAuthed" />
+        <el-empty v-else description="请先登录后使用 NetPulse" :image-size="88" />
       </section>
     </main>
 

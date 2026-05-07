@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onActivated, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { api, getApiError } from "../services/api";
@@ -30,10 +30,10 @@ const avgLatency = computed(() => {
 });
 
 function severityOf(log) {
-  const action = String(log.action || "").toUpperCase();
-  const target = String(log.target || "").toUpperCase();
-  if (action.includes("RESTORE") || target.includes("OFFLINE") || target.includes("TEMP") || target.includes("POWER")) return "error";
-  if (target.includes("OSPF") || target.includes("BGP") || target.includes("FLAP")) return "warning";
+  const level = String(log.level || "").toUpperCase();
+  const msg = String(log.message || "").toUpperCase();
+  if (level === "ERROR" || msg.includes("OFFLINE") || msg.includes("DOWN") || msg.includes("TEMP") || msg.includes("POWER")) return "error";
+  if (level === "WARNING" || msg.includes("OSPF") || msg.includes("BGP") || msg.includes("FLAP")) return "warning";
   return "info";
 }
 
@@ -48,7 +48,14 @@ async function loadDevices() {
   loading.value = true;
   try {
     const res = await api.listDevices();
-    devices.value = res.data || [];
+    const rows = (res.data || []).map((row) => {
+      const s = String(row.status || "unknown").toLowerCase();
+      return {
+        ...row,
+        status: s === "online" || s === "offline" ? s : "unknown"
+      };
+    });
+    devices.value = rows;
   } catch (err) {
     ElMessage.error(getApiError(err, "加载资产列表失败"));
   } finally {
@@ -59,23 +66,25 @@ async function loadDevices() {
 async function loadFeed() {
   feedLoading.value = true;
   try {
-    const res = await api.listAuditLogs();
-    criticalFeed.value = (res.data || []).slice(0, 20);
-  } catch (err) {
-    try {
-      const picked = (devices.value || []).slice(0, 3);
-      const logsRes = await Promise.all(picked.map((d) => api.getDeviceLogs(d.id)));
-      criticalFeed.value = logsRes.flatMap((x) => x.data || []).slice(0, 20);
-    } catch (fallbackErr) {
-      ElMessage.error(getApiError(fallbackErr, "加载关键事件失败"));
+    const picked = (devices.value || []).slice(0, 12);
+    if (!picked.length) {
+      criticalFeed.value = [];
+      return;
     }
+    const logsRes = await Promise.all(picked.map((d) => api.getDeviceLogs(d.id)));
+    const merged = logsRes.flatMap((x) => x.data || []);
+    merged.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+    criticalFeed.value = merged.slice(0, 20);
+  } catch (err) {
+    ElMessage.error(getApiError(err, "加载设备日志失败"));
   } finally {
     feedLoading.value = false;
   }
 }
 
 async function refreshAll() {
-  await Promise.all([loadDevices(), loadFeed()]);
+  await loadDevices();
+  await loadFeed();
 }
 
 async function deleteDevice(id) {
@@ -131,6 +140,16 @@ function goDetail(row) {
 }
 
 onMounted(refreshAll);
+onActivated(refreshAll);
+
+watch(
+  () => router.currentRoute.value.path,
+  async (path) => {
+    if (path === "/") {
+      await refreshAll();
+    }
+  }
+);
 </script>
 
 <template>
@@ -207,9 +226,9 @@ onMounted(refreshAll);
               }">
                 <div class="flex items-center justify-between gap-2">
                   <div class="text-xs font-semibold uppercase text-slate-600">{{ item.severity }}</div>
-                  <div class="text-xs text-slate-500">{{ item.timestamp || '-' }}</div>
+                  <div class="text-xs text-slate-500">{{ item.created_at || item.timestamp || '-' }}</div>
                 </div>
-                <div class="mt-1 text-sm text-slate-700">{{ item.action }} · {{ item.target || item.path }}</div>
+                <div class="mt-1 text-sm text-slate-700">{{ item.message || `${item.action || ''} ${item.target || item.path || ''}` }}</div>
               </div>
               <el-empty v-if="!feedView.length" description="暂无关键事件" :image-size="72" />
             </div>

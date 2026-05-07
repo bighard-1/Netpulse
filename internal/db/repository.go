@@ -1488,23 +1488,22 @@ func (r *Repository) SaveMetrics(
 	ts time.Time,
 	metrics []InterfaceMetric,
 ) error {
-	const ensureInterfaceQ = `
-		INSERT INTO interfaces (device_id, "index", name, remark)
-		VALUES ($1, $2, $3, '')
-		ON CONFLICT (device_id, "index")
-		DO UPDATE SET
-			name = CASE
-				WHEN EXCLUDED.name <> '' THEN EXCLUDED.name
-				ELSE interfaces.name
-			END;
-	`
 	const q = `
+		WITH upsert_if AS (
+			INSERT INTO interfaces (device_id, "index", name, remark)
+			VALUES ($2, $3, $8, '')
+			ON CONFLICT (device_id, "index")
+			DO UPDATE SET
+				name = CASE
+					WHEN EXCLUDED.name <> '' THEN EXCLUDED.name
+					ELSE interfaces.name
+				END
+			RETURNING id
+		)
 		INSERT INTO metrics (
 			ts, device_id, interface_id, cpu_usage, memory_usage, traffic_in_bps, traffic_out_bps
 		)
-		VALUES ($1, $2, (
-			SELECT i.id FROM interfaces i WHERE i.device_id = $2 AND i."index" = $3
-		), $4, $5, $6, $7);
+		VALUES ($1, $2, (SELECT id FROM upsert_if LIMIT 1), $4, $5, $6, $7);
 	`
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1519,12 +1518,9 @@ func (r *Repository) SaveMetrics(
 		mem := clampPercent(m.MemoryUsage)
 		inBps := clampTrafficBps(m.TrafficInBps)
 		outBps := clampTrafficBps(m.TrafficOutBps)
-		if _, err := tx.ExecContext(ctx, ensureInterfaceQ, deviceID, m.IfIndex, m.IfName); err != nil {
-			return fmt.Errorf("ensure interface ifIndex=%d: %w", m.IfIndex, err)
-		}
 
 		if _, err := tx.ExecContext(
-			ctx, q, ts, deviceID, m.IfIndex, cpu, mem, inBps, outBps,
+			ctx, q, ts, deviceID, m.IfIndex, cpu, mem, inBps, outBps, m.IfName,
 		); err != nil {
 			return fmt.Errorf("insert metric ifIndex=%d: %w", m.IfIndex, err)
 		}

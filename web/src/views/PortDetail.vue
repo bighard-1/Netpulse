@@ -32,17 +32,24 @@ async function loadHistory() {
     const { start, end } = getRange();
     const res = await api.getHistory("traffic", props.id, start.toISOString(), end.toISOString());
     const data = res.data.data || [];
+    const hasData = data.length > 0;
     chart?.setOption({
       grid: { left: 50, right: 20, top: 40, bottom: 40 },
       tooltip: { trigger: "axis" },
       legend: { data: ["入方向 bps", "出方向 bps"] },
+      title: hasData ? undefined : {
+        text: "当前时间范围暂无流量数据",
+        left: "center",
+        top: "middle",
+        textStyle: { color: "#94a3b8", fontSize: 14, fontWeight: "normal" }
+      },
       xAxis: { type: "category", data: data.map((p) => p.timestamp) },
       yAxis: { type: "value" },
       series: [
         { name: "入方向 bps", type: "line", smooth: true, areaStyle: { opacity: 0.08 }, data: data.map((p) => Number(p.traffic_in_bps || 0)) },
         { name: "出方向 bps", type: "line", smooth: true, areaStyle: { opacity: 0.08 }, data: data.map((p) => Number(p.traffic_out_bps || 0)) }
       ]
-    });
+    }, true);
   } catch (err) {
     ElMessage.error(getApiError(err, "加载端口流量失败"));
   } finally {
@@ -54,6 +61,17 @@ onMounted(async () => {
   await nextTick();
   const m = await import("echarts");
   chart = m.init(chartRef.value);
+  chart.setOption({
+    grid: { left: 50, right: 20, top: 40, bottom: 40 },
+    tooltip: { trigger: "axis" },
+    legend: { data: ["入方向 bps", "出方向 bps"] },
+    xAxis: { type: "category", data: [] },
+    yAxis: { type: "value" },
+    series: [
+      { name: "入方向 bps", type: "line", smooth: true, areaStyle: { opacity: 0.08 }, data: [] },
+      { name: "出方向 bps", type: "line", smooth: true, areaStyle: { opacity: 0.08 }, data: [] }
+    ]
+  }, true);
   await loadHistory();
   window.addEventListener("resize", resizeChart);
 });
@@ -71,7 +89,7 @@ function resizeChart() {
 <template>
   <div class="space-y-5">
     <el-breadcrumb separator=">">
-      <el-breadcrumb-item :to="{ path: '/' }">Assets</el-breadcrumb-item>
+      <el-breadcrumb-item :to="{ path: '/' }">资产</el-breadcrumb-item>
       <el-breadcrumb-item :to="{ path: `/device/${route.query.deviceId || ''}` }">{{ route.query.deviceIp || '设备' }}</el-breadcrumb-item>
       <el-breadcrumb-item>{{ portMeta.name }}</el-breadcrumb-item>
     </el-breadcrumb>
@@ -99,11 +117,9 @@ function resizeChart() {
 
     <el-card>
       <template #header><span class="text-base font-semibold">端口流量（入/出）</span></template>
-      <el-skeleton :loading="loading" animated :rows="10">
-        <template #default>
-          <div ref="chartRef" class="h-[560px] w-full"></div>
-        </template>
-      </el-skeleton>
+      <div v-loading="loading">
+        <div ref="chartRef" class="h-[560px] w-full"></div>
+      </div>
     </el-card>
   </div>
 </template>
