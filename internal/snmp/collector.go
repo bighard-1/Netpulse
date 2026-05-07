@@ -19,6 +19,7 @@ const (
 	OIDIfHCOutOctets  = ".1.3.6.1.2.1.31.1.1.1.10"
 	OIDIfInOctets     = ".1.3.6.1.2.1.2.2.1.10"
 	OIDIfOutOctets    = ".1.3.6.1.2.1.2.2.1.16"
+	OIDIfOperStatus   = ".1.3.6.1.2.1.2.2.1.8"
 )
 
 type InterfaceInfo struct {
@@ -31,6 +32,7 @@ type InterfaceCounters struct {
 	IfName    string
 	InOctets  uint64
 	OutOctets uint64
+	OperUp    bool
 }
 
 type PollResult struct {
@@ -188,6 +190,7 @@ func (c *Collector) PollDevice(ip string, opt PollOptions) (PollResult, error) {
 	if err != nil {
 		return PollResult{}, err
 	}
+	statusMap, _ := c.fetchIfOperStatus(client)
 
 	merged := make([]InterfaceCounters, 0, len(ifNames))
 	for idx, name := range ifNames {
@@ -196,6 +199,7 @@ func (c *Collector) PollDevice(ip string, opt PollOptions) (PollResult, error) {
 			IfName:    name,
 			InOctets:  inMap[idx],
 			OutOctets: outMap[idx],
+			OperUp:    statusMap[idx],
 		})
 	}
 
@@ -241,7 +245,7 @@ func (c *Collector) getAverageCPU(client *gosnmp.GoSNMP, oids []string) (float64
 	for _, oid := range oids {
 		pdus, err := client.BulkWalkAll(oid)
 		if err == nil && len(pdus) > 0 {
-			return averageNumeric(pdus), nil
+			return averagePercent(pdus), nil
 		}
 		if err != nil {
 			lastErr = err
@@ -255,13 +259,29 @@ func (c *Collector) getAverageMemory(client *gosnmp.GoSNMP, oids []string) (floa
 	for _, oid := range oids {
 		pdus, err := client.BulkWalkAll(oid)
 		if err == nil && len(pdus) > 0 {
-			return averageNumeric(pdus), nil
+			return averagePercent(pdus), nil
 		}
 		if err != nil {
 			lastErr = err
 		}
 	}
 	return 0, fmt.Errorf("walk memory oid failed: %w", lastErr)
+}
+
+func (c *Collector) fetchIfOperStatus(client *gosnmp.GoSNMP) (map[int]bool, error) {
+	pdus, err := client.BulkWalkAll(OIDIfOperStatus)
+	if err != nil {
+		return nil, err
+	}
+	out := map[int]bool{}
+	for _, p := range pdus {
+		idx, err := oidIndex(p.Name)
+		if err != nil {
+			continue
+		}
+		out[idx] = toUint64(p.Value) == 1
+	}
+	return out, nil
 }
 
 func (c *Collector) fetchIfNames(client *gosnmp.GoSNMP) (map[int]string, error) {
@@ -315,6 +335,40 @@ func averageNumeric(pdus []gosnmp.SnmpPDU) float64 {
 	var n float64
 	for _, p := range pdus {
 		sum += float64(toUint64(p.Value))
+		n++
+	}
+	if n == 0 {
+		return 0
+	}
+	return sum / n
+}
+
+func normalizePercent(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v <= 100 {
+		return v
+	}
+	// Some devices return hundredths (e.g. 7534 => 75.34)
+	if v <= 10000 {
+		return v / 100
+	}
+	return 100
+}
+
+func averagePercent(pdus []gosnmp.SnmpPDU) float64 {
+	if len(pdus) == 0 {
+		return 0
+	}
+	var sum float64
+	var n float64
+	for _, p := range pdus {
+		v := normalizePercent(float64(toUint64(p.Value)))
+		if v < 0 || v > 100 {
+			continue
+		}
+		sum += v
 		n++
 	}
 	if n == 0 {

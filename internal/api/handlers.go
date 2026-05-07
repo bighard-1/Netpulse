@@ -45,6 +45,7 @@ func (h *Handler) Router() http.Handler {
 	r.Group(func(pr chi.Router) {
 		pr.Use(h.authMiddleware)
 		pr.With(h.requirePermission("device.read")).Get("/api/devices", h.handleListDevices)
+		pr.With(h.requirePermission("device.read")).Get("/api/search", h.handleGlobalSearch)
 		pr.Get("/api/devices/{id}", h.handleGetDevice)
 		pr.With(h.requirePermission("device.read")).Get("/api/devices/{id}/diagnose", h.handleDiagnoseDevice)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("ADD_DEVICE")).Post("/api/devices", h.handleAddDevice)
@@ -131,6 +132,7 @@ func (h *Handler) handleGetDevice(w http.ResponseWriter, r *http.Request) {
 
 type addDeviceRequest struct {
 	IP              string `json:"ip"`
+	Name            string `json:"name"`
 	Brand           string `json:"brand"`
 	Community       string `json:"community"`
 	SNMPVersion     string `json:"snmp_version"`
@@ -162,6 +164,16 @@ func (h *Handler) handleListDevices(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+func (h *Handler) handleGlobalSearch(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	items, err := h.repo.GlobalSearch(r.Context(), q, 120)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
 func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 	var req addDeviceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -175,6 +187,9 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 	if req.SNMPVersion == "" {
 		req.SNMPVersion = "2c"
 	}
+	if req.Name == "" {
+		req.Name = req.IP
+	}
 	if req.SNMPPort <= 0 {
 		req.SNMPPort = 161
 	}
@@ -185,6 +200,7 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 
 	deviceID, err := h.repo.AddDevice(r.Context(), db.Device{
 		IP:          req.IP,
+		Name:        req.Name,
 		Brand:       req.Brand,
 		Community:   req.Community,
 		SNMPVersion: req.SNMPVersion,

@@ -36,9 +36,11 @@ type Worker struct {
 	cpuThreshold  float64
 	memThreshold  float64
 
-	mu   sync.Mutex
-	last map[string]counterState
-	ifs  map[int64]string
+	mu     sync.Mutex
+	last   map[string]counterState
+	ifs    map[int64]string
+	devUp  map[int64]bool
+	portUp map[string]bool
 }
 
 func NewWorker(repo *db.Repository, collector *Collector, interval time.Duration) *Worker {
@@ -78,6 +80,8 @@ func NewWorker(repo *db.Repository, collector *Collector, interval time.Duration
 		memThreshold:  memTh,
 		last:          make(map[string]counterState),
 		ifs:           make(map[int64]string),
+		devUp:         make(map[int64]bool),
+		portUp:        make(map[string]bool),
 	}
 }
 
@@ -166,6 +170,7 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 
 	result, err := w.collector.PollDevice(d.IP, opt)
 	if err != nil {
+		w.trackDeviceState(ctx, d, false)
 		log.Printf("snmp poll failed device=%d ip=%s: %v", d.ID, d.IP, err)
 		code, reason := classifyPollError(err)
 		pingOK, tcpOK := probeReachability(deviceCtx, d.IP, d.SNMPPort)
@@ -180,6 +185,7 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 		w.sendAlert("error", d, code, reason)
 		return
 	}
+	w.trackDeviceState(ctx, d, true)
 
 	interfaces := make([]db.Interface, 0, len(result.Interfaces))
 	for _, itf := range result.Interfaces {
@@ -197,6 +203,7 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 	mList := make([]db.InterfaceMetric, 0, len(result.Interfaces))
 	for _, itf := range result.Interfaces {
 		inBps, outBps := w.calcBps(d.ID, itf.IfIndex, itf.InOctets, itf.OutOctets, result.PolledAt)
+		w.trackPortState(ctx, d, itf.IfIndex, itf.IfName, itf.OperUp)
 		mList = append(mList, db.InterfaceMetric{
 			IfIndex:       itf.IfIndex,
 			IfName:        itf.IfName,
@@ -218,6 +225,41 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 	}
 	if result.MemoryUsage >= w.memThreshold {
 		w.sendAlert("warning", d, "MEM_HIGH", fmt.Sprintf("内存利用率 %.2f%% 超过阈值 %.2f%%", result.MemoryUsage, w.memThreshold))
+	}
+}
+
+func (w *Worker) trackDeviceState(ctx context.Context, d db.Device, up bool) {
+	w.mu.Lock()
+	prev, ok := w.devUp[d.ID]
+	w.devUp[d.ID] = up
+	w.mu.Unlock()
+	if !ok {
+		return
+	}
+	if prev != up {
+		if up {
+			_ = w.repo.AddDeviceLog(ctx, d.ID, "INFO", "[DEVICE_UP] 设备状态由离线变为在线")
+		} else {
+			_ = w.repo.AddDeviceLog(ctx, d.ID, "WARNING", "[DEVICE_DOWN] 设备状态由在线变为离线")
+		}
+	}
+}
+
+func (w *Worker) trackPortState(ctx context.Context, d db.Device, ifIndex int, ifName string, up bool) {
+	key := interfaceKey(d.ID, ifIndex) + ":oper"
+	w.mu.Lock()
+	prev, ok := w.portUp[key]
+	w.portUp[key] = up
+	w.mu.Unlock()
+	if !ok {
+		return
+	}
+	if prev != up {
+		if up {
+			_ = w.repo.AddDeviceLog(ctx, d.ID, "INFO", fmt.Sprintf("[PORT_UP] 端口 %s(ifIndex=%d) 状态由down变为up", ifName, ifIndex))
+		} else {
+			_ = w.repo.AddDeviceLog(ctx, d.ID, "WARNING", fmt.Sprintf("[PORT_DOWN] 端口 %s(ifIndex=%d) 状态由up变为down", ifName, ifIndex))
+		}
 	}
 }
 

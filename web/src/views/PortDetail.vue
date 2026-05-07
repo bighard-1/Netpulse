@@ -33,10 +33,17 @@ function bpsLabel(v) {
   return `${n.toFixed(0)} bps`;
 }
 
-function baseOption(title) {
+function pickUnit(maxVal) {
+  if (maxVal >= 1e9) return { unit: "Gbps", div: 1e9 };
+  if (maxVal >= 1e6) return { unit: "Mbps", div: 1e6 };
+  if (maxVal >= 1e3) return { unit: "Kbps", div: 1e3 };
+  return { unit: "bps", div: 1 };
+}
+
+function baseOption(title, unitInfo) {
   return {
     animation: false,
-    grid: { left: 60, right: 20, top: 42, bottom: 48 },
+    grid: { left: 82, right: 20, top: 42, bottom: 48 },
     title: { text: title, left: 10, top: 8, textStyle: { fontSize: 14, fontWeight: 600 } },
     tooltip: {
       trigger: "axis",
@@ -58,7 +65,9 @@ function baseOption(title) {
     },
     yAxis: {
       type: "value",
-      axisLabel: { formatter: (val) => bpsLabel(val) }
+      splitNumber: 6,
+      name: unitInfo.unit,
+      axisLabel: { formatter: (val) => `${(val / unitInfo.div).toFixed(2)}` }
     },
     series: [
       {
@@ -104,7 +113,9 @@ function applyChart(chart, title, data) {
   if (!chart) return;
   const { inbound, outbound } = toSeriesData(data);
   const hasData = inbound.length > 0 || outbound.length > 0;
-  const opt = baseOption(title);
+  const maxVal = Math.max(1, ...inbound.map((x) => x[1]), ...outbound.map((x) => x[1]));
+  const unitInfo = pickUnit(maxVal);
+  const opt = baseOption(title, unitInfo);
   opt.series[0].data = inbound;
   opt.series[1].data = outbound;
   if (!hasData) {

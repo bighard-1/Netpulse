@@ -30,6 +30,9 @@ export const api = {
   listDevices() {
     return http.get("/devices");
   },
+  globalSearch(q) {
+    return http.get("/search", { params: { q } });
+  },
   async getDeviceById(id) {
     const res = await http.get(`/devices/${id}`);
     return res.data || null;

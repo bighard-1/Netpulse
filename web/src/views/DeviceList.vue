@@ -9,12 +9,14 @@ const loading = ref(false);
 const devices = ref([]);
 const globalKeyword = ref("");
 const appliedKeyword = ref("");
+const searchLoading = ref(false);
+const searchResults = ref([]);
 const feedLoading = ref(false);
 const criticalFeed = ref([]);
 
 const addVisible = ref(false);
 const addLoading = ref(false);
-const addForm = ref({ ip: "", brand: "H3C", community: "public", remark: "", snmp_version: "2c", snmp_port: 161 });
+const addForm = ref({ ip: "", name: "", brand: "H3C", community: "public", remark: "", snmp_version: "2c", snmp_port: 161 });
 
 const remarkVisible = ref(false);
 const remarkLoading = ref(false);
@@ -26,7 +28,10 @@ const offlineDevices = computed(() => devices.value.filter((d) => d.status === "
 const filteredDevices = computed(() => {
   const kw = appliedKeyword.value.trim().toLowerCase();
   if (!kw) return devices.value;
-  return devices.value.filter((d) => [String(d.id), d.ip || "", d.brand || "", d.remark || ""].join(" ").toLowerCase().includes(kw));
+  return devices.value.filter((d) => {
+    const ports = (d.interfaces || []).map((p) => `${p.name || ""} ${p.remark || ""} ${p.index || ""}`).join(" ");
+    return [String(d.id), d.ip || "", d.name || "", d.brand || "", d.remark || "", ports].join(" ").toLowerCase().includes(kw);
+  });
 });
 const avgLatency = computed(() => {
   const samples = criticalFeed.value
@@ -47,7 +52,12 @@ function severityOf(log) {
 const feedView = computed(() => {
   return criticalFeed.value.map((item) => ({
     ...item,
-    severity: severityOf(item)
+    severity: severityOf(item),
+    deviceTitle: (() => {
+      const d = devices.value.find((x) => x.id === item.device_id);
+      if (!d) return `设备#${item.device_id || "-"}`;
+      return `${d.name || d.ip} (${d.ip})`;
+    })()
   }));
 });
 
@@ -114,7 +124,7 @@ async function addDevice() {
     await api.addDevice(addForm.value);
     ElMessage.success("资产添加成功");
     addVisible.value = false;
-    addForm.value = { ip: "", brand: "H3C", community: "public", remark: "", snmp_version: "2c", snmp_port: 161 };
+    addForm.value = { ip: "", name: "", brand: "H3C", community: "public", remark: "", snmp_version: "2c", snmp_port: 161 };
     await refreshAll();
   } catch (err) {
     ElMessage.error(getApiError(err, "保存资产失败"));
@@ -146,13 +156,28 @@ function goDetail(row) {
   router.push({ path: `/device/${row.id}`, query: { ip: row.ip } });
 }
 
-function applySearch() {
+async function applySearch() {
   appliedKeyword.value = globalKeyword.value;
+  const q = globalKeyword.value.trim();
+  if (!q) {
+    searchResults.value = [];
+    return;
+  }
+  searchLoading.value = true;
+  try {
+    const res = await api.globalSearch(q);
+    searchResults.value = res.data || [];
+  } catch (err) {
+    ElMessage.error(getApiError(err, "全局搜索失败"));
+  } finally {
+    searchLoading.value = false;
+  }
 }
 
 function resetSearch() {
   globalKeyword.value = "";
   appliedKeyword.value = "";
+  searchResults.value = [];
 }
 
 onMounted(refreshAll);
@@ -220,6 +245,7 @@ watch(
                 </template>
               </el-table-column>
               <el-table-column prop="ip" label="IP" min-width="160" />
+              <el-table-column prop="name" label="名称" min-width="180" />
               <el-table-column prop="brand" label="品牌" width="120" />
               <el-table-column prop="remark" label="备注" min-width="220" />
               <el-table-column label="操作" width="280">
@@ -249,6 +275,7 @@ watch(
                   <div class="text-xs font-semibold uppercase text-slate-600">{{ item.severity }}</div>
                   <div class="text-xs text-slate-500">{{ item.created_at || item.timestamp || '-' }}</div>
                 </div>
+                <div class="mt-1 text-xs text-slate-500">{{ item.deviceTitle }}</div>
                 <div class="mt-1 text-sm text-slate-700">{{ item.message || `${item.action || ''} ${item.target || item.path || ''}` }}</div>
               </div>
               <el-empty v-if="!feedView.length" description="暂无关键事件" :image-size="72" />
@@ -258,9 +285,21 @@ watch(
       </el-card>
     </section>
 
+    <el-card v-if="globalKeyword.trim()">
+      <template #header>
+        <span class="text-lg font-semibold">全局搜索结果</span>
+      </template>
+      <el-table :data="searchResults" class="np-borderless-table" v-loading="searchLoading">
+        <el-table-column prop="category" label="类型" width="140" />
+        <el-table-column prop="title" label="标题" min-width="220" />
+        <el-table-column prop="sub" label="详情" min-width="360" />
+      </el-table>
+    </el-card>
+
     <el-dialog v-model="addVisible" title="添加资产" width="560">
       <el-form label-position="top">
         <el-form-item label="设备 IP"><el-input v-model="addForm.ip" placeholder="例如 172.24.134.45" /></el-form-item>
+        <el-form-item label="资产名称"><el-input v-model="addForm.name" placeholder="例如 东润节点-A" /></el-form-item>
         <el-form-item label="品牌">
           <el-select v-model="addForm.brand" class="w-full">
             <el-option label="H3C" value="H3C" />

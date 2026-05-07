@@ -10,6 +10,8 @@ const router = useRouter();
 
 const loading = ref(false);
 const chartLoading = ref(false);
+const logsLoading = ref(false);
+const recentLogs = ref([]);
 const device = ref(null);
 const portKeyword = ref("");
 const remarkDialogVisible = ref(false);
@@ -34,11 +36,22 @@ async function loadDevice() {
   try {
     device.value = await api.getDeviceById(props.id);
     if (!device.value) return;
-    await renderCpuMem();
+    await Promise.all([renderCpuMem(), loadLogs()]);
   } catch (err) {
     ElMessage.error(getApiError(err, "加载设备详情失败"));
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadLogs() {
+  if (!props.id) return;
+  logsLoading.value = true;
+  try {
+    const res = await api.getDeviceLogs(props.id);
+    recentLogs.value = res.data || [];
+  } finally {
+    logsLoading.value = false;
   }
 }
 
@@ -190,6 +203,20 @@ watch(
         <div><div class="text-xs text-slate-500">备注</div><div class="font-semibold">{{ device.remark || '-' }}</div></div>
       </div>
       <el-empty v-else description="设备不存在" />
+    </el-card>
+
+    <el-card>
+      <template #header>
+        <div class="flex items-center justify-between">
+          <span class="text-base font-semibold">设备日志（最近100条）</span>
+          <el-button @click="loadLogs" :loading="logsLoading">刷新日志</el-button>
+        </div>
+      </template>
+      <el-table :data="recentLogs" class="np-borderless-table" height="280" v-loading="logsLoading">
+        <el-table-column prop="created_at" label="时间" width="190" />
+        <el-table-column prop="level" label="级别" width="100" />
+        <el-table-column prop="message" label="内容" min-width="480" />
+      </el-table>
     </el-card>
 
     <el-card>

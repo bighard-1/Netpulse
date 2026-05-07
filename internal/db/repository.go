@@ -23,6 +23,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE IF NOT EXISTS devices (
     id BIGSERIAL PRIMARY KEY,
     ip INET NOT NULL UNIQUE,
+    name VARCHAR(128),
     brand VARCHAR(32) NOT NULL,
     community VARCHAR(128) NOT NULL,
     snmp_version VARCHAR(8) NOT NULL DEFAULT '2c',
@@ -429,6 +430,13 @@ BEGIN
     ) THEN
         IF NOT EXISTS (
             SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='devices' AND column_name='name'
+        ) THEN
+            ALTER TABLE devices ADD COLUMN name VARCHAR(128);
+            UPDATE devices SET name = host(ip) WHERE name IS NULL OR name = '';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
             WHERE table_schema='public' AND table_name='devices' AND column_name='snmp_version'
         ) THEN
             ALTER TABLE devices ADD COLUMN snmp_version VARCHAR(8);
@@ -526,6 +534,7 @@ ON CONFLICT (role, permission) DO NOTHING;
 type Device struct {
 	ID          int64     `json:"id"`
 	IP          string    `json:"ip"`
+	Name        string    `json:"name"`
 	Brand       string    `json:"brand"`
 	Community   string    `json:"-"`
 	SNMPVersion string    `json:"snmp_version,omitempty"`
@@ -660,6 +669,13 @@ type BackupDrillReport struct {
 	Message   string    `json:"message"`
 	Detail    string    `json:"detail"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type GlobalSearchResult struct {
+	Category string `json:"category"`
+	ID       int64  `json:"id"`
+	Title    string `json:"title"`
+	Sub      string `json:"sub"`
 }
 
 type RuntimeSettings struct {
@@ -922,7 +938,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 		onlineWindow = 5 * time.Minute
 	}
 	const q = `
-		SELECT d.id, host(d.ip), d.brand, d.community, d.snmp_version, d.snmp_port,
+		SELECT d.id, host(d.ip), COALESCE(d.name, host(d.ip)), d.brand, d.community, d.snmp_version, d.snmp_port,
 		       COALESCE(d.v3_username,''), COALESCE(d.v3_auth_protocol,''), COALESCE(d.v3_auth_password,''),
 		       COALESCE(d.v3_priv_protocol,''), COALESCE(d.v3_priv_password,''), COALESCE(d.v3_security_level,''),
 		       COALESCE(d.remark, ''), d.created_at, lm.last_ts, COALESCE(dl.message, '')
@@ -943,7 +959,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 	`
 	var ds DeviceStatus
 	if err := r.db.QueryRowContext(ctx, q, id).Scan(
-		&ds.ID, &ds.IP, &ds.Brand, &ds.Community, &ds.SNMPVersion, &ds.SNMPPort,
+		&ds.ID, &ds.IP, &ds.Name, &ds.Brand, &ds.Community, &ds.SNMPVersion, &ds.SNMPPort,
 		&ds.V3Username, &ds.V3AuthProto, &ds.V3AuthPass, &ds.V3PrivProto, &ds.V3PrivPass, &ds.V3SecLevel,
 		&ds.Remark, &ds.CreatedAt, &ds.LastMetricAt, &ds.StatusReason,
 	); err != nil {
@@ -995,16 +1011,16 @@ func (r *Repository) AddDevice(ctx context.Context, d Device) (int64, error) {
 	d.V3PrivPass = r.encryptOpt(d.V3PrivPass)
 	const q = `
 		INSERT INTO devices (
-			ip, brand, community, snmp_version, snmp_port,
+			ip, name, brand, community, snmp_version, snmp_port,
 			v3_username, v3_auth_protocol, v3_auth_password, v3_priv_protocol, v3_priv_password, v3_security_level,
 			remark
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id;
 	`
 	var id int64
 	if err := r.db.QueryRowContext(
-		ctx, q, d.IP, d.Brand, d.Community, d.SNMPVersion, d.SNMPPort, d.V3Username, d.V3AuthProto,
+		ctx, q, d.IP, d.Name, d.Brand, d.Community, d.SNMPVersion, d.SNMPPort, d.V3Username, d.V3AuthProto,
 		d.V3AuthPass, d.V3PrivProto, d.V3PrivPass, d.V3SecLevel, d.Remark,
 	).Scan(&id); err != nil {
 		return 0, fmt.Errorf("add device: %w", err)
@@ -1022,7 +1038,7 @@ func (r *Repository) DeleteDevice(ctx context.Context, id int64) error {
 
 func (r *Repository) ListDevices(ctx context.Context) ([]Device, error) {
 	const q = `
-		SELECT id, host(ip), brand, community, snmp_version, snmp_port,
+		SELECT id, host(ip), COALESCE(name, host(ip)), brand, community, snmp_version, snmp_port,
 		       COALESCE(v3_username,''), COALESCE(v3_auth_protocol,''), COALESCE(v3_auth_password,''),
 		       COALESCE(v3_priv_protocol,''), COALESCE(v3_priv_password,''), COALESCE(v3_security_level,''),
 		       COALESCE(remark, ''), created_at
@@ -1038,7 +1054,7 @@ func (r *Repository) ListDevices(ctx context.Context) ([]Device, error) {
 	out := make([]Device, 0)
 	for rows.Next() {
 		var d Device
-		if err := rows.Scan(&d.ID, &d.IP, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.Remark, &d.CreatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.IP, &d.Name, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.Remark, &d.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan device: %w", err)
 		}
 		d.Community = r.decryptOpt(d.Community)
@@ -1278,9 +1294,9 @@ func (r *Repository) DeleteTopologyLink(ctx context.Context, id int64) error {
 }
 
 func (r *Repository) FindDeviceByIP(ctx context.Context, ip string) (*Device, error) {
-	const q = `SELECT id, host(ip), brand, community, snmp_version, snmp_port, COALESCE(v3_username,''), COALESCE(v3_auth_protocol,''), COALESCE(v3_auth_password,''), COALESCE(v3_priv_protocol,''), COALESCE(v3_priv_password,''), COALESCE(v3_security_level,''), COALESCE(remark,''), created_at FROM devices WHERE ip = $1::inet LIMIT 1;`
+	const q = `SELECT id, host(ip), COALESCE(name, host(ip)), brand, community, snmp_version, snmp_port, COALESCE(v3_username,''), COALESCE(v3_auth_protocol,''), COALESCE(v3_auth_password,''), COALESCE(v3_priv_protocol,''), COALESCE(v3_priv_password,''), COALESCE(v3_security_level,''), COALESCE(remark,''), created_at FROM devices WHERE ip = $1::inet LIMIT 1;`
 	var d Device
-	if err := r.db.QueryRowContext(ctx, q, ip).Scan(&d.ID, &d.IP, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.Remark, &d.CreatedAt); err != nil {
+	if err := r.db.QueryRowContext(ctx, q, ip).Scan(&d.ID, &d.IP, &d.Name, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.Remark, &d.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -1322,6 +1338,82 @@ func (r *Repository) ListBackupDrillReports(ctx context.Context, limit int) ([]B
 	return out, rows.Err()
 }
 
+func (r *Repository) GlobalSearch(ctx context.Context, q string, limit int) ([]GlobalSearchResult, error) {
+	kw := "%" + strings.TrimSpace(q) + "%"
+	if strings.TrimSpace(q) == "" {
+		return []GlobalSearchResult{}, nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 80
+	}
+	const sqlq = `
+		WITH dev AS (
+			SELECT 'device' AS category, d.id, COALESCE(d.name, host(d.ip)) AS title,
+			       ('IP='||host(d.ip)||' 品牌='||d.brand||' 备注='||COALESCE(d.remark,'')) AS sub
+			FROM devices d
+			WHERE host(d.ip) ILIKE $1 OR COALESCE(d.name,'') ILIKE $1 OR d.brand ILIKE $1 OR COALESCE(d.remark,'') ILIKE $1
+			LIMIT $2
+		),
+		ifs AS (
+			SELECT 'interface' AS category, i.id, i.name AS title,
+			       ('设备='||COALESCE(d.name,host(d.ip))||' ifIndex='||i."index"||' 备注='||COALESCE(i.remark,'')) AS sub
+			FROM interfaces i
+			JOIN devices d ON d.id=i.device_id
+			WHERE i.name ILIKE $1 OR COALESCE(i.remark,'') ILIKE $1 OR host(d.ip) ILIKE $1 OR COALESCE(d.name,'') ILIKE $1
+			LIMIT $2
+		),
+		logs AS (
+			SELECT 'device_log' AS category, l.id, LEFT(l.message, 64) AS title,
+			       ('设备='||COALESCE(d.name,host(d.ip))||' 时间='||to_char(l.created_at,'YYYY-MM-DD HH24:MI:SS')) AS sub
+			FROM device_logs l
+			JOIN devices d ON d.id=l.device_id
+			WHERE l.message ILIKE $1 OR l.level ILIKE $1 OR host(d.ip) ILIKE $1 OR COALESCE(d.name,'') ILIKE $1
+			ORDER BY l.created_at DESC
+			LIMIT $2
+		),
+		topos AS (
+			SELECT 'topology' AS category, t.id,
+			       ('链路 '||t.src_device_id||':'||t.src_if_index||' -> '||t.dst_device_id||':'||t.dst_if_index) AS title,
+			       ('协议='||COALESCE(t.protocol,'')||' 备注='||COALESCE(t.remark,'')) AS sub
+			FROM topology_links t
+			WHERE COALESCE(t.protocol,'') ILIKE $1 OR COALESCE(t.remark,'') ILIKE $1
+			LIMIT $2
+		),
+		audits AS (
+			SELECT 'audit_log' AS category, a.id, LEFT(COALESCE(a.action,''), 64) AS title,
+			       (COALESCE(a.path,'')||' '||COALESCE(a.target,'')) AS sub
+			FROM audit_logs a
+			WHERE COALESCE(a.action,'') ILIKE $1 OR COALESCE(a.path,'') ILIKE $1 OR COALESCE(a.target,'') ILIKE $1
+			ORDER BY a.ts DESC
+			LIMIT $2
+		)
+		SELECT category, id, title, sub FROM dev
+		UNION ALL
+		SELECT category, id, title, sub FROM ifs
+		UNION ALL
+		SELECT category, id, title, sub FROM logs
+		UNION ALL
+		SELECT category, id, title, sub FROM topos
+		UNION ALL
+		SELECT category, id, title, sub FROM audits
+		LIMIT $2;
+	`
+	rows, err := r.db.QueryContext(ctx, sqlq, kw, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []GlobalSearchResult{}
+	for rows.Next() {
+		var x GlobalSearchResult
+		if err := rows.Scan(&x.Category, &x.ID, &x.Title, &x.Sub); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
 func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus, error) {
 	runtime, _ := r.GetRuntimeSettings(ctx)
 	onlineWindow := time.Duration(runtime.StatusOnlineWindowSec) * time.Second
@@ -1329,7 +1421,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		onlineWindow = 5 * time.Minute
 	}
 	const q = `
-		SELECT d.id, host(d.ip), d.brand, d.community, d.snmp_version, d.snmp_port,
+		SELECT d.id, host(d.ip), COALESCE(d.name, host(d.ip)), d.brand, d.community, d.snmp_version, d.snmp_port,
 		       COALESCE(d.v3_username,''), COALESCE(d.v3_auth_protocol,''), COALESCE(d.v3_auth_password,''),
 		       COALESCE(d.v3_priv_protocol,''), COALESCE(d.v3_priv_password,''), COALESCE(d.v3_security_level,''),
 		       COALESCE(d.remark, ''), d.created_at, lm.last_ts, COALESCE(dl.message, '')
@@ -1359,7 +1451,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 	for rows.Next() {
 		var ds DeviceStatus
 		if err := rows.Scan(
-			&ds.ID, &ds.IP, &ds.Brand, &ds.Community, &ds.SNMPVersion, &ds.SNMPPort,
+			&ds.ID, &ds.IP, &ds.Name, &ds.Brand, &ds.Community, &ds.SNMPVersion, &ds.SNMPPort,
 			&ds.V3Username, &ds.V3AuthProto, &ds.V3AuthPass, &ds.V3PrivProto, &ds.V3PrivPass, &ds.V3SecLevel,
 			&ds.Remark, &ds.CreatedAt, &ds.LastMetricAt, &ds.StatusReason,
 		); err != nil {
