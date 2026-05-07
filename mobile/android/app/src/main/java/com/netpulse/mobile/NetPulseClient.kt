@@ -70,11 +70,16 @@ class NetPulseClient(
         }
     }
 
-    fun fetchAuditLogs(): List<AuditLog> {
-        val req = reqBuilder("/audit-logs").get().build()
+    fun fetchRecentEvents(): List<AuditLog> {
+        val req = reqBuilder("/events/recent?limit=5").get().build()
         http.newCall(req).execute().use { resp ->
-            ensureOk(resp.code, "获取审计日志失败")
-            return json.decodeFromString(resp.body!!.string())
+            ensureOk(resp.code, "获取事件流失败")
+            val raw = resp.body!!.string()
+            return try {
+                json.decodeFromString<RecentEventsResponse>(raw).data
+            } catch (_: Exception) {
+                json.decodeFromString(raw)
+            }
         }
     }
 
@@ -107,6 +112,16 @@ class NetPulseClient(
         }
     }
 
+
+
+    fun updateDevice(device: DeviceStatus, maintenanceMode: Boolean) {
+        val body = """{"name":${json.encodeToString(device.name)},"brand":${json.encodeToString(device.brand)},"remark":${json.encodeToString(device.remark)},"maintenance_mode":$maintenanceMode}"""
+            .toRequestBody("application/json".toMediaType())
+        val req = reqBuilder("/devices/${device.id}").put(body).build()
+        http.newCall(req).execute().use { resp ->
+            ensureOk(resp.code, "更新维护模式失败")
+        }
+    }
     fun updateDeviceRemark(deviceID: Long, remark: String) {
         val body = """{"remark":${json.encodeToString(remark)}}"""
             .toRequestBody("application/json".toMediaType())
@@ -116,3 +131,6 @@ class NetPulseClient(
         }
     }
 }
+
+@kotlinx.serialization.Serializable
+private data class RecentEventsResponse(val data: List<AuditLog> = emptyList())

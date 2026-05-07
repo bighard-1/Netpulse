@@ -3,21 +3,25 @@ import { createRouter, createWebHistory } from "vue-router";
 const routes = [
   {
     path: "/",
+    redirect: "/dashboard"
+  },
+  {
+    path: "/dashboard",
+    name: "dashboard",
+    component: () => import("../views/DeviceList.vue"),
+    meta: { title: "NOC 仪表盘" }
+  },
+  {
+    path: "/assets",
     name: "assets",
     component: () => import("../views/DeviceList.vue"),
-    meta: { title: "资产总览" }
+    meta: { title: "资产中心" }
   },
   {
-    path: "/logs",
-    name: "global-logs",
+    path: "/alerts",
+    name: "alerts",
     component: () => import("../views/GlobalLogs.vue"),
-    meta: { title: "全局日志" }
-  },
-  {
-    path: "/topology",
-    name: "topology",
-    component: () => import("../views/Topology.vue"),
-    meta: { title: "拓扑" }
+    meta: { title: "告警与日志" }
   },
   {
     path: "/settings",

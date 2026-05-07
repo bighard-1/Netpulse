@@ -8,11 +8,13 @@ const props = defineProps({ id: { type: [String, Number], required: true } });
 const route = useRoute();
 
 const loading = ref(false);
+const customRange = ref([]);
 const chartTodayRef = ref(null);
 const chart7dRef = ref(null);
 const chartMonthRef = ref(null);
+const chartCustomRef = ref(null);
 const portMeta = ref({ id: props.id, name: route.query.portName || `端口-${props.id}` });
-let charts = { today: null, d7: null, month: null };
+let charts = { today: null, d7: null, month: null, custom: null };
 
 function startOfDay(d = new Date()) {
   const x = new Date(d);
@@ -43,8 +45,15 @@ function pickUnit(maxVal) {
 function baseOption(title, unitInfo) {
   return {
     animation: false,
-    grid: { left: 82, right: 20, top: 42, bottom: 48 },
-    title: { text: title, left: 10, top: 8, textStyle: { fontSize: 14, fontWeight: 600 } },
+    grid: { left: 82, right: 20, top: 48, bottom: 48 },
+    title: {
+      text: title,
+      subtext: `单位: ${unitInfo.unit}`,
+      left: 10,
+      top: 8,
+      textStyle: { fontSize: 14, fontWeight: 600 },
+      subtextStyle: { fontSize: 12, color: "#64748b", lineHeight: 14 }
+    },
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "line", animation: false },
@@ -66,7 +75,6 @@ function baseOption(title, unitInfo) {
     yAxis: {
       type: "value",
       splitNumber: 6,
-      name: unitInfo.unit,
       axisLabel: { formatter: (val) => `${(val / unitInfo.div).toFixed(2)}` }
     },
     series: [
@@ -146,8 +154,28 @@ async function loadAllCharts() {
     applyChart(charts.today, "当日流量", today);
     applyChart(charts.d7, "近7天流量", d7);
     applyChart(charts.month, "本月流量", month);
+    if (customRange.value?.length === 2) {
+      await loadCustomChart();
+    }
   } catch (err) {
     ElMessage.error(getApiError(err, "加载端口流量失败"));
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function loadCustomChart() {
+  if (!customRange.value?.length || customRange.value.length !== 2) {
+    return;
+  }
+  const [start, end] = customRange.value;
+  if (!start || !end) return;
+  loading.value = true;
+  try {
+    const data = await fetchRange(new Date(start), new Date(end));
+    applyChart(charts.custom, "自定义时间段流量", data);
+  } catch (err) {
+    ElMessage.error(getApiError(err, "加载自定义时间段流量失败"));
   } finally {
     loading.value = false;
   }
@@ -157,6 +185,7 @@ function resizeCharts() {
   charts.today?.resize();
   charts.d7?.resize();
   charts.month?.resize();
+  charts.custom?.resize();
 }
 
 onMounted(async () => {
@@ -165,9 +194,11 @@ onMounted(async () => {
   charts.today = e.init(chartTodayRef.value);
   charts.d7 = e.init(chart7dRef.value);
   charts.month = e.init(chartMonthRef.value);
+  charts.custom = e.init(chartCustomRef.value);
   applyChart(charts.today, "当日流量", []);
   applyChart(charts.d7, "近7天流量", []);
   applyChart(charts.month, "本月流量", []);
+  applyChart(charts.custom, "自定义时间段流量", []);
   await loadAllCharts();
   window.addEventListener("resize", resizeCharts);
 });
@@ -177,6 +208,7 @@ onBeforeUnmount(() => {
   charts.today?.dispose();
   charts.d7?.dispose();
   charts.month?.dispose();
+  charts.custom?.dispose();
 });
 </script>
 
@@ -194,12 +226,24 @@ onBeforeUnmount(() => {
           <div class="text-xs text-slate-500">端口</div>
           <div class="text-lg font-semibold">{{ portMeta.name }}</div>
         </div>
-        <el-button @click="loadAllCharts" :loading="loading">刷新流量图</el-button>
+        <div class="flex items-center gap-2">
+          <el-date-picker
+            v-model="customRange"
+            type="datetimerange"
+            unlink-panels
+            range-separator="至"
+            start-placeholder="开始时间"
+            end-placeholder="结束时间"
+            @change="loadCustomChart"
+          />
+          <el-button @click="loadAllCharts" :loading="loading">刷新流量图</el-button>
+        </div>
       </div>
     </el-card>
 
     <el-card><div ref="chartTodayRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
     <el-card><div ref="chart7dRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
     <el-card><div ref="chartMonthRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
+    <el-card><div ref="chartCustomRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
   </div>
 </template>

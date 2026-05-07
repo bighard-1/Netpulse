@@ -11,8 +11,9 @@ enum UiSpec {
 }
 
 enum NpColor {
-    static let bg = Color(red: 248/255, green: 250/255, blue: 252/255)
+    static let bg = Color(red: 15/255, green: 23/255, blue: 42/255)
     static let indigo = Color(red: 99/255, green: 102/255, blue: 241/255)
+    static let card = Color(red: 30/255, green: 41/255, blue: 59/255)
     static let success = Color(red: 16/255, green: 185/255, blue: 129/255)
     static let danger = Color(red: 239/255, green: 68/255, blue: 68/255)
     static let warning = Color(red: 245/255, green: 158/255, blue: 11/255)
@@ -21,12 +22,14 @@ enum NpColor {
 struct DeviceStatus: Codable, Identifiable {
     let id: Int64
     let ip: String
+    let name: String
     let brand: String
     let community: String?
     let remark: String
     let created_at: String
     let last_metric_at: String?
     let status: String
+    let maintenance_mode: Bool?
     let status_reason: String?
     let interfaces: [NetInterface]
 }
@@ -240,6 +243,34 @@ final class AppVM: ObservableObject {
         }
     }
 
+    func updateMaintenanceMode(deviceID: Int64, enabled: Bool) async {
+        do {
+            let dev: DeviceStatus
+            if let cached = deviceDetail {
+                dev = cached
+            } else {
+                let req = authorizedRequest(URL(string: "\(baseURL)/devices/\(deviceID)")!)
+                let d = try await dataWithAuth(req)
+                dev = try JSONDecoder().decode(DeviceStatus.self, from: d)
+            }
+            let url = URL(string: "\(baseURL)/devices/\(deviceID)")!
+            var req = authorizedRequest(url)
+            req.httpMethod = "PUT"
+            req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONSerialization.data(withJSONObject: [
+                "name": dev.name,
+                "brand": dev.brand,
+                "remark": dev.remark,
+                "maintenance_mode": enabled
+            ])
+            _ = try await dataWithAuth(req)
+            await fetchDeviceDetail(deviceID: deviceID)
+            await refreshDevices()
+        } catch {
+            err = "更新维护模式失败"
+        }
+    }
+
     private func fetchLogs(deviceID: Int64) async throws -> [DeviceLog] {
         let req = authorizedRequest(URL(string: "\(baseURL)/devices/\(deviceID)/logs")!)
         let d = try await dataWithAuth(req)
@@ -247,8 +278,11 @@ final class AppVM: ObservableObject {
     }
 
     private func fetchAuditLogs() async throws -> [AuditLog] {
-        let req = authorizedRequest(URL(string: "\(baseURL)/audit-logs")!)
+        let req = authorizedRequest(URL(string: "\(baseURL)/events/recent?limit=5")!)
         let d = try await dataWithAuth(req)
+        if let wrapped = try? JSONDecoder().decode(EventsResponse.self, from: d) {
+            return wrapped.data
+        }
         return try JSONDecoder().decode([AuditLog].self, from: d)
     }
 
@@ -264,6 +298,10 @@ final class AppVM: ObservableObject {
         let d = try await dataWithAuth(req)
         return try JSONDecoder().decode(HistoryResp<T>.self, from: d).data
     }
+}
+
+struct EventsResponse: Codable {
+    let data: [AuditLog]
 }
 
 final class KeychainStore {
@@ -339,7 +377,7 @@ struct MainTabView: View {
                         .font(.title2.bold())
                     Text(vm.baseURL)
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.white.opacity(0.7))
                     Button("退出登录", role: .destructive) { vm.logout() }
                         .buttonStyle(.borderedProminent)
                 }
@@ -364,7 +402,7 @@ struct LoginView: View {
     var body: some View {
         VStack(spacing: UiSpec.sectionGap) {
             Text("NetPulse").font(.title.bold())
-            Text("Modern SaaS Mobile").foregroundStyle(.secondary)
+            Text("Modern SaaS Mobile").foregroundStyle(.white.opacity(0.7))
             TextField("用户名", text: $u).textFieldStyle(.roundedBorder)
             SecureField("密码", text: $p).textFieldStyle(.roundedBorder)
             TextField("服务器 API 地址", text: $base).textFieldStyle(.roundedBorder)
@@ -379,7 +417,7 @@ struct LoginView: View {
                 Button("Face ID / Touch ID") { Task { await vm.biometricLogin() } }
                     .buttonStyle(.bordered)
             }
-            Text("首次登录必须使用用户名密码").font(.footnote).foregroundStyle(.secondary)
+            Text("首次登录必须使用用户名密码").font(.footnote).foregroundStyle(.white.opacity(0.7))
             if !vm.err.isEmpty { Text(vm.err).foregroundStyle(.red) }
         }
         .padding(UiSpec.pagePadding)
@@ -392,6 +430,7 @@ struct HomeView: View {
     @EnvironmentObject var vm: AppVM
     @State private var editingDevice: DeviceStatus?
     @State private var editingRemark = ""
+    @State private var quickPeekDevice: DeviceStatus?
 
     private var onlineCount: Int { vm.devices.filter { $0.status == "online" }.count }
     private var offlineCount: Int { vm.devices.filter { $0.status != "online" }.count }
@@ -413,9 +452,7 @@ struct HomeView: View {
 
                     VStack(spacing: 8) {
                         ForEach(vm.devices) { d in
-                            NavigationLink(value: d.id) {
-                                DeviceRow(device: d)
-                            }
+                            Button { quickPeekDevice = d } label: { DeviceRow(device: d) }
                             .buttonStyle(.plain)
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 Button("Edit Remark") {
@@ -432,7 +469,7 @@ struct HomeView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Recent Events").font(.headline)
                             if vm.recentEvents.isEmpty {
-                                Text("暂无关键事件").foregroundStyle(.secondary)
+                                Text("暂无关键事件").foregroundStyle(.white.opacity(0.7))
                             } else {
                                 ForEach(vm.recentEvents.prefix(5)) { event in
                                     let sev = severity(of: event)
@@ -448,7 +485,7 @@ struct HomeView: View {
                 .padding(.vertical, 8)
             }
             .background(NpColor.bg)
-            .navigationTitle("Assets")
+            .navigationTitle("Assets").toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("刷新") { Task { await vm.refreshDevices() } }
@@ -459,6 +496,11 @@ struct HomeView: View {
             }
             .task { await vm.refreshDevices() }
             .refreshable { await vm.refreshDevices() }
+            .sheet(item: $quickPeekDevice) { d in
+                DeviceQuickPeekSheet(device: d)
+                    .environmentObject(vm)
+                    .presentationDetents([.medium, .large])
+            }
             .sheet(item: $editingDevice) { device in
                 NavigationStack {
                     Form {
@@ -513,7 +555,7 @@ struct DeviceDetailView: View {
                         }
                         Text("\(d.brand) · \(d.remark.isEmpty ? "未备注" : d.remark)")
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.white.opacity(0.7))
                     }
                 }
 
@@ -550,7 +592,7 @@ struct DeviceDetailView: View {
                                     Text(p.name)
                                     Text("索引:\(p.index) · \(p.remark.isEmpty ? "-" : p.remark)")
                                         .font(.footnote)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(.white.opacity(0.7))
                                 }
                             }
                         }
@@ -669,7 +711,7 @@ struct NpCard<Content: View>: View {
         VStack(alignment: .leading, spacing: 8) { content }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.white)
+            .background(NpColor.card)
             .clipShape(RoundedRectangle(cornerRadius: UiSpec.cardRadius))
             .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 2)
     }
@@ -677,15 +719,30 @@ struct NpCard<Content: View>: View {
 
 struct ShimmerRect: View {
     let height: CGFloat
-    @State private var opacity: Double = 0.35
+    @State private var phase: CGFloat = -220
 
     var body: some View {
         RoundedRectangle(cornerRadius: UiSpec.cardRadius)
-            .fill(Color.gray.opacity(opacity))
+            .fill(Color(red: 30/255, green: 41/255, blue: 59/255))
+            .overlay(
+                LinearGradient(
+                    colors: [
+                        Color(red: 30/255, green: 41/255, blue: 59/255),
+                        Color(red: 15/255, green: 23/255, blue: 42/255),
+                        Color(red: 30/255, green: 41/255, blue: 59/255)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .rotationEffect(.degrees(8))
+                .offset(x: phase)
+                .blendMode(.plusLighter)
+            )
+            .clipped()
             .frame(height: height)
             .onAppear {
-                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
-                    opacity = 0.72
+                withAnimation(.linear(duration: 1.5).repeatForever(autoreverses: false)) {
+                    phase = 240
                 }
             }
     }
@@ -782,11 +839,11 @@ struct EmptyStateCard: View {
                 .font(.title2)
                 .foregroundStyle(NpColor.indigo)
             Text(title).font(.headline)
-            Text(desc).font(.footnote).foregroundStyle(.secondary)
+            Text(desc).font(.footnote).foregroundStyle(.white.opacity(0.7))
         }
         .frame(maxWidth: .infinity)
         .padding(20)
-        .background(Color.white)
+        .background(NpColor.card)
         .clipShape(RoundedRectangle(cornerRadius: UiSpec.cardRadius))
         .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 2)
     }
@@ -804,11 +861,59 @@ struct DeviceRow: View {
                         .onLongPressGesture { UIPasteboard.general.string = device.ip }
                     Text("\(device.brand) · \(device.remark.isEmpty ? "未备注" : device.remark)")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.white.opacity(0.7))
                     if let reason = device.status_reason, !reason.isEmpty {
-                        Text(reason).font(.caption).foregroundStyle(.secondary)
+                        Text(reason).font(.caption).foregroundStyle(.white.opacity(0.7))
                     }
                 }
+            }
+        }
+    }
+}
+
+
+struct DeviceQuickPeekSheet: View {
+    @EnvironmentObject var vm: AppVM
+    let device: DeviceStatus
+    @State private var start = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
+    @State private var end = Date()
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: UiSpec.sectionGap) {
+                    NpCard {
+                        Text(device.ip).font(.headline).foregroundStyle(.white)
+                        Text("\(device.brand) · \(device.remark)").font(.footnote).foregroundStyle(.white.opacity(0.7))
+                    }
+                    NpCard {
+                        Text("CPU / 内存").font(.headline).foregroundStyle(.white)
+                        if vm.loading {
+                            ShimmerRect(height: 220)
+                        } else {
+                            Chart {
+                                ForEach(vm.cpu) { p in
+                                    LineMark(x: .value("时间", p.timestamp), y: .value("CPU", p.cpu_usage ?? 0)).foregroundStyle(NpColor.indigo)
+                                }
+                                ForEach(vm.mem) { p in
+                                    LineMark(x: .value("时间", p.timestamp), y: .value("MEM", p.mem_usage ?? 0)).foregroundStyle(NpColor.success)
+                                }
+                            }.frame(height: 220)
+                        }
+                    }
+                    NpCard {
+                        Text("端口").font(.headline).foregroundStyle(.white)
+                        ForEach(vm.deviceDetail?.interfaces ?? []) { p in
+                            Text("\(p.name) (#\(p.index))").foregroundStyle(.white)
+                        }
+                    }
+                }.padding(UiSpec.pagePadding)
+            }
+            .background(NpColor.bg)
+            .navigationTitle("Quick Peek")
+            .task {
+                await vm.fetchDeviceDetail(deviceID: device.id)
+                await vm.fetchDeviceHistory(deviceID: device.id, start: start, end: end)
             }
         }
     }

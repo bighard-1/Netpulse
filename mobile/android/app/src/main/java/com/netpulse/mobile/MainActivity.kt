@@ -31,6 +31,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.*
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,6 +40,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -66,7 +69,7 @@ import java.time.format.DateTimeFormatter
 import java.util.Date
 
 private object Np {
-    val Bg = Color(0xFFF8FAFC)
+    val Bg = Color(0xFF0F172A)
     val Indigo = Color(0xFF6366F1)
     val Success = Color(0xFF10B981)
     val Danger = Color(0xFFEF4444)
@@ -83,7 +86,7 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = lightColorScheme(primary = Np.Indigo, background = Np.Bg)) {
+            MaterialTheme(colorScheme = darkColorScheme(primary = Np.Indigo, background = Np.Bg, surface = Color(0xFF1E293B))) {
                 Surface(color = Np.Bg) {
                     NetPulseApp(vm = vm, onBiometricLogin = { triggerBiometricLogin() })
                 }
@@ -177,11 +180,13 @@ private fun MainShell(vm: MainViewModel, nav: androidx.navigation.NavHostControl
         }
     ) { p ->
         HomeScreen(
+            vm = vm,
             devices = devices,
             loading = loading,
             recentEvents = auditLogs,
             onRefresh = vm::refreshDevices,
             onOpen = { id -> nav.navigate("device/$id") },
+            onQuickPeek = { id -> vm.openQuickPeek(id) },
             onEditRemark = vm::updateDeviceRemark,
             modifier = Modifier.padding(p)
         )
@@ -211,14 +216,16 @@ fun LoginScreen(loading: Boolean, onLogin: (String, String) -> Unit, onBio: () -
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
+    vm: MainViewModel,
     devices: List<DeviceStatus>,
     loading: Boolean,
     recentEvents: List<AuditLog>,
     onRefresh: () -> Unit,
     onOpen: (Long) -> Unit,
+    onQuickPeek: (Long) -> Unit,
     onEditRemark: (Long, String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -226,6 +233,7 @@ fun HomeScreen(
     val online = devices.count { it.status == "online" }
     val offline = devices.count { it.status == "offline" || it.status == "unknown" }
     val critical = recentEvents.count { severityOf(it) == "error" }
+    val healthScore = (online.toFloat() / (total.coerceAtLeast(1)).toFloat() * 100f).toInt()
     val ctx = LocalContext.current
     var editingDevice by remember { mutableStateOf<DeviceStatus?>(null) }
     var newRemark by remember { mutableStateOf("") }
@@ -236,7 +244,7 @@ fun HomeScreen(
             MiniStatCard("Total", "$total", Brush.linearGradient(listOf(Color(0xFF334155), Color(0xFF1E293B))))
             MiniStatCard("Online", "$online", Brush.linearGradient(listOf(Color(0xFF0F766E), Color(0xFF065F46))), showPulse = true)
             MiniStatCard("Offline", "$offline", Brush.linearGradient(listOf(Color(0xFF991B1B), Color(0xFF7F1D1D))))
-            MiniStatCard("Critical", "$critical", Brush.linearGradient(listOf(Color(0xFF7C3AED), Color(0xFF4F46E5))))
+            MiniStatCard("Health", "$healthScore", Brush.linearGradient(listOf(Color(0xFF4338CA), Color(0xFF6366F1))))
         }
 
         if (loading) {
@@ -246,14 +254,14 @@ fun HomeScreen(
                 items(devices, key = { it.id }) { d ->
                     ElevatedCard(
                         modifier = Modifier.fillMaxWidth().combinedClickable(
-                            onClick = { onOpen(d.id) },
+                            onClick = { onQuickPeek(d.id) },
                             onLongClick = {
                                 editingDevice = d
                                 newRemark = d.remark
                             }
                         ),
                         shape = RoundedCornerShape(Np.corner),
-                        colors = CardDefaults.elevatedCardColors(containerColor = Color.White)
+                        colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))
                     ) {
                         Column(Modifier.padding(Np.cardPadding)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -273,7 +281,7 @@ fun HomeScreen(
             }
         }
 
-        ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color.White)) {
+        ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))) {
             Column(Modifier.fillMaxWidth().padding(Np.cardPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("Recent Events", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -282,7 +290,7 @@ fun HomeScreen(
                 if (recentEvents.isEmpty()) {
                     Text("暂无关键事件", color = Color.Gray)
                 } else {
-                    recentEvents.take(5).forEach { event ->
+                    recentEvents.take(3).forEach { event ->
                         val sev = severityOf(event)
                         val color = when (sev) {
                             "error" -> Np.Danger
@@ -293,6 +301,14 @@ fun HomeScreen(
                     }
                 }
             }
+        }
+    }
+
+    val quickPeekDevice by vm.quickPeekDevice.collectAsStateWithLifecycle()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+    if (quickPeekDevice != null) {
+        ModalBottomSheet(onDismissRequest = { vm.closeQuickPeek() }, sheetState = sheetState) {
+            DeviceQuickPeekSheet(vm = vm, device = quickPeekDevice!!, onOpenDetail = onOpen)
         }
     }
 
@@ -349,19 +365,23 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
         Box(Modifier.padding(p).fillMaxSize().pullRefresh(refreshState)) {
             LazyColumn(Modifier.fillMaxSize().padding(Np.screenPadding), verticalArrangement = Arrangement.spacedBy(Np.sectionGap)) {
                 item {
-                    ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color.White)) {
+                    ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))) {
                         Column(Modifier.padding(Np.cardPadding)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 PulseDot(device?.status ?: "unknown")
                                 Spacer(Modifier.width(8.dp))
                                 Text(device?.ip ?: "-", fontWeight = FontWeight.SemiBold, modifier = Modifier.combinedClickable(onClick = {}, onLongClick = { copyToClipboard(ctx, device?.ip ?: "") }))
                             }
-                            Text("${device?.brand ?: "-"} · ${device?.remark ?: "-"}")
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text("${device?.brand ?: "-"} · ${device?.remark ?: "-"}")
+                                val maint = device?.maintenanceMode ?: false
+                                Switch(checked = maint, onCheckedChange = { vm.updateMaintenanceMode(deviceId, it, start, end) })
+                            }
                         }
                     }
                 }
                 item {
-                    ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color.White)) {
+                    ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))) {
                         Column(Modifier.padding(Np.cardPadding)) {
                             Text("CPU / 内存", style = MaterialTheme.typography.titleMedium)
                             Spacer(Modifier.height(8.dp))
@@ -381,7 +401,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                                 onLongClick = { editingPort = itf; portRemark = itf.remark }
                             ),
                             shape = RoundedCornerShape(Np.corner),
-                            colors = CardDefaults.elevatedCardColors(containerColor = Color.White)
+                            colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))
                         ) {
                             Column(Modifier.padding(Np.cardPadding)) {
                                 Text(itf.name, fontWeight = FontWeight.SemiBold)
@@ -391,7 +411,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                     }
                 }
                 item {
-                    ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color.White)) {
+                    ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))) {
                         Column(Modifier.padding(Np.cardPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("Recent Events", style = MaterialTheme.typography.titleMedium)
                             logs.take(5).forEach { log ->
@@ -451,7 +471,7 @@ fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
                 OutlinedButton(onClick = { start = OffsetDateTime.now().minusDays(30) }) { Text("近30天") }
                 OutlinedButton(onClick = { start = OffsetDateTime.now().minusDays(365 * 3L) }) { Text("近3年") }
             }
-            ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth().weight(1f)) {
+            ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth().weight(1f)) {
                 if (loading) {
                     SkeletonBox(Modifier.fillMaxSize().padding(12.dp))
                 } else if (traffic.isEmpty()) {
@@ -591,13 +611,23 @@ fun PulseDot(status: String) {
 @Composable
 fun SkeletonBox(modifier: Modifier = Modifier) {
     val infinite = rememberInfiniteTransition(label = "shimmer")
-    val alpha by infinite.animateFloat(0.35f, 0.85f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "alpha")
-    Box(modifier.clip(RoundedCornerShape(Np.corner)).background(Color(0xFFE2E8F0).copy(alpha = alpha)))
+    val x by infinite.animateFloat(
+        initialValue = -600f,
+        targetValue = 600f,
+        animationSpec = infiniteRepeatable(animation = tween(1500, easing = LinearEasing), repeatMode = RepeatMode.Restart),
+        label = "goldenShimmerX"
+    )
+    val brush = Brush.linearGradient(
+        colors = listOf(Color(0xFF1E293B), Color(0xFF0F172A), Color(0xFF1E293B)),
+        start = Offset(x, 0f),
+        end = Offset(x + 420f, 0f)
+    )
+    Box(modifier.clip(RoundedCornerShape(Np.corner)).background(brush))
 }
 
 @Composable
 fun SkeletonCard() {
-    ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color.White)) {
+    ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))) {
         Column(Modifier.fillMaxWidth().padding(Np.cardPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SkeletonBox(Modifier.fillMaxWidth(0.45f).height(14.dp))
             SkeletonBox(Modifier.fillMaxWidth(0.8f).height(12.dp))
@@ -614,7 +644,7 @@ fun copyToClipboard(context: Context, value: String) {
 
 @Composable
 fun EmptyStateCard(title: String, desc: String, modifier: Modifier = Modifier) {
-    Card(modifier, shape = RoundedCornerShape(Np.corner), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+    Card(modifier, shape = RoundedCornerShape(Np.corner), colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))) {
         Column(
             Modifier.fillMaxWidth().padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -633,5 +663,30 @@ private fun severityOf(item: AuditLog): String {
         txt.contains("OFFLINE") || txt.contains("ERROR") || txt.contains("RESTORE") -> "error"
         txt.contains("WARN") || txt.contains("BGP") || txt.contains("OSPF") || txt.contains("FLAP") -> "warning"
         else -> "info"
+    }
+}
+
+
+@Composable
+fun DeviceQuickPeekSheet(vm: MainViewModel, device: DeviceStatus, onOpenDetail: (Long) -> Unit) {
+    val cpu by vm.cpu.collectAsStateWithLifecycle()
+    val mem by vm.mem.collectAsStateWithLifecycle()
+    val loading by vm.loading.collectAsStateWithLifecycle()
+    val detail by vm.deviceDetail.collectAsStateWithLifecycle()
+    val start = remember { OffsetDateTime.now().minusDays(1) }
+    val end = remember { OffsetDateTime.now() }
+    LaunchedEffect(device.id) { vm.loadDeviceDetail(device.id, start, end) }
+
+    Column(Modifier.fillMaxWidth().padding(Np.screenPadding), verticalArrangement = Arrangement.spacedBy(Np.sectionGap)) {
+        Text("${device.ip} · ${device.brand}", style = MaterialTheme.typography.titleMedium, color = Color.White)
+        if (loading) SkeletonBox(Modifier.fillMaxWidth().height(200.dp))
+        else MiniLineChart(cpu.map { it.cpuUsage ?: 0.0 }, mem.map { it.memUsage ?: 0.0 })
+        Text("端口", color = Color.White, style = MaterialTheme.typography.titleSmall)
+        LazyColumn(Modifier.heightIn(max = 220.dp)) {
+            items(detail?.interfaces.orEmpty(), key = { it.id }) { p ->
+                Text("${p.name} (#${p.index})", color = Color.White, modifier = Modifier.padding(vertical = 4.dp))
+            }
+        }
+        Button(onClick = { onOpenDetail(device.id); vm.closeQuickPeek() }, modifier = Modifier.fillMaxWidth()) { Text("进入详情") }
     }
 }

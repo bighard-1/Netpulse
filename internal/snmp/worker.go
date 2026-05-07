@@ -8,7 +8,6 @@ import (
 	"log"
 	"math"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
@@ -35,12 +34,15 @@ type Worker struct {
 	alertWebhook  string
 	cpuThreshold  float64
 	memThreshold  float64
+	alertMgr      *AlertManager
 
 	mu     sync.Mutex
 	last   map[string]counterState
 	ifs    map[int64]string
 	devUp  map[int64]bool
 	portUp map[string]bool
+
+	lastHealthSnapshot time.Time
 }
 
 func NewWorker(repo *db.Repository, collector *Collector, interval time.Duration) *Worker {
@@ -82,6 +84,7 @@ func NewWorker(repo *db.Repository, collector *Collector, interval time.Duration
 		ifs:           make(map[int64]string),
 		devUp:         make(map[int64]bool),
 		portUp:        make(map[string]bool),
+		alertMgr:      NewAlertManager(repo, os.Getenv("ALERT_WEBHOOK_URL")),
 	}
 }
 
@@ -117,6 +120,9 @@ func (w *Worker) applyRuntimeSettings(ctx context.Context) {
 		w.memThreshold = cfg.AlertMemThreshold
 	}
 	w.alertWebhook = cfg.AlertWebhookURL
+	if w.alertMgr != nil {
+		w.alertMgr.SetWebhook(cfg.AlertWebhookURL)
+	}
 }
 
 func (w *Worker) nextInterval(ctx context.Context) time.Duration {
@@ -136,6 +142,9 @@ func (w *Worker) runOnce(ctx context.Context) {
 		log.Printf("snmp worker list devices failed: %v", err)
 		return
 	}
+	if w.alertMgr != nil {
+		w.alertMgr.RefreshTopology(ctx)
+	}
 
 	sem := make(chan struct{}, w.parallel)
 	var wg sync.WaitGroup
@@ -150,6 +159,7 @@ func (w *Worker) runOnce(ctx context.Context) {
 		}()
 	}
 	wg.Wait()
+	w.persistSystemHealth(ctx, devices)
 }
 
 func (w *Worker) pollOne(ctx context.Context, d db.Device) {
@@ -182,7 +192,7 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 			reason = "设备网络不可达，请检查路由/VLAN/网关配置"
 		}
 		_ = w.repo.AddDeviceLog(ctx, d.ID, "ERROR", fmt.Sprintf("[%s] %s", code, reason))
-		w.sendAlert("error", d, code, reason)
+		w.emitAlert(ctx, "error", d, code, reason)
 		return
 	}
 	w.trackDeviceState(ctx, d, true)
@@ -221,10 +231,10 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 	}
 	_ = w.repo.AddDeviceLog(ctx, d.ID, "INFO", "[OK] 设备轮询成功")
 	if result.CPUUsage >= w.cpuThreshold {
-		w.sendAlert("warning", d, "CPU_HIGH", fmt.Sprintf("CPU利用率 %.2f%% 超过阈值 %.2f%%", result.CPUUsage, w.cpuThreshold))
+		w.emitAlert(ctx, "warning", d, "CPU_HIGH", fmt.Sprintf("CPU利用率 %.2f%% 超过阈值 %.2f%%", result.CPUUsage, w.cpuThreshold))
 	}
 	if result.MemoryUsage >= w.memThreshold {
-		w.sendAlert("warning", d, "MEM_HIGH", fmt.Sprintf("内存利用率 %.2f%% 超过阈值 %.2f%%", result.MemoryUsage, w.memThreshold))
+		w.emitAlert(ctx, "warning", d, "MEM_HIGH", fmt.Sprintf("内存利用率 %.2f%% 超过阈值 %.2f%%", result.MemoryUsage, w.memThreshold))
 	}
 }
 
@@ -322,18 +332,69 @@ func tcpProbe(ip string, port int, timeout time.Duration) bool {
 	return true
 }
 
-func (w *Worker) sendAlert(level string, d db.Device, code, msg string) {
-	if strings.TrimSpace(w.alertWebhook) == "" {
+func (w *Worker) emitAlert(ctx context.Context, level string, d db.Device, code, msg string) {
+	if w.alertMgr == nil {
 		return
 	}
-	body := fmt.Sprintf(`{"level":"%s","code":"%s","device_id":%d,"ip":"%s","brand":"%s","message":"%s","ts":"%s"}`,
-		level, code, d.ID, d.IP, d.Brand, strings.ReplaceAll(msg, `"`, `'`), time.Now().Format(time.RFC3339))
-	req, _ := http.NewRequest(http.MethodPost, w.alertWebhook, strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err == nil && resp != nil {
-		_ = resp.Body.Close()
+	devState := w.snapshotDeviceStates()
+	suppressed, related := w.alertMgr.ShouldSuppress(d, devState)
+	if suppressed {
+		_ = w.repo.AddDeviceLog(ctx, d.ID, "INFO", fmt.Sprintf("[ALERT_SUPPRESSED] %s (%s)", msg, related))
+	}
+	w.alertMgr.Notify(Alert{
+		Level:      level,
+		Code:       code,
+		DeviceID:   d.ID,
+		DeviceIP:   d.IP,
+		DeviceName: d.Name,
+		Brand:      d.Brand,
+		Message:    msg,
+		Suppressed: suppressed,
+		RelatedTo:  related,
+		TS:         time.Now(),
+	})
+}
+
+func (w *Worker) snapshotDeviceStates() map[int64]bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make(map[int64]bool, len(w.devUp))
+	for k, v := range w.devUp {
+		out[k] = v
+	}
+	return out
+}
+
+func (w *Worker) persistSystemHealth(ctx context.Context, devices []db.Device) {
+	now := time.Now()
+	if !w.lastHealthSnapshot.IsZero() && now.Sub(w.lastHealthSnapshot) < 15*time.Minute {
+		return
+	}
+	if len(devices) == 0 {
+		return
+	}
+	states := w.snapshotDeviceStates()
+	total := len(devices)
+	online := 0
+	for _, d := range devices {
+		if up, ok := states[d.ID]; ok && up {
+			online++
+		}
+	}
+	availability := (float64(online) / float64(total)) * 100
+
+	alerts, _ := w.repo.ListAuditLogs(ctx, 500)
+	activeAlerts := 0
+	for _, a := range alerts {
+		txt := strings.ToUpper(a.Action + " " + a.Target)
+		if strings.Contains(txt, "ERROR") || strings.Contains(txt, "CRITICAL") || strings.Contains(txt, "DOWN") {
+			activeAlerts++
+		}
+	}
+	penalty := math.Min(35, float64(activeAlerts)*1.5)
+	score := math.Max(0, math.Min(100, availability-penalty))
+	if err := w.repo.SaveSystemHealthSnapshot(ctx, now, score, activeAlerts, availability); err == nil {
+		w.lastHealthSnapshot = now
 	}
 }
 

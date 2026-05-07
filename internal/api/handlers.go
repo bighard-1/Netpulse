@@ -49,6 +49,7 @@ func (h *Handler) Router() http.Handler {
 		pr.Get("/api/devices/{id}", h.handleGetDevice)
 		pr.With(h.requirePermission("device.read")).Get("/api/devices/{id}/diagnose", h.handleDiagnoseDevice)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("ADD_DEVICE")).Post("/api/devices", h.handleAddDevice)
+		pr.With(h.requirePermission("device.write"), h.auditMiddleware("UPDATE_DEVICE")).Put("/api/devices/{id}", h.handleUpdateDevice)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("IMPORT_DEVICES")).Post("/api/devices/import", h.handleImportDevices)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("DELETE_DEVICE")).Delete("/api/devices/{id}", h.handleDeleteDevice)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("UPDATE_DEVICE_REMARK")).Put("/api/devices/{id}/remark", h.handleUpdateDeviceRemark)
@@ -56,6 +57,8 @@ func (h *Handler) Router() http.Handler {
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("UPDATE_INTERFACE_PROFILE")).Put("/api/interfaces/{id}", h.handleUpdateInterfaceProfile)
 		pr.With(h.requirePermission("metrics.read")).Get("/api/metrics/history", h.handleMetricsHistory)
 		pr.With(h.requirePermission("logs.read")).Get("/api/devices/{id}/logs", h.handleDeviceLogs)
+		pr.Get("/api/events/recent", h.handleRecentEvents)
+		pr.Get("/api/system/health", h.handleSystemHealthTrend)
 		pr.Get("/api/system/backup", h.rateLimit("backup", 10, time.Minute, h.handleSystemBackup))
 		pr.With(h.auditMiddleware("RESTORE_SYSTEM")).Post("/api/system/restore", h.rateLimit("restore", 5, time.Minute, h.handleSystemRestore))
 		pr.With(h.adminOnly).Get("/api/audit-logs", h.handleAuditLogs)
@@ -70,9 +73,6 @@ func (h *Handler) Router() http.Handler {
 		pr.With(h.adminOnly).Post("/api/admin/users", h.handleCreateUser)
 		pr.With(h.adminOnly).Get("/api/templates", h.handleListTemplates)
 		pr.With(h.adminOnly).Post("/api/templates", h.handleCreateTemplate)
-		pr.With(h.adminOnly).Get("/api/topology", h.handleListTopology)
-		pr.With(h.adminOnly).Post("/api/topology", h.handleUpsertTopology)
-		pr.With(h.adminOnly).Delete("/api/topology/{id}", h.handleDeleteTopology)
 		pr.With(h.adminOnly).Get("/api/alerts/rules", h.handleListAlertRules)
 		pr.With(h.adminOnly).Post("/api/alerts/rules", h.handleUpsertAlertRule)
 		pr.With(h.adminOnly).Get("/api/reports/summary", h.handleReportSummary)
@@ -148,6 +148,13 @@ type addDeviceRequest struct {
 
 type updateRemarkRequest struct {
 	Remark string `json:"remark"`
+}
+
+type updateDeviceRequest struct {
+	Name            string `json:"name"`
+	Brand           string `json:"brand"`
+	Remark          string `json:"remark"`
+	MaintenanceMode bool   `json:"maintenance_mode"`
 }
 
 type updateInterfaceRequest struct {
@@ -281,6 +288,47 @@ func (h *Handler) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "device deleted"})
+}
+
+func (h *Handler) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
+	id, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid device id")
+		return
+	}
+	var req updateDeviceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	item, err := h.repo.GetDeviceByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if item == nil {
+		writeError(w, http.StatusNotFound, "device not found")
+		return
+	}
+	name := req.Name
+	if name == "" {
+		name = item.Name
+	}
+	brand := req.Brand
+	if brand == "" {
+		brand = item.Brand
+	}
+	if err := h.repo.UpdateDevice(r.Context(), db.Device{
+		ID:              id,
+		Name:            name,
+		Brand:           brand,
+		Remark:          req.Remark,
+		MaintenanceMode: req.MaintenanceMode,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"message": "device updated"})
 }
 
 func (h *Handler) handleUpdateDeviceRemark(w http.ResponseWriter, r *http.Request) {

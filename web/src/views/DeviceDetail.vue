@@ -12,6 +12,7 @@ const loading = ref(false);
 const chartLoading = ref(false);
 const logsLoading = ref(false);
 const recentLogs = ref([]);
+const logLimit = ref(10);
 const device = ref(null);
 const portKeyword = ref("");
 const remarkDialogVisible = ref(false);
@@ -30,6 +31,7 @@ const filteredPorts = computed(() => {
   if (!key) return list;
   return list.filter((p) => [String(p.id), String(p.index), p.name || "", p.remark || ""].join(" ").toLowerCase().includes(key));
 });
+const logsDisplay = computed(() => recentLogs.value.slice(0, logLimit.value));
 
 async function loadDevice() {
   loading.value = true;
@@ -208,25 +210,33 @@ watch(
     <el-card>
       <template #header>
         <div class="flex items-center justify-between">
-          <span class="text-base font-semibold">设备日志（最近100条）</span>
-          <el-button @click="loadLogs" :loading="logsLoading">刷新日志</el-button>
-        </div>
-      </template>
-      <el-table :data="recentLogs" class="np-borderless-table" height="280" v-loading="logsLoading">
-        <el-table-column prop="created_at" label="时间" width="190" />
-        <el-table-column prop="level" label="级别" width="100" />
-        <el-table-column prop="message" label="内容" min-width="480" />
-      </el-table>
-    </el-card>
-
-    <el-card>
-      <template #header>
-        <div class="flex items-center justify-between">
           <span class="text-base font-semibold">设备诊断</span>
           <el-button type="primary" :loading="diagnoseLoading" @click="runDiagnosis">一键自助排查</el-button>
         </div>
       </template>
       <p class="text-sm text-slate-600">自动检查 SNMP 参数、网络连通、即时采集、最近入库与错误日志，并给出可能原因。</p>
+    </el-card>
+
+    <el-card>
+      <template #header>
+        <div class="flex items-center justify-between">
+          <span class="text-base font-semibold">设备日志（默认展示10条）</span>
+          <div class="flex items-center gap-2">
+            <el-select v-model="logLimit" class="w-[140px]">
+              <el-option :value="10" label="10条" />
+              <el-option :value="20" label="20条" />
+              <el-option :value="50" label="50条" />
+              <el-option :value="100" label="100条" />
+            </el-select>
+            <el-button @click="loadLogs" :loading="logsLoading">刷新日志</el-button>
+          </div>
+        </div>
+      </template>
+      <el-table :data="logsDisplay" class="np-borderless-table" height="280" v-loading="logsLoading">
+        <el-table-column prop="created_at" label="时间" width="190" />
+        <el-table-column prop="level" label="级别" width="100" />
+        <el-table-column prop="message" label="内容" min-width="480" />
+      </el-table>
     </el-card>
 
     <el-card>

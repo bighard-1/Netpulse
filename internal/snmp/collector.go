@@ -361,20 +361,28 @@ func averagePercent(pdus []gosnmp.SnmpPDU) float64 {
 	if len(pdus) == 0 {
 		return 0
 	}
-	var sum float64
-	var n float64
+	values := make([]float64, 0, len(pdus))
+	maxV := 0.0
 	for _, p := range pdus {
 		v := normalizePercent(float64(toUint64(p.Value)))
 		if v < 0 || v > 100 {
 			continue
 		}
-		sum += v
-		n++
+		values = append(values, v)
+		if v > maxV {
+			maxV = v
+		}
+		idx, err := oidIndex(p.Name)
+		if err == nil && idx == 1 {
+			// Prefer overall/main entity value when present.
+			return v
+		}
 	}
-	if n == 0 {
+	if len(values) == 0 {
 		return 0
 	}
-	return sum / n
+	// Fallback to max to better match "display" commands on many vendors.
+	return maxV
 }
 
 func oidIndex(oid string) (int, error) {

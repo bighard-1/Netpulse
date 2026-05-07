@@ -140,5 +140,8 @@ export const api = {
   },
   updateRuntimeSettings(payload) {
     return http.put("/settings/runtime", payload);
+  },
+  getSystemHealthTrend(start, end) {
+    return http.get("/system/health", { params: { start, end } });
   }
 };

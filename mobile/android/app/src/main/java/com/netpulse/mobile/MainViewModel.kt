@@ -47,6 +47,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _auditLogs = MutableStateFlow<List<AuditLog>>(emptyList())
     val auditLogs: StateFlow<List<AuditLog>> = _auditLogs
 
+    private val _quickPeekDevice = MutableStateFlow<DeviceStatus?>(null)
+    val quickPeekDevice: StateFlow<DeviceStatus?> = _quickPeekDevice
+
     fun saveBaseUrl(url: String) {
         base = url.trim().ifBlank { "http://119.40.55.18:18080/api" }
         sp.edit().putString("base_url", base).apply()
@@ -99,7 +102,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _loading.value = true
             try {
                 _devices.value = withContext(Dispatchers.IO) { client.fetchDevices() }
-                _auditLogs.value = withContext(Dispatchers.IO) { client.fetchAuditLogs() }.take(5)
+                _auditLogs.value = withContext(Dispatchers.IO) { client.fetchRecentEvents() }.take(5)
             } catch (e: Exception) {
                 handleApiError(e, "加载设备失败")
             } finally {
@@ -167,5 +170,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 handleApiError(ex, "更新设备备注失败")
             }
         }
+    }
+
+
+    fun updateMaintenanceMode(deviceId: Long, enabled: Boolean, start: OffsetDateTime, end: OffsetDateTime) {
+        if (_token.value.isBlank()) return
+        viewModelScope.launch {
+            try {
+                val d = _deviceDetail.value ?: withContext(Dispatchers.IO) { client.fetchDeviceById(deviceId) }
+                withContext(Dispatchers.IO) { client.updateDevice(d, enabled) }
+                _message.value = if (enabled) "已开启维护模式" else "已关闭维护模式"
+                loadDeviceDetail(deviceId, start, end)
+                refreshDevices()
+            } catch (ex: Exception) {
+                handleApiError(ex, "更新维护模式失败")
+            }
+        }
+    }
+
+
+    fun openQuickPeek(deviceId: Long) {
+        viewModelScope.launch {
+            val d = _devices.value.firstOrNull { it.id == deviceId }
+            _quickPeekDevice.value = d
+            if (d != null) loadDeviceDetail(d.id, OffsetDateTime.now().minusDays(1), OffsetDateTime.now())
+        }
+    }
+
+    fun closeQuickPeek() {
+        _quickPeekDevice.value = null
     }
 }

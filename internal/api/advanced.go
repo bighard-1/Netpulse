@@ -96,45 +96,6 @@ func (h *Handler) handleImportDevices(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"created": created})
 }
 
-func (h *Handler) handleUpsertTopology(w http.ResponseWriter, r *http.Request) {
-	var t db.TopologyLink
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
-		return
-	}
-	if t.Protocol == "" {
-		t.Protocol = "LLDP"
-	}
-	id, err := h.repo.UpsertTopologyLink(r.Context(), t)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": id})
-}
-
-func (h *Handler) handleListTopology(w http.ResponseWriter, r *http.Request) {
-	items, err := h.repo.ListTopologyLinks(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, items)
-}
-
-func (h *Handler) handleDeleteTopology(w http.ResponseWriter, r *http.Request) {
-	id, err := parseIDParam(r, "id")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid topology id")
-		return
-	}
-	if err := h.repo.DeleteTopologyLink(r.Context(), id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "topology link deleted"})
-}
-
 func (h *Handler) handleUpsertAlertRule(w http.ResponseWriter, r *http.Request) {
 	var ar db.AlertRule
 	if err := json.NewDecoder(r.Body).Decode(&ar); err != nil {
@@ -189,6 +150,42 @@ func (h *Handler) handleReportSummary(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="netpulse_report.csv"`)
 	_, _ = io.WriteString(w, b.String())
+}
+
+func (h *Handler) handleSystemHealthTrend(w http.ResponseWriter, r *http.Request) {
+	limit := 30
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	items, err := h.repo.GetSystemHealthTrend(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data":  items,
+		"limit": limit,
+	})
+}
+
+func (h *Handler) handleRecentEvents(w http.ResponseWriter, r *http.Request) {
+	limit := 30
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	items, err := h.repo.GetRecentEvents(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data":  items,
+		"limit": limit,
+	})
 }
 
 type discoveryReq struct {

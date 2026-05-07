@@ -10,6 +10,8 @@
   --np-danger: #ef4444;
   --np-warning: #f59e0b;
   --np-card-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --np-shimmer-base: #1e293b;
+  --np-shimmer-highlight: #0f172a;
 }
 
 * {
@@ -187,6 +189,27 @@ body,
   inset: 0;
   background: rgba(15, 23, 42, 0.45);
   z-index: 20;
+}
+
+@keyframes np-golden-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.el-skeleton__item {
+  background: linear-gradient(
+    90deg,
+    var(--np-shimmer-base) 0%,
+    var(--np-shimmer-highlight) 50%,
+    var(--np-shimmer-base) 100%
+  ) !important;
+  background-size: 200% 100% !important;
+  animation: np-golden-shimmer 1.5s linear infinite !important;
+  opacity: 0.45;
 }
 
 .np-menu-trigger {
