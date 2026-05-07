@@ -31,11 +31,15 @@ NetPulse targets that gap with:
 - CPU / Memory / Interface traffic polling
 - Interface sync with ifIndex/ifName mapping
 - Syslog + SNMP Trap listeners
+- SNMP v3 precheck before add (`/api/devices/precheck`)
+- Per-device calibration map (runtime configurable)
 
 ### 3. 3-Year History & Performance
 - `metrics` hypertable for raw telemetry
 - `metrics_1m` continuous aggregate for long-range queries
 - Optimized retention and aggregation policies for historical analysis
+- Adaptive query interval support (`1m / 5m / 1h`)
+- Server-side decimation for large ranges
 
 ### 4. Alert Suppression (V2.0)
 - Upstream-aware suppression logic
@@ -46,6 +50,7 @@ NetPulse targets that gap with:
 - JWT auth for API protection
 - RBAC + per-user permissions
 - Audit logs for login and operation tracking
+- Unified error payload (`code + message + hint`)
 - Mobile secure token storage:
   - iOS Keychain
   - Android Encrypted storage
@@ -54,7 +59,9 @@ NetPulse targets that gap with:
 - One-click backup / restore
 - Backup drill report loop
 - Runtime settings center (polling interval, timeout, thresholds)
+- Runtime SNMP calibration center (JSON + row editor)
 - Device self-diagnosis export
+- Device capability matrix API/UI
 
 ---
 
@@ -141,6 +148,7 @@ Recommended variables:
 - `ALERT_CPU_THRESHOLD=90`
 - `ALERT_MEM_THRESHOLD=90`
 - `ALERT_WEBHOOK_URL=`
+- `SNMP_CALIBRATION_MAP={}`
 - `SYSLOG_ADDR=:514`
 - `SNMP_TRAP_ADDR=:9162`
 - `BACKUP_DRILL_EVERY_HOURS=168`
@@ -149,6 +157,14 @@ Port mapping:
 - `8080/tcp` (Web/API)
 - `514/udp` (Syslog, optional)
 - `9162/udp` (SNMP Trap, optional)
+
+---
+
+## Core API Additions (Recent)
+
+- `POST /api/devices/precheck`: SNMP connectivity/auth precheck before add.
+- `GET /api/devices/{id}/capabilities`: current capability matrix for a device.
+- `GET /api/metrics/history?interval=1m|5m|1h`: interval-aware history query.
 
 ---
 

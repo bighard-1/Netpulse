@@ -77,6 +77,7 @@ func main() {
 		"alert_cpu_threshold":      getenv("ALERT_CPU_THRESHOLD", "90"),
 		"alert_mem_threshold":      getenv("ALERT_MEM_THRESHOLD", "90"),
 		"alert_webhook_url":        getenv("ALERT_WEBHOOK_URL", ""),
+		"snmp_calibration_map":     getenv("SNMP_CALIBRATION_MAP", "{}"),
 	}); err != nil {
 		log.Fatalf("ensure runtime settings failed: %v", err)
 	}

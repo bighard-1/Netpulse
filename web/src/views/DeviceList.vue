@@ -4,6 +4,10 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, watch
 import { ElMessage } from "element-plus";
 import { api, getApiError } from "../services/api";
 import { useOpsStore } from "../stores/ops";
+import { formatBps } from "../utils/format";
+import { zhCN } from "../i18n/zhCN";
+import StatsCards from "../components/dashboard/StatsCards.vue";
+import LiveEventFeed from "../components/dashboard/LiveEventFeed.vue";
 
 const ops = useOpsStore();
 
@@ -15,7 +19,23 @@ const groupBy = ref("brand");
 
 const addVisible = ref(false);
 const addLoading = ref(false);
-const addForm = ref({ ip: "", name: "", brand: "H3C", community: "public", remark: "", snmp_version: "2c", snmp_port: 161 });
+const defaultAddForm = () => ({
+  ip: "",
+  name: "",
+  brand: "H3C",
+  community: "public",
+  remark: "",
+  snmp_version: "2c",
+  snmp_port: 161,
+  v3_username: "",
+  v3_security_level: "noAuthNoPriv",
+  v3_auth_protocol: "SHA",
+  v3_auth_password: "",
+  v3_priv_protocol: "AES",
+  v3_priv_password: ""
+});
+const addForm = ref(defaultAddForm());
+const isSnmpV3 = computed(() => String(addForm.value.snmp_version) === "3");
 
 const drawerLoading = ref(false);
 const drawerDevice = ref(null);
@@ -91,14 +111,6 @@ function fmtTime(v) {
   return new Date(v).toLocaleString();
 }
 
-function formatBps(v) {
-  const n = Number(v || 0);
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)} Gbps`;
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)} Mbps`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(2)} Kbps`;
-  return `${n.toFixed(0)} bps`;
-}
-
 function severityTag(sev) {
   if (sev === "critical") return "danger";
   if (sev === "warning") return "warning";
@@ -151,12 +163,30 @@ async function refreshAll() {
 }
 
 async function addDevice() {
+  if (isSnmpV3.value) {
+    if (!addForm.value.v3_username) {
+      ElMessage.warning("SNMP v3 需要填写用户名");
+      return;
+    }
+    if (addForm.value.v3_security_level !== "noAuthNoPriv" && !addForm.value.v3_auth_password) {
+      ElMessage.warning("SNMP v3 需要填写认证密码");
+      return;
+    }
+    if (addForm.value.v3_security_level === "authPriv" && !addForm.value.v3_priv_password) {
+      ElMessage.warning("SNMP v3(authPriv) 需要填写加密密码");
+      return;
+    }
+  } else if (!addForm.value.community) {
+    ElMessage.warning("SNMP v1/v2c 需要填写团体字串");
+    return;
+  }
   addLoading.value = true;
   try {
+    await api.precheckDevice(addForm.value);
     await api.addDevice(addForm.value);
     ElMessage.success("资产添加成功");
     addVisible.value = false;
-    addForm.value = { ip: "", name: "", brand: "H3C", community: "public", remark: "", snmp_version: "2c", snmp_port: 161 };
+    addForm.value = defaultAddForm();
     await refreshAll();
   } catch (err) {
     ElMessage.error(getApiError(err, "添加资产失败"));
@@ -188,8 +218,8 @@ async function loadDrawerCpuMem() {
   const end = iso(drawerRange.value?.[1] || new Date());
   try {
     const [cpuRes, memRes] = await Promise.all([
-      api.getHistory("cpu", drawerDevice.value.id, start, end),
-      api.getHistory("mem", drawerDevice.value.id, start, end)
+      api.getHistory("cpu", drawerDevice.value.id, start, end, "1m"),
+      api.getHistory("mem", drawerDevice.value.id, start, end, "1m")
     ]);
     await nextTick();
     renderCpuMemChart(cpuRes.data?.data || [], memRes.data?.data || []);
@@ -204,7 +234,7 @@ async function openPortTraffic(port) {
   try {
     const start = iso(drawerRange.value?.[0] || new Date(Date.now() - 24 * 3600 * 1000));
     const end = iso(drawerRange.value?.[1] || new Date());
-    const res = await api.getHistory("traffic", port.id, start, end);
+    const res = await api.getHistory("traffic", port.id, start, end, "1m");
     portTraffic.value = res.data?.data || [];
     await nextTick();
     renderTrafficChart();
@@ -220,8 +250,8 @@ function renderHealthTrendChart() {
   const y = healthTrend.value.map((i) => Number(i.score || 0));
   healthChart.setOption({
     tooltip: { trigger: "axis" },
-    grid: { left: 36, right: 18, top: 24, bottom: 28 },
-    xAxis: { type: "category", data: x, boundaryGap: false },
+    grid: { left: "3%", right: "4%", bottom: "10%", containLabel: true },
+    xAxis: { type: "category", data: x, boundaryGap: false, axisLabel: { rotate: x.length > 12 ? 45 : 0 } },
     yAxis: { type: "value", min: 0, max: 100 },
     series: [{ type: "line", data: y, smooth: true, areaStyle: {}, lineStyle: { width: 2 } }]
   });
@@ -233,13 +263,13 @@ function renderCpuMemChart(cpuData, memData) {
   const x = cpuData.map((i) => fmtTime(i.timestamp));
   cpuMemChart.setOption({
     tooltip: { trigger: "axis" },
-    legend: { data: ["CPU", "Memory"] },
-    grid: { left: 40, right: 20, top: 24, bottom: 28 },
-    xAxis: { type: "category", data: x, boundaryGap: false },
+    legend: { data: ["CPU", "内存"] },
+    grid: { left: "3%", right: "4%", bottom: "10%", containLabel: true },
+    xAxis: { type: "category", data: x, boundaryGap: false, axisLabel: { rotate: x.length > 12 ? 45 : 0 } },
     yAxis: { type: "value", min: 0, max: 100 },
     series: [
-      { name: "CPU", type: "line", smooth: true, data: cpuData.map((i) => Number(i.cpu_usage || 0)) },
-      { name: "Memory", type: "line", smooth: true, data: memData.map((i) => Number(i.mem_usage || 0)) }
+      { name: "CPU", type: "line", smooth: true, sampling: "average", data: cpuData.map((i) => Number(i.cpu_usage || 0)) },
+      { name: "内存", type: "line", smooth: true, sampling: "average", data: memData.map((i) => Number(i.mem_usage || 0)) }
     ]
   });
 }
@@ -250,12 +280,12 @@ function renderTrafficChart() {
   trafficChart.setOption({
     tooltip: { trigger: "axis" },
     legend: { data: ["入方向", "出方向"] },
-    grid: { left: 40, right: 20, top: 24, bottom: 28 },
-    xAxis: { type: "category", data: portTraffic.value.map((i) => fmtTime(i.timestamp)), boundaryGap: false },
+    grid: { left: "3%", right: "4%", bottom: "10%", containLabel: true },
+    xAxis: { type: "category", data: portTraffic.value.map((i) => fmtTime(i.timestamp)), boundaryGap: false, axisLabel: { rotate: portTraffic.value.length > 12 ? 45 : 0 } },
     yAxis: { type: "value", axisLabel: { formatter: (v) => formatBps(v) } },
     series: [
-      { name: "入方向", type: "line", smooth: true, data: portTraffic.value.map((i) => Number(i.traffic_in_bps || 0)) },
-      { name: "出方向", type: "line", smooth: true, data: portTraffic.value.map((i) => Number(i.traffic_out_bps || 0)) }
+      { name: "入方向", type: "line", smooth: true, sampling: "average", data: portTraffic.value.map((i) => Number(i.traffic_in_bps || 0)) },
+      { name: "出方向", type: "line", smooth: true, sampling: "average", data: portTraffic.value.map((i) => Number(i.traffic_out_bps || 0)) }
     ]
   });
 }
@@ -292,45 +322,18 @@ watch(() => ops.isDrawerOpen, async (v) => {
 
 <template>
   <div class="space-y-5">
-    <section class="grid grid-cols-1 gap-4 xl:grid-cols-4">
-      <el-card>
-        <div class="text-sm text-slate-500">Global Health Score</div>
-        <div class="mt-2 flex items-center gap-4">
-          <el-progress type="dashboard" :percentage="healthScore" :stroke-width="8" :width="120" />
-          <div class="text-3xl font-semibold text-slate-900">{{ healthScore }}</div>
-        </div>
-      </el-card>
-
-      <el-card>
-        <div class="text-sm text-slate-500">Device Availability</div>
-        <div class="mt-3 text-3xl font-semibold text-slate-900">{{ availability }}%</div>
-        <div class="mt-2 text-xs text-slate-500">在线 {{ onlineCount }} / 总数 {{ devices.length }}</div>
-      </el-card>
-
-      <el-card>
-        <div class="text-sm text-slate-500">Active Alerts</div>
-        <div class="mt-3 text-3xl font-semibold text-slate-900">{{ activeAlerts }}</div>
-        <div class="mt-3 flex gap-2 text-xs">
-          <el-tag type="danger">Critical {{ alertBreakdown.critical }}</el-tag>
-          <el-tag type="warning">Warning {{ alertBreakdown.warning }}</el-tag>
-          <el-tag type="success">Info {{ alertBreakdown.info }}</el-tag>
-        </div>
-      </el-card>
-
-      <el-card>
-        <div class="text-sm text-slate-500">Traffic Hotspots</div>
-        <div class="mt-3 space-y-2 text-sm">
-          <div v-for="h in trafficHotspots" :key="h.interfaceId" class="rounded-lg bg-slate-50 px-2 py-2">
-            <div class="font-medium text-slate-700">{{ h.deviceName }} / {{ h.interfaceName }}</div>
-            <div class="text-xs text-slate-500">{{ formatBps(h.bps) }}</div>
-          </div>
-          <el-empty v-if="!trafficHotspots.length" description="暂无热点端口" :image-size="48" />
-        </div>
-      </el-card>
-    </section>
+    <StatsCards
+      :health-score="healthScore"
+      :availability="availability"
+      :online-count="onlineCount"
+      :total-count="devices.length"
+      :active-alerts="activeAlerts"
+      :alert-breakdown="alertBreakdown"
+      :traffic-hotspots="trafficHotspots"
+    />
 
     <el-card>
-      <template #header><span class="text-lg font-semibold">System Health Trend (Past 30 Days)</span></template>
+      <template #header><span class="text-lg font-semibold">{{ zhCN.deviceList.healthTrend30d }}</span></template>
       <el-skeleton :loading="healthTrendLoading" animated :rows="6">
         <template #default>
           <div ref="healthChartEl" style="height: 280px"></div>
@@ -373,7 +376,7 @@ watch(() => ops.isDrawerOpen, async (v) => {
                 <el-table-column prop="remark" label="备注" min-width="220" />
                 <el-table-column label="操作" width="120">
                   <template #default="{ row }">
-                    <el-button type="primary" text @click="openQuickPeek(row)">Quick Peek</el-button>
+                    <el-button type="primary" text @click="openQuickPeek(row)">快速预览</el-button>
                   </template>
                 </el-table-column>
               </el-table>
@@ -382,23 +385,7 @@ watch(() => ops.isDrawerOpen, async (v) => {
         </el-skeleton>
       </el-card>
 
-      <el-card>
-        <template #header><span class="text-lg font-semibold">Active Incident Feed</span></template>
-        <el-skeleton :loading="feedLoading" animated :rows="10">
-          <template #default>
-            <div class="space-y-2">
-              <div v-for="a in ops.realtimeAlerts" :key="a.id" class="log-item rounded-lg p-2" :class="{ 'log-error': a.severity === 'critical', 'log-warning': a.severity === 'warning' }">
-                <div class="flex items-center justify-between gap-2">
-                  <el-tag size="small" :type="severityTag(a.severity)">{{ a.severity }}</el-tag>
-                  <div class="text-xs text-slate-500">{{ a.timestamp || a.created_at || '-' }}</div>
-                </div>
-                <div class="mt-1 text-sm text-slate-700">{{ a.action }} {{ a.target || '' }}</div>
-              </div>
-              <el-empty v-if="!ops.realtimeAlerts.length" description="暂无事件" :image-size="64" />
-            </div>
-          </template>
-        </el-skeleton>
-      </el-card>
+      <LiveEventFeed :loading="feedLoading" :alerts="ops.realtimeAlerts" :severity-tag="severityTag" />
     </section>
 
     <el-drawer v-model="ops.isDrawerOpen" size="65%" direction="rtl" :with-header="true" title="设备快速预览" @close="ops.closeQuickPeek()">
@@ -420,7 +407,7 @@ watch(() => ops.isDrawerOpen, async (v) => {
           </div>
 
           <el-card class="mb-4">
-            <template #header><span class="font-semibold">CPU / Memory</span></template>
+            <template #header><span class="font-semibold">CPU / 内存</span></template>
             <div ref="drawerCpuMemChartEl" style="height: 260px"></div>
           </el-card>
 
@@ -456,7 +443,36 @@ watch(() => ops.isDrawerOpen, async (v) => {
             <el-option label="v3" value="3" />
           </el-select>
         </el-form-item>
-        <el-form-item label="Community"><el-input v-model="addForm.community" /></el-form-item>
+        <el-form-item label="SNMP端口"><el-input-number v-model="addForm.snmp_port" :min="1" :max="65535" class="w-full" /></el-form-item>
+        <el-form-item v-if="!isSnmpV3" label="团体字串"><el-input v-model="addForm.community" /></el-form-item>
+        <template v-else>
+          <el-form-item label="v3 用户名"><el-input v-model="addForm.v3_username" /></el-form-item>
+          <el-form-item label="安全级别">
+            <el-select v-model="addForm.v3_security_level" class="w-full">
+              <el-option label="noAuthNoPriv" value="noAuthNoPriv" />
+              <el-option label="authNoPriv" value="authNoPriv" />
+              <el-option label="authPriv" value="authPriv" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="addForm.v3_security_level !== 'noAuthNoPriv'" label="认证协议">
+            <el-select v-model="addForm.v3_auth_protocol" class="w-full">
+              <el-option label="MD5" value="MD5" />
+              <el-option label="SHA" value="SHA" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="addForm.v3_security_level !== 'noAuthNoPriv'" label="认证密码">
+            <el-input v-model="addForm.v3_auth_password" show-password />
+          </el-form-item>
+          <el-form-item v-if="addForm.v3_security_level === 'authPriv'" label="加密协议">
+            <el-select v-model="addForm.v3_priv_protocol" class="w-full">
+              <el-option label="DES" value="DES" />
+              <el-option label="AES" value="AES" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="addForm.v3_security_level === 'authPriv'" label="加密密码">
+            <el-input v-model="addForm.v3_priv_password" show-password />
+          </el-form-item>
+        </template>
         <el-form-item label="备注"><el-input v-model="addForm.remark" /></el-form-item>
       </el-form>
       <template #footer>

@@ -143,8 +143,8 @@ func (h *Handler) handleReportSummary(w http.ResponseWriter, r *http.Request) {
 	var b strings.Builder
 	b.WriteString("device_id,ip,status,cpu_points,mem_points\n")
 	for _, d := range devices {
-		cpu, _ := h.repo.GetDeviceHistory(r.Context(), d.ID, start, end)
-		mem, _ := h.repo.GetDeviceHistory(r.Context(), d.ID, start, end)
+		cpu, _ := h.repo.GetDeviceHistory(r.Context(), d.ID, start, end, "1m")
+		mem, _ := h.repo.GetDeviceHistory(r.Context(), d.ID, start, end, "1m")
 		b.WriteString(fmt.Sprintf("%d,%s,%s,%d,%d\n", d.ID, d.IP, d.Status, len(cpu), len(mem)))
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")

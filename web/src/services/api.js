@@ -85,10 +85,16 @@ export const api = {
   updateInterfaceProfile(id, payload) {
     return http.put(`/interfaces/${id}`, payload);
   },
-  getHistory(type, id, start, end) {
+  getHistory(type, id, start, end, interval = "") {
     return http.get("/metrics/history", {
-      params: { type, id, start, end }
+      params: { type, id, start, end, interval }
     });
+  },
+  precheckDevice(payload) {
+    return http.post("/devices/precheck", payload);
+  },
+  getDeviceCapabilities(id) {
+    return http.get(`/devices/${id}/capabilities`);
   },
   getDeviceLogs(id) {
     return http.get(`/devices/${id}/logs`);
@@ -132,6 +138,9 @@ export const api = {
   },
   listAuditLogs() {
     return http.get("/audit/logs");
+  },
+  listRecentEvents(limit = 20) {
+    return http.get("/events/recent", { params: { limit } });
   },
   importDevicesCSV(csvText) {
     return http.post("/devices/import", csvText, {

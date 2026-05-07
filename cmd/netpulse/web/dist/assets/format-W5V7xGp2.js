@@ -1,0 +1,1 @@
+function o(r,b=2){const n=Number(r||0);if(!Number.isFinite(n))return"0 bps";const i=n<0?"-":"";let s=Math.abs(n);const e=["bps","Kbps","Mbps","Gbps","Tbps"];let t=0;for(;s>=1024&&t<e.length-1;)s/=1024,t+=1;return t===0?`${i}${Math.round(s)} ${e[t]}`:`${i}${s.toFixed(b)} ${e[t]}`}export{o as f};

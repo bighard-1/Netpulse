@@ -9,6 +9,7 @@ const settingsLoading = ref(false);
 const savingSettings = ref(false);
 const drillReportsLoading = ref(false);
 const drillReports = ref([]);
+const calibrationRows = ref([]);
 
 const runtimeForm = ref({
   snmp_poll_interval_sec: 60,
@@ -16,7 +17,8 @@ const runtimeForm = ref({
   status_online_window_sec: 300,
   alert_cpu_threshold: 90,
   alert_mem_threshold: 90,
-  alert_webhook_url: ""
+  alert_webhook_url: "",
+  snmp_calibration_map: "{}"
 });
 
 async function loadRuntimeSettings() {
@@ -27,6 +29,7 @@ async function loadRuntimeSettings() {
       ...runtimeForm.value,
       ...(res.data || {})
     };
+    hydrateCalibrationRows(runtimeForm.value.snmp_calibration_map);
   } catch (err) {
     ElMessage.error(getApiError(err, "加载运行参数失败"));
   } finally {
@@ -34,9 +37,41 @@ async function loadRuntimeSettings() {
   }
 }
 
+function hydrateCalibrationRows(raw) {
+  try {
+    const obj = JSON.parse(String(raw || "{}"));
+    calibrationRows.value = Object.entries(obj).map(([ip, factor]) => ({ ip, factor: Number(factor || 1) }));
+  } catch {
+    calibrationRows.value = [];
+  }
+}
+
+function syncCalibrationMap() {
+  const obj = {};
+  for (const row of calibrationRows.value) {
+    const ip = String(row.ip || "").trim();
+    const f = Number(row.factor || 1);
+    if (!ip || !Number.isFinite(f) || f <= 0) continue;
+    obj[ip] = f;
+  }
+  runtimeForm.value.snmp_calibration_map = JSON.stringify(obj);
+}
+
+function addCalibrationRow() {
+  calibrationRows.value.push({ ip: "", factor: 1 });
+}
+
+function removeCalibrationRow(i) {
+  calibrationRows.value.splice(i, 1);
+  syncCalibrationMap();
+}
+
 async function saveRuntimeSettings() {
   savingSettings.value = true;
   try {
+    syncCalibrationMap();
+    const raw = String(runtimeForm.value.snmp_calibration_map || "{}").trim();
+    JSON.parse(raw || "{}");
     await api.updateRuntimeSettings(runtimeForm.value);
     ElMessage.success("运行参数已保存，采集参数将自动生效");
     await loadRuntimeSettings();
@@ -128,6 +163,24 @@ onMounted(async () => {
             <el-form-item label="告警 Webhook（可空）" class="md:col-span-2">
               <el-input v-model="runtimeForm.alert_webhook_url" placeholder="https://example.com/webhook" />
             </el-form-item>
+            <el-form-item label="SNMP 校准映射(JSON)" class="md:col-span-2">
+              <el-input
+                v-model="runtimeForm.snmp_calibration_map"
+                type="textarea"
+                :rows="4"
+                placeholder='例如: {"172.24.134.45":1.00,"172.24.134.46":0.97}'
+              />
+            </el-form-item>
+            <el-form-item label="按设备编辑校准倍率" class="md:col-span-2">
+              <div class="w-full space-y-2">
+                <div v-for="(row, idx) in calibrationRows" :key="idx" class="flex items-center gap-2">
+                  <el-input v-model="row.ip" placeholder="设备IP" @change="syncCalibrationMap" />
+                  <el-input-number v-model="row.factor" :min="0.01" :max="10" :step="0.01" :precision="2" @change="syncCalibrationMap" />
+                  <el-button type="danger" text @click="removeCalibrationRow(idx)">删除</el-button>
+                </div>
+                <el-button @click="addCalibrationRow">新增一行</el-button>
+              </div>
+            </el-form-item>
           </el-form>
           <div class="flex justify-end">
             <el-button type="primary" :loading="savingSettings" @click="saveRuntimeSettings">保存参数</el-button>
@@ -164,7 +217,7 @@ onMounted(async () => {
     <el-card>
       <template #header><span class="text-lg font-semibold">环境变量说明（推荐迁移状态）</span></template>
       <div class="text-sm leading-7 text-slate-600">
-        <p>已迁移到 Web 设置：轮询间隔、采集超时、在线判定窗口、CPU/内存阈值、告警 Webhook。</p>
+        <p>已迁移到 Web 设置：轮询间隔、采集超时、在线判定窗口、CPU/内存阈值、告警 Webhook、SNMP 校准映射。</p>
         <p>仍建议保留在环境变量：DB_*、JWT_SECRET、ADMIN_USERNAME/ADMIN_PASSWORD、SYSLOG_ADDR、SNMP_TRAP_ADDR、TZ（容器级）。</p>
       </div>
     </el-card>

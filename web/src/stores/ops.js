@@ -20,12 +20,25 @@ export const useOpsStore = defineStore("ops", {
     async refreshRealtimeAlerts(limit = 20) {
       this.loadingAlerts = true;
       try {
-        const res = await api.listAuditLogs();
-        const rows = (res.data || []).slice(0, limit).map((x) => ({
+        const res = await api.listRecentEvents(limit);
+        const src = res.data?.data || res.data || [];
+        const rows = src.slice(0, limit).map((x) => ({
           ...x,
-          severity: severityOf(x)
+          severity: severityOf(x),
+          timestamp: x.created_at || x.timestamp || ""
         }));
-        this.realtimeAlerts = rows;
+        // Basic alert-state machine: dedupe repeated same event within short window.
+        const seen = new Map();
+        const deduped = [];
+        for (const row of rows) {
+          const key = `${row.device_id || ""}|${row.level || ""}|${row.message || ""}`;
+          const ts = new Date(row.timestamp || 0).getTime() || 0;
+          const prev = seen.get(key) || 0;
+          if (ts - prev < 120000) continue;
+          seen.set(key, ts);
+          deduped.push(row);
+        }
+        this.realtimeAlerts = deduped;
       } finally {
         this.loadingAlerts = false;
       }

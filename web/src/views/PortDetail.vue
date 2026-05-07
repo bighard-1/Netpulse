@@ -3,6 +3,8 @@ import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import { api, getApiError } from "../services/api";
+import { formatBps } from "../utils/format";
+import { zhCN } from "../i18n/zhCN";
 
 const props = defineProps({ id: { type: [String, Number], required: true } });
 const route = useRoute();
@@ -27,12 +29,51 @@ function startOfMonth(d = new Date()) {
   return x;
 }
 
+function startOfWeek(d = new Date()) {
+  const x = new Date(d);
+  const day = x.getDay();
+  const delta = day === 0 ? 6 : day - 1;
+  x.setDate(x.getDate() - delta);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function startOfYear(d = new Date()) {
+  return new Date(d.getFullYear(), 0, 1, 0, 0, 0, 0);
+}
+
+const pickerShortcuts = [
+  { text: "本周", value: () => [startOfWeek(new Date()), new Date()] },
+  {
+    text: "上周",
+    value: () => {
+      const thisWeek = startOfWeek(new Date());
+      const lastWeekStart = new Date(thisWeek);
+      lastWeekStart.setDate(lastWeekStart.getDate() - 7);
+      return [lastWeekStart, new Date(thisWeek.getTime() - 1000)];
+    }
+  },
+  { text: "本月", value: () => [startOfMonth(new Date()), new Date()] },
+  {
+    text: "上月",
+    value: () => {
+      const now = new Date();
+      const thisMonth = startOfMonth(now);
+      return [new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0), new Date(thisMonth.getTime() - 1000)];
+    }
+  },
+  { text: "本年", value: () => [startOfYear(new Date()), new Date()] },
+  {
+    text: "上年",
+    value: () => {
+      const thisYear = startOfYear(new Date());
+      return [new Date(thisYear.getFullYear() - 1, 0, 1, 0, 0, 0, 0), new Date(thisYear.getTime() - 1000)];
+    }
+  }
+];
+
 function bpsLabel(v) {
-  const n = Number(v || 0);
-  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} Gbps`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(2)} Mbps`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(2)} Kbps`;
-  return `${n.toFixed(0)} bps`;
+  return formatBps(v);
 }
 
 function pickUnit(maxVal) {
@@ -45,7 +86,7 @@ function pickUnit(maxVal) {
 function baseOption(title, unitInfo) {
   return {
     animation: false,
-    grid: { left: 82, right: 20, top: 48, bottom: 48 },
+    grid: { left: "3%", right: "4%", bottom: "10%", containLabel: true },
     title: {
       text: title,
       subtext: `单位: ${unitInfo.unit}`,
@@ -70,7 +111,7 @@ function baseOption(title, unitInfo) {
     legend: { top: 8, right: 10, data: ["入方向", "出方向"] },
     xAxis: {
       type: "time",
-      axisLabel: { hideOverlap: true }
+      axisLabel: { hideOverlap: true, rotate: 45 }
     },
     yAxis: {
       type: "value",
@@ -82,8 +123,8 @@ function baseOption(title, unitInfo) {
         name: "入方向",
         type: "line",
         showSymbol: false,
-        smooth: false,
-        sampling: "lttb",
+        smooth: true,
+        sampling: "average",
         progressive: 5000,
         data: []
       },
@@ -91,8 +132,8 @@ function baseOption(title, unitInfo) {
         name: "出方向",
         type: "line",
         showSymbol: false,
-        smooth: false,
-        sampling: "lttb",
+        smooth: true,
+        sampling: "average",
         progressive: 5000,
         data: []
       }
@@ -113,7 +154,9 @@ function toSeriesData(data) {
 }
 
 async function fetchRange(start, end) {
-  const res = await api.getHistory("traffic", props.id, start.toISOString(), end.toISOString());
+  const spanMs = end.getTime() - start.getTime();
+  const interval = spanMs > 180 * 24 * 3600 * 1000 ? "1h" : (spanMs > 30 * 24 * 3600 * 1000 ? "5m" : "1m");
+  const res = await api.getHistory("traffic", props.id, start.toISOString(), end.toISOString(), interval);
   return res.data.data || [];
 }
 
@@ -234,9 +277,10 @@ onBeforeUnmount(() => {
             range-separator="至"
             start-placeholder="开始时间"
             end-placeholder="结束时间"
+            :shortcuts="pickerShortcuts"
             @change="loadCustomChart"
           />
-          <el-button @click="loadAllCharts" :loading="loading">刷新流量图</el-button>
+          <el-button @click="loadAllCharts" :loading="loading">{{ zhCN.portDetail.refresh }}</el-button>
         </div>
       </div>
     </el-card>

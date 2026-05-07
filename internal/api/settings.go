@@ -14,6 +14,7 @@ type runtimeSettingsRequest struct {
 	AlertCPUThreshold     float64 `json:"alert_cpu_threshold"`
 	AlertMemThreshold     float64 `json:"alert_mem_threshold"`
 	AlertWebhookURL       string  `json:"alert_webhook_url"`
+	SNMPCalibrationMap    string  `json:"snmp_calibration_map"`
 }
 
 func (h *Handler) handleGetRuntimeSettings(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +53,13 @@ func (h *Handler) handleUpdateRuntimeSettings(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "alert_mem_threshold must be between 0 and 100")
 		return
 	}
+	if strings.TrimSpace(req.SNMPCalibrationMap) != "" {
+		var m map[string]float64
+		if err := json.Unmarshal([]byte(req.SNMPCalibrationMap), &m); err != nil {
+			writeError(w, http.StatusBadRequest, "snmp_calibration_map must be valid JSON object")
+			return
+		}
+	}
 
 	kv := map[string]string{
 		"snmp_poll_interval_sec":   strconv.Itoa(req.SNMPPollIntervalSec),
@@ -60,6 +68,7 @@ func (h *Handler) handleUpdateRuntimeSettings(w http.ResponseWriter, r *http.Req
 		"alert_cpu_threshold":      strconv.FormatFloat(req.AlertCPUThreshold, 'f', 2, 64),
 		"alert_mem_threshold":      strconv.FormatFloat(req.AlertMemThreshold, 'f', 2, 64),
 		"alert_webhook_url":        strings.TrimSpace(req.AlertWebhookURL),
+		"snmp_calibration_map":     strings.TrimSpace(req.SNMPCalibrationMap),
 	}
 	if err := h.repo.UpsertSystemSettings(r.Context(), kv); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

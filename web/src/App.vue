@@ -5,6 +5,7 @@ import { useRoute, useRouter } from "vue-router";
 import { useAuthStore } from "./stores/auth";
 import { useOpsStore } from "./stores/ops";
 import { api, getApiError } from "./services/api";
+import { zhCN } from "./i18n/zhCN";
 
 const route = useRoute();
 const router = useRouter();
@@ -24,7 +25,7 @@ const quickSearchVisible = ref(false);
 const quickSearchKeyword = ref("");
 const quickSearchLoading = ref(false);
 
-const pageTitle = computed(() => String(route.meta?.title || "NetPulse"));
+const pageTitle = computed(() => String(route.meta?.title || zhCN.app.title));
 const isAuthed = computed(() => auth.isAuthed);
 const isAdmin = computed(() => auth.isAdmin);
 const currentUser = computed(() => auth.user);
@@ -152,7 +153,7 @@ onBeforeUnmount(() => {
     <aside class="sidebar" :class="{ open: !isMobile || sidebarOpen, mobile: isMobile }">
       <div class="px-5 pb-5 pt-6">
         <div class="text-2xl font-semibold tracking-wide text-white">NetPulse</div>
-        <div class="mt-1 text-xs text-slate-400">Professional O&M Edition</div>
+        <div class="mt-1 text-xs text-slate-400">{{ zhCN.app.edition }}</div>
       </div>
 
       <el-menu :default-active="activeMenu" class="np-menu" background-color="transparent" text-color="#94a3b8" active-text-color="#ffffff" @select="onSelectMenu">

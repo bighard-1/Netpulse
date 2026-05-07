@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -35,12 +36,14 @@ type Worker struct {
 	cpuThreshold  float64
 	memThreshold  float64
 	alertMgr      *AlertManager
+	calibration   map[string]float64
 
 	mu     sync.Mutex
 	last   map[string]counterState
 	ifs    map[int64]string
 	devUp  map[int64]bool
 	portUp map[string]bool
+	evts   map[string]time.Time
 
 	lastHealthSnapshot time.Time
 }
@@ -84,7 +87,9 @@ func NewWorker(repo *db.Repository, collector *Collector, interval time.Duration
 		ifs:           make(map[int64]string),
 		devUp:         make(map[int64]bool),
 		portUp:        make(map[string]bool),
+		evts:          make(map[string]time.Time),
 		alertMgr:      NewAlertManager(repo, os.Getenv("ALERT_WEBHOOK_URL")),
+		calibration:   loadCalibrationMap(os.Getenv("SNMP_CALIBRATION_MAP")),
 	}
 }
 
@@ -118,6 +123,9 @@ func (w *Worker) applyRuntimeSettings(ctx context.Context) {
 	}
 	if cfg.AlertMemThreshold > 0 {
 		w.memThreshold = cfg.AlertMemThreshold
+	}
+	if strings.TrimSpace(cfg.SNMPCalibrationMap) != "" {
+		w.calibration = loadCalibrationMap(cfg.SNMPCalibrationMap)
 	}
 	w.alertWebhook = cfg.AlertWebhookURL
 	if w.alertMgr != nil {
@@ -191,11 +199,14 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 			code = "HOST_UNREACHABLE"
 			reason = "设备网络不可达，请检查路由/VLAN/网关配置"
 		}
-		_ = w.repo.AddDeviceLog(ctx, d.ID, "ERROR", fmt.Sprintf("[%s] %s", code, reason))
+		w.addDeviceEvent(ctx, d.ID, "ERROR", fmt.Sprintf("[%s] %s", code, reason), 2*time.Minute)
 		w.emitAlert(ctx, "error", d, code, reason)
 		return
 	}
 	w.trackDeviceState(ctx, d, true)
+	factor := w.calibrationFactor(d)
+	result.CPUUsage = calibratePercentForDevice(d, result.CPUUsage, factor)
+	result.MemoryUsage = calibratePercentForDevice(d, result.MemoryUsage, factor)
 
 	interfaces := make([]db.Interface, 0, len(result.Interfaces))
 	for _, itf := range result.Interfaces {
@@ -204,7 +215,7 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 	if digest := interfaceDigest(interfaces); !w.sameInterfaceDigest(d.ID, digest) {
 		if err := w.repo.SyncInterfaces(ctx, d.ID, interfaces); err != nil {
 			log.Printf("sync interfaces failed device=%d: %v", d.ID, err)
-			_ = w.repo.AddDeviceLog(ctx, d.ID, "ERROR", fmt.Sprintf("[SYNC_FAILED] 端口同步失败: %v", err))
+			w.addDeviceEvent(ctx, d.ID, "ERROR", fmt.Sprintf("[SYNC_FAILED] 端口同步失败: %v", err), 2*time.Minute)
 			return
 		}
 		w.setInterfaceDigest(d.ID, digest)
@@ -226,16 +237,71 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 
 	if err := w.repo.SaveMetrics(ctx, d.ID, result.PolledAt, mList); err != nil {
 		log.Printf("save metrics failed device=%d: %v", d.ID, err)
-		_ = w.repo.AddDeviceLog(ctx, d.ID, "ERROR", fmt.Sprintf("[DB_WRITE_FAILED] 指标入库失败: %v", err))
+		w.addDeviceEvent(ctx, d.ID, "ERROR", fmt.Sprintf("[DB_WRITE_FAILED] 指标入库失败: %v", err), 2*time.Minute)
 		return
 	}
-	_ = w.repo.AddDeviceLog(ctx, d.ID, "INFO", "[OK] 设备轮询成功")
+	_ = w.repo.UpsertDeviceCapability(ctx, db.DeviceCapability{
+		DeviceID:          d.ID,
+		SNMPVersion:       d.SNMPVersion,
+		SupportsCPU:       result.CPUUsage >= 0,
+		SupportsMemory:    result.MemoryUsage >= 0,
+		SupportsIfTraffic: len(result.Interfaces) > 0,
+		InterfaceCount:    len(result.Interfaces),
+	})
+	w.addDeviceEvent(ctx, d.ID, "INFO", "[OK] 设备轮询成功", 5*time.Minute)
 	if result.CPUUsage >= w.cpuThreshold {
 		w.emitAlert(ctx, "warning", d, "CPU_HIGH", fmt.Sprintf("CPU利用率 %.2f%% 超过阈值 %.2f%%", result.CPUUsage, w.cpuThreshold))
 	}
 	if result.MemoryUsage >= w.memThreshold {
 		w.emitAlert(ctx, "warning", d, "MEM_HIGH", fmt.Sprintf("内存利用率 %.2f%% 超过阈值 %.2f%%", result.MemoryUsage, w.memThreshold))
 	}
+}
+
+func loadCalibrationMap(raw string) map[string]float64 {
+	out := map[string]float64{}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return out
+	}
+	_ = json.Unmarshal([]byte(raw), &out)
+	for k, v := range out {
+		if v <= 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+			out[k] = 1.0
+		}
+		out[strings.TrimSpace(k)] = out[k]
+	}
+	return out
+}
+
+func (w *Worker) calibrationFactor(d db.Device) float64 {
+	if w == nil || len(w.calibration) == 0 {
+		return 1.0
+	}
+	if v, ok := w.calibration[d.IP]; ok && v > 0 {
+		return v
+	}
+	return 1.0
+}
+
+func calibratePercentForDevice(d db.Device, raw, factor float64) float64 {
+	v := raw
+	if strings.Contains(strings.ToLower(strings.TrimSpace(d.Brand)), "h3c") {
+		// Some H3C models expose percentage as scaled integer (e.g. 4567 => 45.67%).
+		if v > 100 && v <= 10000 {
+			v = v / 100
+		}
+	}
+	if factor <= 0 || math.IsNaN(factor) || math.IsInf(factor, 0) {
+		factor = 1.0
+	}
+	v = v * factor
+	if v < 0 {
+		v = 0
+	}
+	if v > 100 {
+		v = 100
+	}
+	return math.Round(v*100) / 100
 }
 
 func (w *Worker) trackDeviceState(ctx context.Context, d db.Device, up bool) {
@@ -248,9 +314,9 @@ func (w *Worker) trackDeviceState(ctx context.Context, d db.Device, up bool) {
 	}
 	if prev != up {
 		if up {
-			_ = w.repo.AddDeviceLog(ctx, d.ID, "INFO", "[DEVICE_UP] 设备状态由离线变为在线")
+			w.addDeviceEvent(ctx, d.ID, "INFO", "[DEVICE_UP] 设备状态由离线变为在线", time.Minute)
 		} else {
-			_ = w.repo.AddDeviceLog(ctx, d.ID, "WARNING", "[DEVICE_DOWN] 设备状态由在线变为离线")
+			w.addDeviceEvent(ctx, d.ID, "WARNING", "[DEVICE_DOWN] 设备状态由在线变为离线", time.Minute)
 		}
 	}
 }
@@ -266,11 +332,26 @@ func (w *Worker) trackPortState(ctx context.Context, d db.Device, ifIndex int, i
 	}
 	if prev != up {
 		if up {
-			_ = w.repo.AddDeviceLog(ctx, d.ID, "INFO", fmt.Sprintf("[PORT_UP] 端口 %s(ifIndex=%d) 状态由down变为up", ifName, ifIndex))
+			w.addDeviceEvent(ctx, d.ID, "INFO", fmt.Sprintf("[PORT_UP] 端口 %s(ifIndex=%d) 状态由down变为up", ifName, ifIndex), time.Minute)
 		} else {
-			_ = w.repo.AddDeviceLog(ctx, d.ID, "WARNING", fmt.Sprintf("[PORT_DOWN] 端口 %s(ifIndex=%d) 状态由up变为down", ifName, ifIndex))
+			w.addDeviceEvent(ctx, d.ID, "WARNING", fmt.Sprintf("[PORT_DOWN] 端口 %s(ifIndex=%d) 状态由up变为down", ifName, ifIndex), time.Minute)
 		}
 	}
+}
+
+func (w *Worker) addDeviceEvent(ctx context.Context, deviceID int64, level, msg string, suppressWindow time.Duration) {
+	if suppressWindow > 0 {
+		key := fmt.Sprintf("%d|%s|%s", deviceID, level, msg)
+		now := time.Now()
+		w.mu.Lock()
+		if last, ok := w.evts[key]; ok && now.Sub(last) < suppressWindow {
+			w.mu.Unlock()
+			return
+		}
+		w.evts[key] = now
+		w.mu.Unlock()
+	}
+	_ = w.repo.AddDeviceLog(ctx, deviceID, level, msg)
 }
 
 func (w *Worker) sameInterfaceDigest(deviceID int64, digest string) bool {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,7 +48,9 @@ func (h *Handler) Router() http.Handler {
 		pr.With(h.requirePermission("device.read")).Get("/api/devices", h.handleListDevices)
 		pr.With(h.requirePermission("device.read")).Get("/api/search", h.handleGlobalSearch)
 		pr.Get("/api/devices/{id}", h.handleGetDevice)
+		pr.Get("/api/devices/{id}/capabilities", h.handleGetDeviceCapabilities)
 		pr.With(h.requirePermission("device.read")).Get("/api/devices/{id}/diagnose", h.handleDiagnoseDevice)
+		pr.With(h.requirePermission("device.write")).Post("/api/devices/precheck", h.handlePrecheckDevice)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("ADD_DEVICE")).Post("/api/devices", h.handleAddDevice)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("UPDATE_DEVICE")).Put("/api/devices/{id}", h.handleUpdateDevice)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("IMPORT_DEVICES")).Post("/api/devices/import", h.handleImportDevices)
@@ -130,6 +133,24 @@ func (h *Handler) handleGetDevice(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
+func (h *Handler) handleGetDeviceCapabilities(w http.ResponseWriter, r *http.Request) {
+	id, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid device id")
+		return
+	}
+	item, err := h.repo.GetDeviceCapability(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if item == nil {
+		writeError(w, http.StatusNotFound, "device capability not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
 type addDeviceRequest struct {
 	IP              string `json:"ip"`
 	Name            string `json:"name"`
@@ -160,6 +181,64 @@ type updateDeviceRequest struct {
 type updateInterfaceRequest struct {
 	Name   string `json:"name"`
 	Remark string `json:"remark"`
+}
+
+func (h *Handler) handlePrecheckDevice(w http.ResponseWriter, r *http.Request) {
+	var req addDeviceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if req.IP == "" {
+		writeError(w, http.StatusBadRequest, "ip is required")
+		return
+	}
+	if req.SNMPVersion == "" {
+		req.SNMPVersion = "2c"
+	}
+	if req.SNMPPort <= 0 {
+		req.SNMPPort = 161
+	}
+	opt := snmp.PollOptions{
+		Brand:       req.Brand,
+		SNMPVersion: req.SNMPVersion,
+		Port:        req.SNMPPort,
+		Community:   req.Community,
+		V3Username:  req.V3Username,
+		V3AuthProto: req.V3AuthProtocol,
+		V3AuthPass:  req.V3AuthPassword,
+		V3PrivProto: req.V3PrivProtocol,
+		V3PrivPass:  req.V3PrivPassword,
+		V3SecLevel:  req.V3SecurityLevel,
+	}
+	poll, err := h.collector.PollDevice(req.IP, opt)
+	if err != nil {
+		msg := strings.ToLower(err.Error())
+		hint := "请检查SNMP参数"
+		switch {
+		case strings.Contains(msg, "timeout"):
+			hint = "设备响应超时，请检查网络连通、ACL、防火墙或SNMP端口"
+		case strings.Contains(msg, "authentication"), strings.Contains(msg, "community"), strings.Contains(msg, "authorization"):
+			hint = "认证失败，请核对v3用户名/认证协议/密码或v1/v2c团体字串"
+		case strings.Contains(msg, "connect"):
+			hint = "连接失败，请检查IP与端口可达性"
+		case strings.Contains(msg, "oid"), strings.Contains(msg, "ifname"), strings.Contains(msg, "counter"):
+			hint = "设备OID读取异常，请检查型号兼容与SNMP视图权限"
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"code":    "ERR_SNMP_PRECHECK",
+			"error":   err.Error(),
+			"message": "snmp precheck failed",
+			"hint":    hint,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":    "snmp precheck ok",
+		"cpu_usage":  poll.CPUUsage,
+		"mem_usage":  poll.MemoryUsage,
+		"interfaces": len(poll.Interfaces),
+	})
 }
 
 func (h *Handler) handleListDevices(w http.ResponseWriter, r *http.Request) {
@@ -216,7 +295,6 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 		V3AuthProto: req.V3AuthProtocol,
 		V3AuthPass:  req.V3AuthPassword,
 		V3PrivProto: req.V3PrivProtocol,
-		V3PrivPass:  req.V3PrivPassword,
 		V3SecLevel:  req.V3SecurityLevel,
 		Remark:      req.Remark,
 	})
@@ -398,6 +476,7 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 	idStr := r.URL.Query().Get("id")
 	startStr := r.URL.Query().Get("start")
 	endStr := r.URL.Query().Get("end")
+	interval := strings.TrimSpace(r.URL.Query().Get("interval"))
 
 	if metricType == "" || idStr == "" || startStr == "" || endStr == "" {
 		writeError(w, http.StatusBadRequest, "type, id, start, end are required")
@@ -427,30 +506,32 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 
 	switch metricType {
 	case "cpu", "mem":
-		items, err := h.repo.GetDeviceHistory(r.Context(), id, start, end)
+		items, err := h.repo.GetDeviceHistory(r.Context(), id, start, end, interval)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"type":  metricType,
-			"id":    id,
-			"start": start,
-			"end":   end,
-			"data":  items,
+			"type":     metricType,
+			"id":       id,
+			"start":    start,
+			"end":      end,
+			"interval": interval,
+			"data":     items,
 		})
 	case "traffic":
-		items, err := h.repo.GetInterfaceHistory(r.Context(), id, start, end)
+		items, err := h.repo.GetInterfaceHistory(r.Context(), id, start, end, interval)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"type":  metricType,
-			"id":    id,
-			"start": start,
-			"end":   end,
-			"data":  items,
+			"type":     metricType,
+			"id":       id,
+			"start":    start,
+			"end":      end,
+			"interval": interval,
+			"data":     items,
 		})
 	default:
 		writeError(w, http.StatusBadRequest, "type must be one of: cpu, mem, traffic")
@@ -662,7 +743,25 @@ func parseIDParam(r *http.Request, name string) (int64, error) {
 }
 
 func parseTime(v string) (time.Time, error) {
-	return time.Parse(time.RFC3339, v)
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return time.Time{}, fmt.Errorf("empty time")
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+	}
+	var lastErr error
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, v); err == nil {
+			return t, nil
+		} else {
+			lastErr = err
+		}
+	}
+	return time.Time{}, lastErr
 }
 
 type statusRecorder struct {
@@ -730,5 +829,27 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+	code := "ERR_GENERIC"
+	switch status {
+	case http.StatusBadRequest:
+		code = "ERR_BAD_REQUEST"
+	case http.StatusUnauthorized:
+		code = "ERR_UNAUTHORIZED"
+	case http.StatusForbidden:
+		code = "ERR_FORBIDDEN"
+	case http.StatusNotFound:
+		code = "ERR_NOT_FOUND"
+	case http.StatusConflict:
+		code = "ERR_CONFLICT"
+	case http.StatusTooManyRequests:
+		code = "ERR_RATE_LIMIT"
+	case http.StatusInternalServerError:
+		code = "ERR_INTERNAL"
+	}
+	writeJSON(w, status, map[string]string{
+		"code":    code,
+		"error":   msg,
+		"message": msg,
+		"hint":    "如需排查，请导出自助诊断报告并提供给运维",
+	})
 }

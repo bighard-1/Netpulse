@@ -159,6 +159,29 @@ CREATE TABLE IF NOT EXISTS device_logs (
 CREATE INDEX IF NOT EXISTS idx_device_logs_device_created_at
     ON device_logs (device_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS device_capabilities (
+    device_id BIGINT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+    snmp_version VARCHAR(8),
+    supports_cpu BOOLEAN NOT NULL DEFAULT FALSE,
+    supports_memory BOOLEAN NOT NULL DEFAULT FALSE,
+    supports_if_traffic BOOLEAN NOT NULL DEFAULT FALSE,
+    interface_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS device_capability_history (
+    id BIGSERIAL PRIMARY KEY,
+    device_id BIGINT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    snmp_version VARCHAR(8),
+    supports_cpu BOOLEAN NOT NULL DEFAULT FALSE,
+    supports_memory BOOLEAN NOT NULL DEFAULT FALSE,
+    supports_if_traffic BOOLEAN NOT NULL DEFAULT FALSE,
+    interface_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_device_capability_history_device_time
+    ON device_capability_history(device_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS users (
     id BIGSERIAL PRIMARY KEY,
     username VARCHAR(64) NOT NULL UNIQUE,
@@ -619,6 +642,16 @@ type InterfaceHistoryPoint struct {
 	TrafficOutBps float64   `json:"traffic_out_bps"`
 }
 
+type DeviceCapability struct {
+	DeviceID          int64     `json:"device_id"`
+	SNMPVersion       string    `json:"snmp_version"`
+	SupportsCPU       bool      `json:"supports_cpu"`
+	SupportsMemory    bool      `json:"supports_memory"`
+	SupportsIfTraffic bool      `json:"supports_if_traffic"`
+	InterfaceCount    int       `json:"interface_count"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
 type DeviceLog struct {
 	ID        int64     `json:"id"`
 	DeviceID  int64     `json:"device_id"`
@@ -718,6 +751,7 @@ type RuntimeSettings struct {
 	AlertCPUThreshold     float64 `json:"alert_cpu_threshold"`
 	AlertMemThreshold     float64 `json:"alert_mem_threshold"`
 	AlertWebhookURL       string  `json:"alert_webhook_url"`
+	SNMPCalibrationMap    string  `json:"snmp_calibration_map"`
 }
 
 type SystemHealthPoint struct {
@@ -846,6 +880,7 @@ func (r *Repository) GetRuntimeSettings(ctx context.Context) (RuntimeSettings, e
 		AlertCPUThreshold:     parseFloatSetting(kv["alert_cpu_threshold"], 90),
 		AlertMemThreshold:     parseFloatSetting(kv["alert_mem_threshold"], 90),
 		AlertWebhookURL:       kv["alert_webhook_url"],
+		SNMPCalibrationMap:    strings.TrimSpace(kv["snmp_calibration_map"]),
 	}
 	if out.SNMPPollIntervalSec < 5 {
 		out.SNMPPollIntervalSec = 5
@@ -1865,9 +1900,10 @@ func (r *Repository) GetRecentEvents(ctx context.Context, limit int) ([]RecentEv
 }
 
 func (r *Repository) GetDeviceHistory(
-	ctx context.Context, deviceID int64, start, end time.Time,
+	ctx context.Context, deviceID int64, start, end time.Time, interval string,
 ) ([]DeviceHistoryPoint, error) {
 	useAgg := end.Sub(start) > 7*24*time.Hour
+	interval = strings.TrimSpace(strings.ToLower(interval))
 	q := `
 		SELECT ts, COALESCE(cpu_usage, 0), COALESCE(memory_usage, 0)
 		FROM metrics
@@ -1881,6 +1917,21 @@ func (r *Repository) GetDeviceHistory(
 			WHERE device_id = $1 AND bucket >= $2 AND bucket <= $3
 			ORDER BY bucket;
 		`
+	}
+	if interval == "5m" || interval == "1h" {
+		b := "5 minutes"
+		if interval == "1h" {
+			b = "1 hour"
+		}
+		q = fmt.Sprintf(`
+			SELECT time_bucket('%s', bucket) AS ts,
+			       AVG(COALESCE(avg_cpu_usage, 0)) AS cpu_usage,
+			       AVG(COALESCE(avg_memory_usage, 0)) AS memory_usage
+			FROM metrics_1m
+			WHERE device_id = $1 AND bucket >= $2 AND bucket <= $3
+			GROUP BY 1
+			ORDER BY 1;
+		`, b)
 	}
 
 	rows, err := r.db.QueryContext(ctx, q, deviceID, start, end)
@@ -1900,13 +1951,14 @@ func (r *Repository) GetDeviceHistory(
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate device history: %w", err)
 	}
-	return out, nil
+	return decimateDeviceHistory(out, end.Sub(start)), nil
 }
 
 func (r *Repository) GetInterfaceHistory(
-	ctx context.Context, interfaceID int64, start, end time.Time,
+	ctx context.Context, interfaceID int64, start, end time.Time, interval string,
 ) ([]InterfaceHistoryPoint, error) {
 	useAgg := end.Sub(start) > 7*24*time.Hour
+	interval = strings.TrimSpace(strings.ToLower(interval))
 	q := `
 		SELECT ts, COALESCE(traffic_in_bps, 0), COALESCE(traffic_out_bps, 0)
 		FROM metrics
@@ -1920,6 +1972,21 @@ func (r *Repository) GetInterfaceHistory(
 			WHERE interface_id = $1 AND bucket >= $2 AND bucket <= $3
 			ORDER BY bucket;
 		`
+	}
+	if interval == "5m" || interval == "1h" {
+		b := "5 minutes"
+		if interval == "1h" {
+			b = "1 hour"
+		}
+		q = fmt.Sprintf(`
+			SELECT time_bucket('%s', bucket) AS ts,
+			       AVG(COALESCE(avg_traffic_in_bps, 0)) AS traffic_in_bps,
+			       AVG(COALESCE(avg_traffic_out_bps, 0)) AS traffic_out_bps
+			FROM metrics_1m
+			WHERE interface_id = $1 AND bucket >= $2 AND bucket <= $3
+			GROUP BY 1
+			ORDER BY 1;
+		`, b)
 	}
 
 	rows, err := r.db.QueryContext(ctx, q, interfaceID, start, end)
@@ -1939,7 +2006,61 @@ func (r *Repository) GetInterfaceHistory(
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate interface history: %w", err)
 	}
-	return out, nil
+	return decimateInterfaceHistory(out, end.Sub(start)), nil
+}
+
+func decimateDeviceHistory(in []DeviceHistoryPoint, span time.Duration) []DeviceHistoryPoint {
+	if len(in) <= 0 {
+		return in
+	}
+	maxPoints := 4000
+	if span > 180*24*time.Hour {
+		maxPoints = 1800
+	} else if span > 30*24*time.Hour {
+		maxPoints = 2500
+	}
+	if len(in) <= maxPoints {
+		return in
+	}
+	step := int(math.Ceil(float64(len(in)) / float64(maxPoints)))
+	if step < 1 {
+		step = 1
+	}
+	out := make([]DeviceHistoryPoint, 0, maxPoints+2)
+	for i := 0; i < len(in); i += step {
+		out = append(out, in[i])
+	}
+	if out[len(out)-1].Timestamp != in[len(in)-1].Timestamp {
+		out = append(out, in[len(in)-1])
+	}
+	return out
+}
+
+func decimateInterfaceHistory(in []InterfaceHistoryPoint, span time.Duration) []InterfaceHistoryPoint {
+	if len(in) <= 0 {
+		return in
+	}
+	maxPoints := 4000
+	if span > 180*24*time.Hour {
+		maxPoints = 1800
+	} else if span > 30*24*time.Hour {
+		maxPoints = 2500
+	}
+	if len(in) <= maxPoints {
+		return in
+	}
+	step := int(math.Ceil(float64(len(in)) / float64(maxPoints)))
+	if step < 1 {
+		step = 1
+	}
+	out := make([]InterfaceHistoryPoint, 0, maxPoints+2)
+	for i := 0; i < len(in); i += step {
+		out = append(out, in[i])
+	}
+	if out[len(out)-1].Timestamp != in[len(in)-1].Timestamp {
+		out = append(out, in[len(in)-1])
+	}
+	return out
 }
 
 func (r *Repository) GetDeviceLogs(ctx context.Context, deviceID int64) ([]DeviceLog, error) {
@@ -1993,4 +2114,49 @@ func (r *Repository) AddDeviceLog(ctx context.Context, deviceID int64, level, me
 		return fmt.Errorf("trim device log: %w", err)
 	}
 	return nil
+}
+
+func (r *Repository) UpsertDeviceCapability(ctx context.Context, c DeviceCapability) error {
+	const q = `
+		INSERT INTO device_capabilities(
+			device_id, snmp_version, supports_cpu, supports_memory, supports_if_traffic, interface_count, updated_at
+		) VALUES($1,$2,$3,$4,$5,$6,NOW())
+		ON CONFLICT(device_id) DO UPDATE SET
+			snmp_version = EXCLUDED.snmp_version,
+			supports_cpu = EXCLUDED.supports_cpu,
+			supports_memory = EXCLUDED.supports_memory,
+			supports_if_traffic = EXCLUDED.supports_if_traffic,
+			interface_count = EXCLUDED.interface_count,
+			updated_at = NOW();
+	`
+	_, err := r.db.ExecContext(ctx, q, c.DeviceID, c.SNMPVersion, c.SupportsCPU, c.SupportsMemory, c.SupportsIfTraffic, c.InterfaceCount)
+	if err != nil {
+		return fmt.Errorf("upsert device capability: %w", err)
+	}
+	_, _ = r.db.ExecContext(ctx, `
+		INSERT INTO device_capability_history(
+			device_id, snmp_version, supports_cpu, supports_memory, supports_if_traffic, interface_count, created_at
+		) VALUES($1,$2,$3,$4,$5,$6,NOW());
+	`, c.DeviceID, c.SNMPVersion, c.SupportsCPU, c.SupportsMemory, c.SupportsIfTraffic, c.InterfaceCount)
+	return nil
+}
+
+func (r *Repository) GetDeviceCapability(ctx context.Context, deviceID int64) (*DeviceCapability, error) {
+	const q = `
+		SELECT device_id, COALESCE(snmp_version,''), supports_cpu, supports_memory, supports_if_traffic, interface_count, updated_at
+		FROM device_capabilities
+		WHERE device_id = $1
+		LIMIT 1;
+	`
+	var c DeviceCapability
+	err := r.db.QueryRowContext(ctx, q, deviceID).Scan(
+		&c.DeviceID, &c.SNMPVersion, &c.SupportsCPU, &c.SupportsMemory, &c.SupportsIfTraffic, &c.InterfaceCount, &c.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get device capability: %w", err)
+	}
+	return &c, nil
 }

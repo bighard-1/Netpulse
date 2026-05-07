@@ -22,6 +22,7 @@ const showPortIndex = ref(false);
 const diagnoseVisible = ref(false);
 const diagnoseLoading = ref(false);
 const diagnoseReport = ref(null);
+const capability = ref(null);
 const cpuMemRef = ref(null);
 let cpuMemChart = null;
 
@@ -38,11 +39,21 @@ async function loadDevice() {
   try {
     device.value = await api.getDeviceById(props.id);
     if (!device.value) return;
-    await Promise.all([renderCpuMem(), loadLogs()]);
+    await Promise.all([renderCpuMem(), loadLogs(), loadCapability()]);
   } catch (err) {
     ElMessage.error(getApiError(err, "加载设备详情失败"));
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadCapability() {
+  if (!props.id) return;
+  try {
+    const res = await api.getDeviceCapabilities(props.id);
+    capability.value = res.data || null;
+  } catch {
+    capability.value = null;
   }
 }
 
@@ -79,9 +90,10 @@ async function renderCpuMem() {
   try {
     const end = new Date();
     const start = new Date(end.getTime() - 24 * 3600 * 1000);
+    const interval = "1m";
     const [cpuRes, memRes] = await Promise.all([
-      api.getHistory("cpu", device.value.id, start.toISOString(), end.toISOString()),
-      api.getHistory("mem", device.value.id, start.toISOString(), end.toISOString())
+      api.getHistory("cpu", device.value.id, start.toISOString(), end.toISOString(), interval),
+      api.getHistory("mem", device.value.id, start.toISOString(), end.toISOString(), interval)
     ]);
 
     const cpuData = (cpuRes.data.data || []).map((p) => [new Date(p.timestamp).getTime(), Number(p.cpu_usage || 0)]);
@@ -205,6 +217,17 @@ watch(
         <div><div class="text-xs text-slate-500">备注</div><div class="font-semibold">{{ device.remark || '-' }}</div></div>
       </div>
       <el-empty v-else description="设备不存在" />
+    </el-card>
+
+    <el-card>
+      <template #header><span class="text-base font-semibold">设备能力矩阵</span></template>
+      <div v-if="capability" class="grid grid-cols-1 gap-3 md:grid-cols-4 text-sm">
+        <div>SNMP版本：<b>{{ capability.snmp_version || "-" }}</b></div>
+        <div>CPU采集：<b>{{ capability.supports_cpu ? "支持" : "不支持" }}</b></div>
+        <div>内存采集：<b>{{ capability.supports_memory ? "支持" : "不支持" }}</b></div>
+        <div>端口流量：<b>{{ capability.supports_if_traffic ? "支持" : "不支持" }}</b></div>
+      </div>
+      <div v-else class="text-sm text-slate-500">暂无能力数据，等待设备完成一次轮询后显示。</div>
     </el-card>
 
     <el-card>

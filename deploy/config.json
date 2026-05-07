@@ -126,6 +126,12 @@
       "default": "90"
     },
     {
+      "key": "SNMP_CALIBRATION_MAP",
+      "label": "SNMP Calibration Map(JSON)",
+      "type": "text",
+      "default": "{}"
+    },
+    {
       "key": "BACKUP_DRILL_EVERY_HOURS",
       "label": "Backup Drill Every Hours",
       "type": "number",
