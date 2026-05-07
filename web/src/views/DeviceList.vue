@@ -8,6 +8,7 @@ const router = useRouter();
 const loading = ref(false);
 const devices = ref([]);
 const globalKeyword = ref("");
+const appliedKeyword = ref("");
 const feedLoading = ref(false);
 const criticalFeed = ref([]);
 
@@ -23,7 +24,7 @@ const totalDevices = computed(() => devices.value.length);
 const onlineDevices = computed(() => devices.value.filter((d) => d.status === "online").length);
 const offlineDevices = computed(() => devices.value.filter((d) => d.status === "offline" || d.status === "unknown").length);
 const filteredDevices = computed(() => {
-  const kw = globalKeyword.value.trim().toLowerCase();
+  const kw = appliedKeyword.value.trim().toLowerCase();
   if (!kw) return devices.value;
   return devices.value.filter((d) => [String(d.id), d.ip || "", d.brand || "", d.remark || ""].join(" ").toLowerCase().includes(kw));
 });
@@ -145,6 +146,15 @@ function goDetail(row) {
   router.push({ path: `/device/${row.id}`, query: { ip: row.ip } });
 }
 
+function applySearch() {
+  appliedKeyword.value = globalKeyword.value;
+}
+
+function resetSearch() {
+  globalKeyword.value = "";
+  appliedKeyword.value = "";
+}
+
 onMounted(refreshAll);
 onActivated(refreshAll);
 
@@ -185,7 +195,9 @@ watch(
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-3">
               <span class="text-lg font-semibold">资产列表</span>
-              <el-input v-model="globalKeyword" placeholder="全局搜索：IP/品牌/备注/ID" clearable class="w-[320px]" />
+              <el-input v-model="globalKeyword" placeholder="全局搜索：IP/品牌/备注/ID" clearable class="w-[320px]" @keyup.enter="applySearch" />
+              <el-button @click="applySearch">搜索</el-button>
+              <el-button @click="resetSearch">重置</el-button>
             </div>
             <div class="flex items-center gap-2">
               <el-button type="primary" @click="addVisible = true">添加资产</el-button>

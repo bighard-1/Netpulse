@@ -52,6 +52,7 @@ func (h *Handler) Router() http.Handler {
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("DELETE_DEVICE")).Delete("/api/devices/{id}", h.handleDeleteDevice)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("UPDATE_DEVICE_REMARK")).Put("/api/devices/{id}/remark", h.handleUpdateDeviceRemark)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("UPDATE_INTERFACE_REMARK")).Put("/api/interfaces/{id}/remark", h.handleUpdateInterfaceRemark)
+		pr.With(h.requirePermission("device.write"), h.auditMiddleware("UPDATE_INTERFACE_PROFILE")).Put("/api/interfaces/{id}", h.handleUpdateInterfaceProfile)
 		pr.With(h.requirePermission("metrics.read")).Get("/api/metrics/history", h.handleMetricsHistory)
 		pr.With(h.requirePermission("logs.read")).Get("/api/devices/{id}/logs", h.handleDeviceLogs)
 		pr.Get("/api/system/backup", h.rateLimit("backup", 10, time.Minute, h.handleSystemBackup))
@@ -70,6 +71,7 @@ func (h *Handler) Router() http.Handler {
 		pr.With(h.adminOnly).Post("/api/templates", h.handleCreateTemplate)
 		pr.With(h.adminOnly).Get("/api/topology", h.handleListTopology)
 		pr.With(h.adminOnly).Post("/api/topology", h.handleUpsertTopology)
+		pr.With(h.adminOnly).Delete("/api/topology/{id}", h.handleDeleteTopology)
 		pr.With(h.adminOnly).Get("/api/alerts/rules", h.handleListAlertRules)
 		pr.With(h.adminOnly).Post("/api/alerts/rules", h.handleUpsertAlertRule)
 		pr.With(h.adminOnly).Get("/api/reports/summary", h.handleReportSummary)
@@ -143,6 +145,11 @@ type addDeviceRequest struct {
 }
 
 type updateRemarkRequest struct {
+	Remark string `json:"remark"`
+}
+
+type updateInterfaceRequest struct {
+	Name   string `json:"name"`
 	Remark string `json:"remark"`
 }
 
@@ -294,6 +301,32 @@ func (h *Handler) handleUpdateInterfaceRemark(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "interface remark updated"})
+}
+
+func (h *Handler) handleUpdateInterfaceProfile(w http.ResponseWriter, r *http.Request) {
+	id, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid interface id")
+		return
+	}
+	var req updateInterfaceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if req.Name == "" && req.Remark == "" {
+		writeError(w, http.StatusBadRequest, "name or remark is required")
+		return
+	}
+	if err := h.repo.UpdateInterfaceProfile(r.Context(), id, req.Name, req.Remark); err != nil {
+		if err.Error() == "interface name conflict in this device" {
+			writeError(w, http.StatusConflict, "端口名称在本资产内已存在，请更换")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "interface updated"})
 }
 
 func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {

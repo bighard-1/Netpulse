@@ -122,6 +122,19 @@ func (h *Handler) handleListTopology(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+func (h *Handler) handleDeleteTopology(w http.ResponseWriter, r *http.Request) {
+	id, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid topology id")
+		return
+	}
+	if err := h.repo.DeleteTopologyLink(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "topology link deleted"})
+}
+
 func (h *Handler) handleUpsertAlertRule(w http.ResponseWriter, r *http.Request) {
 	var ar db.AlertRule
 	if err := json.NewDecoder(r.Body).Decode(&ar); err != nil {

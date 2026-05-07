@@ -46,6 +46,9 @@ export const api = {
   updateInterfaceRemark(id, remark) {
     return http.put(`/interfaces/${id}/remark`, { remark });
   },
+  updateInterfaceProfile(id, payload) {
+    return http.put(`/interfaces/${id}`, payload);
+  },
   getHistory(type, id, start, end) {
     return http.get("/metrics/history", {
       params: { type, id, start, end }
@@ -110,6 +113,9 @@ export const api = {
   },
   upsertTopology(payload) {
     return http.post("/topology", payload);
+  },
+  deleteTopology(id) {
+    return http.delete(`/topology/${id}`);
   },
   listAlertRules() {
     return http.get("/alerts/rules");

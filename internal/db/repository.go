@@ -1272,6 +1272,11 @@ func (r *Repository) ListTopologyLinks(ctx context.Context) ([]TopologyLink, err
 	return out, rows.Err()
 }
 
+func (r *Repository) DeleteTopologyLink(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM topology_links WHERE id=$1;`, id)
+	return err
+}
+
 func (r *Repository) FindDeviceByIP(ctx context.Context, ip string) (*Device, error) {
 	const q = `SELECT id, host(ip), brand, community, snmp_version, snmp_port, COALESCE(v3_username,''), COALESCE(v3_auth_protocol,''), COALESCE(v3_auth_password,''), COALESCE(v3_priv_protocol,''), COALESCE(v3_priv_password,''), COALESCE(v3_security_level,''), COALESCE(remark,''), created_at FROM devices WHERE ip = $1::inet LIMIT 1;`
 	var d Device
@@ -1568,6 +1573,48 @@ func (r *Repository) UpdateInterfaceRemark(ctx context.Context, id int64, remark
 	const q = `UPDATE interfaces SET remark = $2 WHERE id = $1;`
 	if _, err := r.db.ExecContext(ctx, q, id, remark); err != nil {
 		return fmt.Errorf("update interface remark: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) UpdateInterfaceProfile(ctx context.Context, id int64, name, remark string) error {
+	const uq = `
+		SELECT i.device_id
+		FROM interfaces i
+		WHERE i.id = $1;
+	`
+	var deviceID int64
+	if err := r.db.QueryRowContext(ctx, uq, id).Scan(&deviceID); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("interface not found")
+		}
+		return fmt.Errorf("query interface device: %w", err)
+	}
+
+	if strings.TrimSpace(name) != "" {
+		const cq = `
+			SELECT EXISTS(
+				SELECT 1 FROM interfaces
+				WHERE device_id = $1 AND lower(name) = lower($2) AND id <> $3
+			);
+		`
+		var exists bool
+		if err := r.db.QueryRowContext(ctx, cq, deviceID, strings.TrimSpace(name), id).Scan(&exists); err != nil {
+			return fmt.Errorf("check interface name conflict: %w", err)
+		}
+		if exists {
+			return fmt.Errorf("interface name conflict in this device")
+		}
+	}
+
+	const q = `
+		UPDATE interfaces
+		SET name = CASE WHEN $2 <> '' THEN $2 ELSE name END,
+			remark = $3
+		WHERE id = $1;
+	`
+	if _, err := r.db.ExecContext(ctx, q, id, strings.TrimSpace(name), remark); err != nil {
+		return fmt.Errorf("update interface profile: %w", err)
 	}
 	return nil
 }
