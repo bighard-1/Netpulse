@@ -8,48 +8,133 @@ const props = defineProps({ id: { type: [String, Number], required: true } });
 const route = useRoute();
 
 const loading = ref(false);
-const range = ref([]);
-const chartRef = ref(null);
+const chartTodayRef = ref(null);
+const chart7dRef = ref(null);
+const chartMonthRef = ref(null);
 const portMeta = ref({ id: props.id, name: route.query.portName || `端口-${props.id}` });
-let chart = null;
+let charts = { today: null, d7: null, month: null };
 
-const shortcuts = [
-  { text: "最近 24 小时", value: () => [new Date(Date.now() - 24 * 3600 * 1000), new Date()] },
-  { text: "最近 7 天", value: () => [new Date(Date.now() - 7 * 24 * 3600 * 1000), new Date()] },
-  { text: "最近 30 天", value: () => [new Date(Date.now() - 30 * 24 * 3600 * 1000), new Date()] }
-];
-
-function getRange() {
-  if (range.value?.length === 2) return { start: range.value[0], end: range.value[1] };
-  const end = new Date();
-  const start = new Date(end.getTime() - 24 * 3600 * 1000);
-  return { start, end };
+function startOfDay(d = new Date()) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
 }
 
-async function loadHistory() {
+function startOfMonth(d = new Date()) {
+  const x = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
+  return x;
+}
+
+function bpsLabel(v) {
+  const n = Number(v || 0);
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} Gbps`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)} Mbps`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(2)} Kbps`;
+  return `${n.toFixed(0)} bps`;
+}
+
+function baseOption(title) {
+  return {
+    animation: false,
+    grid: { left: 60, right: 20, top: 42, bottom: 48 },
+    title: { text: title, left: 10, top: 8, textStyle: { fontSize: 14, fontWeight: 600 } },
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "line", animation: false },
+      formatter(params) {
+        if (!params?.length) return "";
+        const ts = new Date(params[0].data[0]).toLocaleString();
+        const lines = [ts];
+        for (const p of params) {
+          lines.push(`${p.marker}${p.seriesName}: ${bpsLabel(p.data[1])}`);
+        }
+        return lines.join("<br/>");
+      }
+    },
+    legend: { top: 8, right: 10, data: ["入方向", "出方向"] },
+    xAxis: {
+      type: "time",
+      axisLabel: { hideOverlap: true }
+    },
+    yAxis: {
+      type: "value",
+      axisLabel: { formatter: (val) => bpsLabel(val) }
+    },
+    series: [
+      {
+        name: "入方向",
+        type: "line",
+        showSymbol: false,
+        smooth: false,
+        sampling: "lttb",
+        progressive: 5000,
+        data: []
+      },
+      {
+        name: "出方向",
+        type: "line",
+        showSymbol: false,
+        smooth: false,
+        sampling: "lttb",
+        progressive: 5000,
+        data: []
+      }
+    ]
+  };
+}
+
+function toSeriesData(data) {
+  const inbound = [];
+  const outbound = [];
+  for (const p of data || []) {
+    const t = new Date(p.timestamp).getTime();
+    if (!Number.isFinite(t)) continue;
+    inbound.push([t, Number(p.traffic_in_bps || 0)]);
+    outbound.push([t, Number(p.traffic_out_bps || 0)]);
+  }
+  return { inbound, outbound };
+}
+
+async function fetchRange(start, end) {
+  const res = await api.getHistory("traffic", props.id, start.toISOString(), end.toISOString());
+  return res.data.data || [];
+}
+
+function applyChart(chart, title, data) {
+  if (!chart) return;
+  const { inbound, outbound } = toSeriesData(data);
+  const hasData = inbound.length > 0 || outbound.length > 0;
+  const opt = baseOption(title);
+  opt.series[0].data = inbound;
+  opt.series[1].data = outbound;
+  if (!hasData) {
+    opt.graphic = [{
+      type: "text",
+      left: "center",
+      top: "middle",
+      style: { text: "当前时间范围暂无流量数据", fill: "#94a3b8", fontSize: 14 }
+    }];
+  }
+  chart.setOption(opt, true);
+}
+
+async function loadAllCharts() {
   loading.value = true;
   try {
-    const { start, end } = getRange();
-    const res = await api.getHistory("traffic", props.id, start.toISOString(), end.toISOString());
-    const data = res.data.data || [];
-    const hasData = data.length > 0;
-    chart?.setOption({
-      grid: { left: 50, right: 20, top: 40, bottom: 40 },
-      tooltip: { trigger: "axis" },
-      legend: { data: ["入方向 bps", "出方向 bps"] },
-      title: hasData ? undefined : {
-        text: "当前时间范围暂无流量数据",
-        left: "center",
-        top: "middle",
-        textStyle: { color: "#94a3b8", fontSize: 14, fontWeight: "normal" }
-      },
-      xAxis: { type: "category", data: data.map((p) => p.timestamp) },
-      yAxis: { type: "value" },
-      series: [
-        { name: "入方向 bps", type: "line", smooth: true, areaStyle: { opacity: 0.08 }, data: data.map((p) => Number(p.traffic_in_bps || 0)) },
-        { name: "出方向 bps", type: "line", smooth: true, areaStyle: { opacity: 0.08 }, data: data.map((p) => Number(p.traffic_out_bps || 0)) }
-      ]
-    }, true);
+    const now = new Date();
+    const todayStart = startOfDay(now);
+    const d7Start = startOfDay(new Date(now.getTime() - 6 * 24 * 3600 * 1000));
+    const monthStart = startOfMonth(now);
+
+    const [today, d7, month] = await Promise.all([
+      fetchRange(todayStart, now),
+      fetchRange(d7Start, now),
+      fetchRange(monthStart, now)
+    ]);
+
+    applyChart(charts.today, "当日流量", today);
+    applyChart(charts.d7, "近7天流量", d7);
+    applyChart(charts.month, "本月流量", month);
   } catch (err) {
     ElMessage.error(getApiError(err, "加载端口流量失败"));
   } finally {
@@ -57,33 +142,31 @@ async function loadHistory() {
   }
 }
 
+function resizeCharts() {
+  charts.today?.resize();
+  charts.d7?.resize();
+  charts.month?.resize();
+}
+
 onMounted(async () => {
   await nextTick();
-  const m = await import("echarts");
-  chart = m.init(chartRef.value);
-  chart.setOption({
-    grid: { left: 50, right: 20, top: 40, bottom: 40 },
-    tooltip: { trigger: "axis" },
-    legend: { data: ["入方向 bps", "出方向 bps"] },
-    xAxis: { type: "category", data: [] },
-    yAxis: { type: "value" },
-    series: [
-      { name: "入方向 bps", type: "line", smooth: true, areaStyle: { opacity: 0.08 }, data: [] },
-      { name: "出方向 bps", type: "line", smooth: true, areaStyle: { opacity: 0.08 }, data: [] }
-    ]
-  }, true);
-  await loadHistory();
-  window.addEventListener("resize", resizeChart);
+  const e = await import("echarts");
+  charts.today = e.init(chartTodayRef.value);
+  charts.d7 = e.init(chart7dRef.value);
+  charts.month = e.init(chartMonthRef.value);
+  applyChart(charts.today, "当日流量", []);
+  applyChart(charts.d7, "近7天流量", []);
+  applyChart(charts.month, "本月流量", []);
+  await loadAllCharts();
+  window.addEventListener("resize", resizeCharts);
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener("resize", resizeChart);
-  chart?.dispose();
+  window.removeEventListener("resize", resizeCharts);
+  charts.today?.dispose();
+  charts.d7?.dispose();
+  charts.month?.dispose();
 });
-
-function resizeChart() {
-  chart?.resize();
-}
 </script>
 
 <template>
@@ -95,31 +178,17 @@ function resizeChart() {
     </el-breadcrumb>
 
     <el-card>
-      <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center justify-between gap-2">
         <div>
           <div class="text-xs text-slate-500">端口</div>
           <div class="text-lg font-semibold">{{ portMeta.name }}</div>
         </div>
-
-        <el-date-picker
-          v-model="range"
-          type="datetimerange"
-          unlink-panels
-          range-separator="至"
-          start-placeholder="开始时间"
-          end-placeholder="结束时间"
-          :shortcuts="shortcuts"
-          :disabled-date="(date)=> date.getTime() < Date.now() - 3 * 365 * 24 * 3600 * 1000"
-          @change="loadHistory"
-        />
+        <el-button @click="loadAllCharts" :loading="loading">刷新流量图</el-button>
       </div>
     </el-card>
 
-    <el-card>
-      <template #header><span class="text-base font-semibold">端口流量（入/出）</span></template>
-      <div v-loading="loading">
-        <div ref="chartRef" class="h-[560px] w-full"></div>
-      </div>
-    </el-card>
+    <el-card><div ref="chartTodayRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
+    <el-card><div ref="chart7dRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
+    <el-card><div ref="chartMonthRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
   </div>
 </template>

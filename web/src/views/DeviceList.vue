@@ -7,6 +7,7 @@ import { api, getApiError } from "../services/api";
 const router = useRouter();
 const loading = ref(false);
 const devices = ref([]);
+const globalKeyword = ref("");
 const feedLoading = ref(false);
 const criticalFeed = ref([]);
 
@@ -21,6 +22,11 @@ const remarkForm = ref({ id: null, ip: "", remark: "" });
 const totalDevices = computed(() => devices.value.length);
 const onlineDevices = computed(() => devices.value.filter((d) => d.status === "online").length);
 const offlineDevices = computed(() => devices.value.filter((d) => d.status === "offline" || d.status === "unknown").length);
+const filteredDevices = computed(() => {
+  const kw = globalKeyword.value.trim().toLowerCase();
+  if (!kw) return devices.value;
+  return devices.value.filter((d) => [String(d.id), d.ip || "", d.brand || "", d.remark || ""].join(" ").toLowerCase().includes(kw));
+});
 const avgLatency = computed(() => {
   const samples = criticalFeed.value
     .map((x) => Number(x.duration_ms || 0))
@@ -177,7 +183,10 @@ watch(
       <el-card>
         <template #header>
           <div class="flex items-center justify-between">
-            <span class="text-lg font-semibold">资产列表</span>
+            <div class="flex items-center gap-3">
+              <span class="text-lg font-semibold">资产列表</span>
+              <el-input v-model="globalKeyword" placeholder="全局搜索：IP/品牌/备注/ID" clearable class="w-[320px]" />
+            </div>
             <div class="flex items-center gap-2">
               <el-button type="primary" @click="addVisible = true">添加资产</el-button>
               <el-button @click="refreshAll">刷新</el-button>
@@ -187,7 +196,7 @@ watch(
 
         <el-skeleton :loading="loading" animated :rows="8">
           <template #default>
-            <el-table :data="devices" class="np-borderless-table">
+            <el-table :data="filteredDevices" class="np-borderless-table">
               <el-table-column label="状态" width="90">
                 <template #default="{ row }">
                   <el-tooltip :content="row.status_reason || '暂无状态说明'" placement="top">

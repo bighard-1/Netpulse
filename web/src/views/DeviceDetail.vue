@@ -5,7 +5,6 @@ import { ElMessage } from "element-plus";
 import { api, getApiError } from "../services/api";
 
 const props = defineProps({ id: { type: [String, Number], required: true } });
-
 const router = useRouter();
 
 const loading = ref(false);
@@ -14,8 +13,10 @@ const device = ref(null);
 const portKeyword = ref("");
 const remarkDialogVisible = ref(false);
 const remarkForm = ref({ id: null, name: "", remark: "" });
+const diagnoseVisible = ref(false);
+const diagnoseLoading = ref(false);
+const diagnoseReport = ref(null);
 const cpuMemRef = ref(null);
-let echarts = null;
 let cpuMemChart = null;
 
 const filteredPorts = computed(() => {
@@ -38,8 +39,24 @@ async function loadDevice() {
   }
 }
 
+function initCpuChart() {
+  if (!cpuMemChart) return;
+  cpuMemChart.setOption({
+    animation: false,
+    grid: { left: 45, right: 20, top: 34, bottom: 30 },
+    tooltip: { trigger: "axis", axisPointer: { type: "line", animation: false } },
+    legend: { data: ["CPU利用率", "内存利用率"], top: 4 },
+    xAxis: { type: "time" },
+    yAxis: { type: "value", max: 100, axisLabel: { formatter: (v) => `${v}%` } },
+    series: [
+      { name: "CPU利用率", type: "line", showSymbol: false, sampling: "lttb", progressive: 2000, data: [] },
+      { name: "内存利用率", type: "line", showSymbol: false, sampling: "lttb", progressive: 2000, data: [] }
+    ]
+  }, true);
+}
+
 async function renderCpuMem() {
-  if (!device.value) return;
+  if (!device.value || !cpuMemChart) return;
   chartLoading.value = true;
   try {
     const end = new Date();
@@ -49,17 +66,20 @@ async function renderCpuMem() {
       api.getHistory("mem", device.value.id, start.toISOString(), end.toISOString())
     ]);
 
-    const cpuData = cpuRes.data.data || [];
-    const memData = memRes.data.data || [];
-    cpuMemChart?.setOption({
-      grid: { left: 45, right: 20, top: 40, bottom: 40 },
-      tooltip: { trigger: "axis" },
-      legend: { data: ["CPU利用率", "内存利用率"] },
-      xAxis: { type: "category", data: cpuData.map((p) => p.timestamp) },
-      yAxis: { type: "value", max: 100 },
+    const cpuData = (cpuRes.data.data || []).map((p) => [new Date(p.timestamp).getTime(), Number(p.cpu_usage || 0)]);
+    const memData = (memRes.data.data || []).map((p) => [new Date(p.timestamp).getTime(), Number(p.mem_usage || 0)]);
+    const hasData = cpuData.length || memData.length;
+
+    cpuMemChart.setOption({
+      graphic: hasData ? [] : [{
+        type: "text",
+        left: "center",
+        top: "middle",
+        style: { text: "当前时间范围暂无 CPU/内存 数据", fill: "#94a3b8", fontSize: 14 }
+      }],
       series: [
-        { name: "CPU利用率", type: "line", smooth: true, areaStyle: { opacity: 0.08 }, data: cpuData.map((p) => Number(p.cpu_usage || 0)) },
-        { name: "内存利用率", type: "line", smooth: true, areaStyle: { opacity: 0.08 }, data: memData.map((p) => Number(p.mem_usage || 0)) }
+        { name: "CPU利用率", data: cpuData },
+        { name: "内存利用率", data: memData }
       ]
     });
   } catch (err) {
@@ -96,11 +116,42 @@ async function saveRemark() {
   }
 }
 
+async function runDiagnosis() {
+  diagnoseLoading.value = true;
+  try {
+    const res = await api.diagnoseDevice(props.id);
+    diagnoseReport.value = res.data || null;
+    diagnoseVisible.value = true;
+  } catch (err) {
+    ElMessage.error(getApiError(err, "执行诊断失败"));
+  } finally {
+    diagnoseLoading.value = false;
+  }
+}
+
+async function exportDiagnosis(format) {
+  try {
+    const res = await api.exportDiagnosis(props.id, format);
+    const blobUrl = URL.createObjectURL(new Blob([res.data]));
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = `netpulse_diagnose_device_${props.id}.${format}`;
+    a.click();
+    URL.revokeObjectURL(blobUrl);
+  } catch (err) {
+    ElMessage.error(getApiError(err, "导出诊断报告失败"));
+  }
+}
+
+function resizeChart() {
+  cpuMemChart?.resize();
+}
+
 onMounted(async () => {
   await nextTick();
   const m = await import("echarts");
-  echarts = m;
-  cpuMemChart = echarts.init(cpuMemRef.value);
+  cpuMemChart = m.init(cpuMemRef.value);
+  initCpuChart();
   await loadDevice();
   window.addEventListener("resize", resizeChart);
 });
@@ -109,10 +160,6 @@ onBeforeUnmount(() => {
   window.removeEventListener("resize", resizeChart);
   cpuMemChart?.dispose();
 });
-
-function resizeChart() {
-  cpuMemChart?.resize();
-}
 
 watch(
   () => props.id,
@@ -125,7 +172,7 @@ watch(
 <template>
   <div class="space-y-5" v-loading="loading">
     <el-breadcrumb separator=">">
-      <el-breadcrumb-item :to="{ path: '/' }">Assets</el-breadcrumb-item>
+      <el-breadcrumb-item :to="{ path: '/' }">资产</el-breadcrumb-item>
       <el-breadcrumb-item>{{ device?.ip || `设备-${props.id}` }}</el-breadcrumb-item>
     </el-breadcrumb>
 
@@ -141,13 +188,19 @@ watch(
 
     <el-card>
       <template #header>
-        <span class="text-base font-semibold">CPU / 内存</span>
+        <div class="flex items-center justify-between">
+          <span class="text-base font-semibold">设备诊断</span>
+          <el-button type="primary" :loading="diagnoseLoading" @click="runDiagnosis">一键自助排查</el-button>
+        </div>
       </template>
-      <el-skeleton :loading="chartLoading" animated :rows="8">
-        <template #default>
-          <div ref="cpuMemRef" class="h-[460px] w-full"></div>
-        </template>
-      </el-skeleton>
+      <p class="text-sm text-slate-600">自动检查 SNMP 参数、网络连通、即时采集、最近入库与错误日志，并给出可能原因。</p>
+    </el-card>
+
+    <el-card>
+      <template #header>
+        <span class="text-base font-semibold">CPU / 内存实时利用率（24h）</span>
+      </template>
+      <div ref="cpuMemRef" class="h-[180px] w-full" v-loading="chartLoading"></div>
     </el-card>
 
     <el-card>
@@ -184,6 +237,30 @@ watch(
       <template #footer>
         <el-button @click="remarkDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="saveRemark">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="diagnoseVisible" title="设备自助排查报告" width="860">
+      <div v-if="diagnoseReport" class="space-y-3">
+        <div class="grid grid-cols-1 gap-2 md:grid-cols-2">
+          <div><span class="text-slate-500">设备:</span> {{ diagnoseReport.device_ip }} (ID: {{ diagnoseReport.device_id }})</div>
+          <div><span class="text-slate-500">总体状态:</span> <span class="font-semibold">{{ diagnoseReport.overall_status }}</span></div>
+          <div class="md:col-span-2"><span class="text-slate-500">可能原因:</span> {{ diagnoseReport.likely_cause }}</div>
+        </div>
+        <el-table :data="diagnoseReport.checks || []" class="np-borderless-table">
+          <el-table-column prop="name" label="检查项" min-width="180" />
+          <el-table-column label="结果" width="100">
+            <template #default="{ row }">
+              <el-tag :type="row.status === 'pass' ? 'success' : (row.status === 'warn' ? 'warning' : 'danger')">{{ row.status }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="message" label="说明" min-width="420" />
+        </el-table>
+      </div>
+      <template #footer>
+        <el-button @click="exportDiagnosis('txt')">导出 TXT</el-button>
+        <el-button @click="exportDiagnosis('json')">导出 JSON</el-button>
+        <el-button type="primary" @click="diagnoseVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>
