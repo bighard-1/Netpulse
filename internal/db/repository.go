@@ -1832,7 +1832,7 @@ func (r *Repository) SaveMetrics(
 	const q = `
 		WITH upsert_if AS (
 			INSERT INTO interfaces (device_id, "index", name, remark)
-			VALUES ($2, $3, $8, '')
+			VALUES ($2, $3, $11, '')
 			ON CONFLICT (device_id, "index")
 			DO UPDATE SET
 				name = CASE
