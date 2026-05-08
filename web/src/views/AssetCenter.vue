@@ -6,7 +6,7 @@ import { useRouter } from "vue-router";
 import { api, getApiError } from "../services/api";
 import { useOpsStore } from "../stores/ops";
 import { useFeedback } from "../composables/useFeedback";
-import { statusClass } from "../utils/status";
+import { statusClass, statusLabel } from "../utils/status";
 
 const ops = useOpsStore();
 const router = useRouter();
@@ -24,6 +24,12 @@ const visibleCols = ref({
 });
 const templates = ref([]);
 const selectedTemplateId = ref(null);
+const brandOptions = ["Huawei", "H3C", "Cisco", "Ruijie", "Juniper", "Other"];
+const viewPresetName = ref("");
+const viewPresets = ref(JSON.parse(localStorage.getItem("np_asset_view_presets") || "[]"));
+const activePreset = ref("");
+const pendingDelete = ref(null);
+let pendingDeleteTimer = null;
 
 const addVisible = ref(false);
 const addLoading = ref(false);
@@ -76,7 +82,7 @@ const groupedDevices = computed(() => {
 });
 
 function deviceStatusClass(row) {
-  return statusClass(row?.status);
+  return statusClass(row);
 }
 
 function iso(v) {
@@ -151,12 +157,35 @@ async function addDevice() {
 async function removeDevice(row) {
   try {
     await ElMessageBox.confirm(`确认删除资产 ${row.name || row.ip} 吗？`, "删除确认", { type: "warning" });
-    await api.deleteDevice(row.id);
-    fb.success("资产已删除");
-    await loadDevices();
+    scheduleDelete(row);
   } catch (err) {
     if (err !== "cancel") fb.apiError(err, "删除资产失败");
   }
+}
+
+function scheduleDelete(row) {
+  if (pendingDeleteTimer) clearTimeout(pendingDeleteTimer);
+  pendingDelete.value = { ...row, expireAt: Date.now() + 5000 };
+  fb.info("删除已进入5秒缓冲，可撤销");
+  pendingDeleteTimer = setTimeout(async () => {
+    try {
+      await api.deleteDevice(row.id);
+      fb.success(`资产 ${row.name || row.ip} 已删除`);
+      await loadDevices();
+    } catch (err) {
+      fb.apiError(err, "删除资产失败");
+    } finally {
+      pendingDelete.value = null;
+      pendingDeleteTimer = null;
+    }
+  }, 5000);
+}
+
+function undoDelete() {
+  if (pendingDeleteTimer) clearTimeout(pendingDeleteTimer);
+  pendingDeleteTimer = null;
+  pendingDelete.value = null;
+  fb.success("已撤销删除");
 }
 
 async function bulkRemove() {
@@ -209,6 +238,34 @@ async function saveEditDevice() {
 function openDeviceDetail(row) {
   if (!row?.id) return;
   router.push(`/device/${row.id}`);
+}
+
+function saveCurrentPreset() {
+  const name = String(viewPresetName.value || "").trim();
+  if (!name) return fb.warn("请输入视图名称");
+  const preset = {
+    name,
+    data: {
+      groupBy: groupBy.value,
+      statusFilter: statusFilter.value,
+      visibleCols: { ...visibleCols.value },
+      manageMode: manageMode.value
+    }
+  };
+  viewPresets.value = [preset, ...viewPresets.value.filter((x) => x.name !== name)].slice(0, 20);
+  localStorage.setItem("np_asset_view_presets", JSON.stringify(viewPresets.value));
+  viewPresetName.value = "";
+  fb.success("视图模板已保存");
+}
+
+function applyPreset(name) {
+  const p = viewPresets.value.find((x) => x.name === name);
+  if (!p) return;
+  activePreset.value = name;
+  groupBy.value = p.data.groupBy || "brand";
+  statusFilter.value = p.data.statusFilter || "all";
+  visibleCols.value = { ...visibleCols.value, ...(p.data.visibleCols || {}) };
+  manageMode.value = Boolean(p.data.manageMode);
 }
 
 async function openQuickPeek(row) {
@@ -284,6 +341,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
   cpuMemChart?.dispose();
+  if (pendingDeleteTimer) clearTimeout(pendingDeleteTimer);
 });
 
 watch(() => ops.isDrawerOpen, async (v) => {
@@ -296,10 +354,10 @@ watch(() => ops.isDrawerOpen, async (v) => {
 
 <template>
   <div class="space-y-5">
-    <el-card>
+    <el-card class="np-toolbar-card">
       <template #header>
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2 np-toolbar-right">
             <span class="text-lg font-semibold">资产管理</span>
             <el-select v-model="groupBy" class="w-[130px]">
               <el-option label="按品牌" value="brand" />
@@ -311,9 +369,14 @@ watch(() => ops.isDrawerOpen, async (v) => {
               <el-option label="离线" value="offline" />
               <el-option label="未知" value="unknown" />
             </el-select>
+            <el-select v-model="activePreset" class="w-[140px]" placeholder="视图模板" @change="applyPreset">
+              <el-option v-for="p in viewPresets" :key="p.name" :label="p.name" :value="p.name" />
+            </el-select>
           </div>
           <div class="flex items-center gap-2">
             <el-input v-model="globalKeyword" placeholder="搜索 IP / 名称 / 备注 / 端口名" clearable class="w-[320px]" />
+            <el-input v-model="viewPresetName" placeholder="保存当前视图为..." class="w-[180px]" />
+            <el-button @click="saveCurrentPreset">保存视图</el-button>
             <el-popover trigger="click" placement="bottom" width="240">
               <template #reference><el-button>列设置</el-button></template>
               <div class="grid grid-cols-2 gap-2">
@@ -336,7 +399,8 @@ watch(() => ops.isDrawerOpen, async (v) => {
             />
             <el-button v-if="manageMode" type="danger" plain @click="bulkRemove">批量删除</el-button>
             <el-button v-if="manageMode" type="primary" @click="addVisible = true">添加资产</el-button>
-            <el-button @click="loadDevices">刷新</el-button>
+            <el-button class="np-primary-soft" @click="loadDevices">刷新</el-button>
+            <el-button v-if="pendingDelete" type="warning" plain @click="undoDelete">撤销删除</el-button>
           </div>
         </div>
       </template>
@@ -349,7 +413,12 @@ watch(() => ops.isDrawerOpen, async (v) => {
               <el-table-column v-if="manageMode" type="selection" width="46" />
               <el-table-column v-if="visibleCols.status" label="状态" width="90">
                 <template #default="{ row }">
-                  <span class="inline-block align-middle" :class="deviceStatusClass(row)" />
+                  <el-tooltip :content="statusLabel(row)">
+                    <span class="inline-flex items-center gap-1 align-middle">
+                      <span class="inline-block" :class="deviceStatusClass(row)" />
+                      <span class="text-xs text-slate-500">{{ statusLabel(row) }}</span>
+                    </span>
+                  </el-tooltip>
                 </template>
               </el-table-column>
               <el-table-column v-if="visibleCols.name" label="名称" min-width="180">
@@ -378,6 +447,15 @@ watch(() => ops.isDrawerOpen, async (v) => {
               </el-table-column>
             </el-table>
           </div>
+          <el-empty
+            v-if="!groupedDevices.length"
+            description="暂无资产数据，请先添加资产或调整筛选条件"
+            :image-size="88"
+          >
+            <template #default>
+              <div class="mt-2 text-xs text-slate-500">建议：1) 点击“添加资产” 2) 选择模板 3) 执行预检后保存</div>
+            </template>
+          </el-empty>
         </template>
       </el-skeleton>
     </el-card>
@@ -422,7 +500,11 @@ watch(() => ops.isDrawerOpen, async (v) => {
         </el-form-item>
         <el-form-item label="设备IP"><el-input v-model="addForm.ip" /></el-form-item>
         <el-form-item label="资产名称"><el-input v-model="addForm.name" /></el-form-item>
-        <el-form-item label="品牌"><el-input v-model="addForm.brand" /></el-form-item>
+        <el-form-item label="品牌">
+          <el-select v-model="addForm.brand" class="w-full" filterable allow-create default-first-option>
+            <el-option v-for="b in brandOptions" :key="b" :label="b" :value="b" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="SNMP版本">
           <el-select v-model="addForm.snmp_version" class="w-full">
             <el-option label="v1" value="1" />
@@ -467,7 +549,11 @@ watch(() => ops.isDrawerOpen, async (v) => {
     <el-dialog v-model="editVisible" title="编辑资产" width="560">
       <el-form label-position="top">
         <el-form-item label="资产名称"><el-input v-model="editForm.name" /></el-form-item>
-        <el-form-item label="品牌"><el-input v-model="editForm.brand" /></el-form-item>
+        <el-form-item label="品牌">
+          <el-select v-model="editForm.brand" class="w-full" filterable allow-create default-first-option>
+            <el-option v-for="b in brandOptions" :key="`edit-${b}`" :label="b" :value="b" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="备注"><el-input v-model="editForm.remark" type="textarea" :rows="3" /></el-form-item>
         <el-form-item label="维护模式">
           <el-switch v-model="editForm.maintenance_mode" />

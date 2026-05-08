@@ -264,6 +264,11 @@ fun HomeScreen(
     val offline = devices.count { it.status == "offline" || it.status == "unknown" }
     val healthScore = (online.toFloat() / (total.coerceAtLeast(1)).toFloat() * 100f).toInt()
     val ctx = LocalContext.current
+    val todoItems = buildList {
+        if (devices.isEmpty()) add("添加首台资产（请在 Web 端资产中心操作）")
+        if (offline > 0) add("排查离线/未知资产：$offline 台")
+        if (recentEvents.isNotEmpty()) add("检查最新事件并确认是否需要处置")
+    }
 
     Column(modifier.fillMaxSize().padding(Np.screenPadding), verticalArrangement = Arrangement.spacedBy(Np.sectionGap)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -275,6 +280,16 @@ fun HomeScreen(
             MiniStatCard("在线", "$online", Brush.linearGradient(listOf(Color(0xFF0F766E), Color(0xFF065F46))), showPulse = true)
             MiniStatCard("离线", "$offline", Brush.linearGradient(listOf(Color(0xFF991B1B), Color(0xFF7F1D1D))))
             MiniStatCard("健康度", "$healthScore", Brush.linearGradient(listOf(Color(0xFF4338CA), Color(0xFF6366F1))))
+        }
+        if (todoItems.isNotEmpty()) {
+            ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))) {
+                Column(Modifier.fillMaxWidth().padding(Np.cardPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("今日待处理", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    todoItems.take(3).forEach { t ->
+                        Text("• $t", style = MaterialTheme.typography.bodySmall, color = Color(0xFFCBD5E1))
+                    }
+                }
+            }
         }
 
         if (loading) {
@@ -302,8 +317,8 @@ fun HomeScreen(
                                     modifier = Modifier.combinedClickable(onClick = {}, onLongClick = { copyToClipboard(ctx, d.ip) })
                                 )
                             }
-                            Text("${d.brand} · ${d.remark.ifBlank { "未备注" }}", style = MaterialTheme.typography.bodyMedium)
-                            if (!d.statusReason.isNullOrBlank()) Text(d.statusReason, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                            Text("${statusText(d.status)} · ${d.brand} · ${d.remark.ifBlank { "未备注" }}", style = MaterialTheme.typography.bodyMedium)
+                            if (!d.statusReason.isNullOrBlank()) Text(d.statusReason, style = MaterialTheme.typography.bodySmall, color = Color(0xFF94A3B8))
                         }
                     }
                 }
@@ -391,7 +406,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                 Text("${device?.brand ?: "-"} · ${device?.remark ?: "-"}")
-                                AssistChip(onClick = {}, label = { Text("只读") })
+                                AssistChip(onClick = {}, label = { Text("只读模式") })
                             }
                         }
                     }
@@ -399,7 +414,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                 item {
                     ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))) {
                         Column(Modifier.padding(Np.cardPadding)) {
-                            Text("CPU / 内存", style = MaterialTheme.typography.titleMedium)
+                            Text("CPU / 内存", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                             Spacer(Modifier.height(6.dp))
                             Text("CPU 当前 ${"%.1f".format(cpuCurrent)}% / 峰值 ${"%.1f".format(cpuPeak)}%", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                             Text("内存 当前 ${"%.1f".format(memCurrent)}% / 峰值 ${"%.1f".format(memPeak)}%", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
@@ -436,7 +451,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                     ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))) {
                         Column(Modifier.padding(Np.cardPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                Text("设备日志", style = MaterialTheme.typography.titleMedium)
+                                Text("设备日志（默认10条）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                                 TextButton(onClick = { showLogs = !showLogs }) { Text(if (showLogs) "收起" else "展开") }
                             }
                             AnimatedVisibility(visible = showLogs) {
@@ -713,6 +728,12 @@ private fun severityOf(item: AuditLog): String {
         txt.contains("WARN") || txt.contains("BGP") || txt.contains("OSPF") || txt.contains("FLAP") -> "warning"
         else -> "info"
     }
+}
+
+private fun statusText(status: String): String = when (status.lowercase()) {
+    "online", "up" -> "在线"
+    "offline", "down" -> "离线"
+    else -> "未知"
 }
 
 

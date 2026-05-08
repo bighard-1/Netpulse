@@ -458,6 +458,13 @@ struct DashboardView: View {
     private var onlineCount: Int { vm.devices.filter { $0.status == "online" }.count }
     private var offlineCount: Int { vm.devices.filter { $0.status != "online" }.count }
     private var criticalCount: Int { vm.recentEvents.filter { severity(of: $0) == .error }.count }
+    private var todoItems: [String] {
+        var out: [String] = []
+        if vm.devices.isEmpty { out.append("添加首台资产（请在 Web 端资产中心操作）") }
+        if offlineCount > 0 { out.append("排查离线/未知资产：\(offlineCount) 台") }
+        if !vm.recentEvents.isEmpty { out.append("检查最新事件并确认是否需要处置") }
+        return out
+    }
 
     var body: some View {
         NavigationStack {
@@ -477,6 +484,18 @@ struct DashboardView: View {
                             StatCard(title: "在线", value: "\(onlineCount)", gradient: [.teal1, .teal2], pulse: true)
                             StatCard(title: "离线", value: "\(offlineCount)", gradient: [.red1, .red2])
                             StatCard(title: "告警", value: "\(criticalCount)", gradient: [.indigo1, .indigo2])
+                        }
+                        .padding(.horizontal, UiSpec.pagePadding)
+                    }
+
+                    if !todoItems.isEmpty {
+                        NpCard {
+                            Text("今日待处理").font(.headline)
+                            ForEach(todoItems.prefix(3), id: \.self) { x in
+                                Text("• \(x)")
+                                    .font(.footnote)
+                                    .foregroundStyle(.white.opacity(0.82))
+                            }
                         }
                         .padding(.horizontal, UiSpec.pagePadding)
                     }
@@ -619,14 +638,14 @@ struct DeviceDetailView: View {
                             Text(d.ip).font(.headline)
                             Spacer()
                         }
-                        Text("\(d.brand) · \(d.remark.isEmpty ? "未备注" : d.remark)")
+                        Text("\(statusText(d.status)) · \(d.brand) · \(d.remark.isEmpty ? "未备注" : d.remark)")
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.7))
                     }
                 }
 
                 NpCard {
-                    Text("CPU / 内存").font(.headline)
+                    Text("CPU / 内存").font(.headline.weight(.semibold))
                     Text("CPU 当前 \(cpuCurrent, specifier: "%.1f")% / 峰值 \(cpuPeak, specifier: "%.1f")%")
                         .font(.caption).foregroundStyle(.white.opacity(0.72))
                     Text("内存 当前 \(memCurrent, specifier: "%.1f")% / 峰值 \(memPeak, specifier: "%.1f")%")
@@ -680,7 +699,7 @@ struct DeviceDetailView: View {
                                 .foregroundStyle(logLevelColor(log.level))
                         }
                     } label: {
-                        Text("设备日志").font(.headline)
+                        Text("设备日志（默认10条）").font(.headline.weight(.semibold))
                     }
                 }
             }
@@ -907,6 +926,14 @@ func logLevelColor(_ level: String) -> Color {
     }
 }
 
+func statusText(_ status: String) -> String {
+    switch status.lowercased() {
+    case "online", "up": return "在线"
+    case "offline", "down": return "离线"
+    default: return "未知"
+    }
+}
+
 struct EmptyStateCard: View {
     let title: String
     let desc: String
@@ -937,7 +964,7 @@ struct DeviceRow: View {
                     Text(device.ip)
                         .font(.headline)
                         .onLongPressGesture { UIPasteboard.general.string = device.ip }
-                    Text("\(device.brand) · \(device.remark.isEmpty ? "未备注" : device.remark)")
+                    Text("\(statusText(device.status)) · \(device.brand) · \(device.remark.isEmpty ? "未备注" : device.remark)")
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.7))
                     if let reason = device.status_reason, !reason.isEmpty {
@@ -965,7 +992,7 @@ struct DeviceQuickPeekSheet: View {
                         Text("\(device.brand) · \(device.remark)").font(.footnote).foregroundStyle(.white.opacity(0.7))
                     }
                     NpCard {
-                        Text("CPU / 内存").font(.headline).foregroundStyle(.white)
+                        Text("CPU / 内存").font(.headline.weight(.semibold)).foregroundStyle(.white)
                         if vm.loading {
                             ShimmerRect(height: 220)
                         } else {

@@ -1,5 +1,6 @@
 <script setup>
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { npAxisLabel, npAxisLine, npChartGrid, npSplitLine, npTooltip } from "../../utils/chartTheme";
 
 const props = defineProps({
   trend: { type: Array, default: () => [] }
@@ -13,15 +14,23 @@ function render() {
   const list = props.trend || [];
   chart.setOption({
     animation: false,
-    grid: { left: "3%", right: "4%", bottom: "10%", containLabel: true },
-    tooltip: { trigger: "axis" },
+    grid: npChartGrid,
+    tooltip: npTooltip(),
     legend: { top: 8, data: ["健康分", "可用率"] },
     xAxis: {
       type: "category",
       data: list.map((x) => new Date(x.ts || x.timestamp).toLocaleString()),
-      axisLabel: { hideOverlap: true, rotate: 30 }
+      axisLabel: { ...npAxisLabel, hideOverlap: true, rotate: 30 },
+      axisLine: npAxisLine
     },
-    yAxis: { type: "value", min: 0, max: 100, axisLabel: { formatter: "{value}%" } },
+    yAxis: {
+      type: "value",
+      min: 0,
+      max: 100,
+      axisLabel: { ...npAxisLabel, formatter: "{value}%" },
+      axisLine: npAxisLine,
+      splitLine: npSplitLine
+    },
     series: [
       {
         name: "健康分",
@@ -70,7 +79,7 @@ watch(() => props.trend, render, { deep: true });
     <template #header>
       <span class="text-lg font-semibold">全网健康趋势（Area）</span>
     </template>
-    <div ref="chartRef" class="h-[280px] w-full"></div>
+    <el-empty v-if="!(props.trend || []).length" description="暂无健康趋势数据（等待15分钟采样）" :image-size="72" />
+    <div v-else ref="chartRef" class="h-[280px] w-full"></div>
   </el-card>
 </template>
-

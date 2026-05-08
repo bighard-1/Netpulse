@@ -66,6 +66,7 @@ func (h *Handler) Router() http.Handler {
 		pr.With(h.adminOnly).Put("/api/alerts/events/{id}", h.handleUpdateAlertEventWorkflow)
 		pr.Get("/api/system/health", h.handleSystemHealthTrend)
 		pr.With(h.adminOnly).Get("/api/system/ops", h.handleSystemOps)
+		pr.With(h.adminOnly).Get("/api/system/inspection-bundle", h.handleInspectionBundle)
 		pr.Get("/api/system/backup", h.rateLimit("backup", 10, time.Minute, h.handleSystemBackup))
 		pr.With(h.auditMiddleware("RESTORE_SYSTEM")).Post("/api/system/restore", h.rateLimit("restore", 5, time.Minute, h.handleSystemRestore))
 		pr.With(h.adminOnly).Get("/api/audit-logs", h.handleAuditLogs)
@@ -173,6 +174,44 @@ type addDeviceRequest struct {
 	Remark          string `json:"remark"`
 }
 
+func validateSNMPRequest(req addDeviceRequest) error {
+	if req.SNMPVersion != "3" {
+		if strings.TrimSpace(req.Community) == "" {
+			return fmt.Errorf("snmp v1/v2c requires community")
+		}
+		return nil
+	}
+	if strings.TrimSpace(req.V3Username) == "" {
+		return fmt.Errorf("snmp v3 requires v3_username")
+	}
+	level := strings.TrimSpace(req.V3SecurityLevel)
+	if level == "" {
+		level = "noAuthNoPriv"
+	}
+	switch level {
+	case "noAuthNoPriv":
+		return nil
+	case "authNoPriv", "authPriv":
+		if strings.TrimSpace(req.V3AuthProtocol) == "" {
+			return fmt.Errorf("snmp v3 requires v3_auth_protocol for selected security level")
+		}
+		if strings.TrimSpace(req.V3AuthPassword) == "" {
+			return fmt.Errorf("snmp v3 requires v3_auth_password for selected security level")
+		}
+		if level == "authPriv" {
+			if strings.TrimSpace(req.V3PrivProtocol) == "" {
+				return fmt.Errorf("snmp v3 authPriv requires v3_priv_protocol")
+			}
+			if strings.TrimSpace(req.V3PrivPassword) == "" {
+				return fmt.Errorf("snmp v3 authPriv requires v3_priv_password")
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("invalid snmp v3 security level")
+	}
+}
+
 type updateRemarkRequest struct {
 	Remark string `json:"remark"`
 }
@@ -185,8 +224,8 @@ type updateDeviceRequest struct {
 }
 
 type updateInterfaceRequest struct {
-	Name   string `json:"name"`
-	Remark string `json:"remark"`
+	Name   *string `json:"name"`
+	Remark *string `json:"remark"`
 }
 
 func (h *Handler) handlePrecheckDevice(w http.ResponseWriter, r *http.Request) {
@@ -204,6 +243,10 @@ func (h *Handler) handlePrecheckDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.SNMPPort <= 0 {
 		req.SNMPPort = 161
+	}
+	if err := validateSNMPRequest(req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	opt := snmp.PollOptions{
 		Brand:       req.Brand,
@@ -285,8 +328,8 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 	if req.SNMPPort <= 0 {
 		req.SNMPPort = 161
 	}
-	if req.SNMPVersion != "3" && req.Community == "" {
-		writeError(w, http.StatusBadRequest, "snmp v1/v2c requires community")
+	if err := validateSNMPRequest(req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -463,7 +506,7 @@ func (h *Handler) handleUpdateInterfaceProfile(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
-	if req.Name == "" && req.Remark == "" {
+	if req.Name == nil && req.Remark == nil {
 		writeError(w, http.StatusBadRequest, "name or remark is required")
 		return
 	}

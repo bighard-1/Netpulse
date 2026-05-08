@@ -198,10 +198,13 @@ export const api = {
   updateRuntimeSettings(payload) {
     return http.put("/settings/runtime", payload);
   },
-  getSystemHealthTrend(start, end) {
-    return http.get("/system/health", { params: { start, end } });
+  getSystemHealthTrend(limit = 30) {
+    return http.get("/system/health", { params: { limit } });
   },
   getSystemOps() {
     return http.get("/system/ops");
+  },
+  downloadInspectionBundle() {
+    return http.get("/system/inspection-bundle", { responseType: "blob" });
   }
 };

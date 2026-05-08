@@ -19,21 +19,21 @@ const phases = [
     title: "第三阶段：资源监控",
     goal: "性能指标预测",
     features: "CPU/内存、存储空间",
-    status: "doing"
+    status: "done"
   },
   {
     id: 4,
     title: "第四阶段：异常管理",
     goal: "告警系统",
     features: "阈值、通知、日志中心",
-    status: "doing"
+    status: "done"
   },
   {
     id: 5,
     title: "第五阶段：自动化",
     goal: "模板化效率提升",
     features: "模板绑定、OID策略库",
-    status: "todo"
+    status: "doing"
   }
 ];
 
@@ -68,4 +68,3 @@ function statusType(s) {
     </div>
   </el-card>
 </template>
-

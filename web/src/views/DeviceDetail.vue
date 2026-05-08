@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { Edit } from "@element-plus/icons-vue";
 import { api } from "../services/api";
 import { useFeedback } from "../composables/useFeedback";
+import { npAxisLabel, npAxisLine, npSplitLine, npTooltip } from "../utils/chartTheme";
 
 const props = defineProps({ id: { type: [String, Number], required: true } });
 const router = useRouter();
@@ -116,10 +117,10 @@ function initCpuChart() {
   cpuMemChart.setOption({
     animation: false,
     grid: { left: 45, right: 20, top: 34, bottom: 30 },
-    tooltip: { trigger: "axis", axisPointer: { type: "line", animation: false } },
+    tooltip: npTooltip({ axisPointer: { type: "line", animation: false } }),
     legend: { data: ["CPU利用率", "内存利用率"], top: 4 },
-    xAxis: { type: "time" },
-    yAxis: { type: "value", max: 100, axisLabel: { formatter: (v) => `${v}%` } },
+    xAxis: { type: "time", axisLabel: npAxisLabel, axisLine: npAxisLine },
+    yAxis: { type: "value", max: 100, axisLabel: { ...npAxisLabel, formatter: (v) => `${v}%` }, axisLine: npAxisLine, splitLine: npSplitLine },
     series: [
       { name: "CPU利用率", type: "line", showSymbol: false, sampling: "lttb", progressive: 2000, data: [] },
       { name: "内存利用率", type: "line", showSymbol: false, sampling: "lttb", progressive: 2000, data: [] }
@@ -132,10 +133,10 @@ function initStorageChart() {
   storageChart.setOption({
     animation: false,
     grid: { left: 45, right: 20, top: 34, bottom: 30 },
-    tooltip: { trigger: "axis", axisPointer: { type: "line", animation: false } },
+    tooltip: npTooltip({ axisPointer: { type: "line", animation: false } }),
     legend: { data: ["存储利用率"], top: 4 },
-    xAxis: { type: "time" },
-    yAxis: { type: "value", max: 100, axisLabel: { formatter: (v) => `${v}%` } },
+    xAxis: { type: "time", axisLabel: npAxisLabel, axisLine: npAxisLine },
+    yAxis: { type: "value", max: 100, axisLabel: { ...npAxisLabel, formatter: (v) => `${v}%` }, axisLine: npAxisLine, splitLine: npSplitLine },
     series: [{ name: "存储利用率", type: "line", showSymbol: false, sampling: "lttb", progressive: 2000, data: [] }]
   }, true);
 }
@@ -358,7 +359,7 @@ watch(
     <el-card>
       <template #header>
         <div class="flex items-center justify-between">
-          <span class="text-base font-semibold">设备基础信息</span>
+          <span class="np-section-title text-base font-semibold">设备基础信息</span>
           <div class="flex items-center gap-2">
             <el-select v-model="terminalType" class="w-[180px]">
               <el-option label="系统默认 SSH" value="ssh" />
@@ -392,7 +393,7 @@ watch(
     <el-card>
       <template #header>
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <span class="text-base font-semibold">端口列表</span>
+          <span class="np-section-title text-base font-semibold">端口列表</span>
           <div class="flex items-center gap-2">
             <el-input v-model="portKeyword" placeholder="按 id/index/名称/备注搜索" clearable class="w-[320px]" />
             <el-checkbox v-model="showPortID">显示ID</el-checkbox>
@@ -425,12 +426,12 @@ watch(
 
     <el-card>
       <template #header>
-        <span class="text-base font-semibold">CPU / 内存实时利用率（24h）</span>
+        <span class="np-section-title text-base font-semibold">CPU / 内存实时利用率（24h）</span>
       </template>
       <div class="mb-3 grid grid-cols-1 gap-2 text-sm md:grid-cols-3">
-        <div>CPU: 当前 <b>{{ Number.isFinite(perfKpi.cpu.current) ? `${perfKpi.cpu.current.toFixed(1)}%` : '-' }}</b> / 峰值 <b>{{ Number.isFinite(perfKpi.cpu.peak) ? `${perfKpi.cpu.peak.toFixed(1)}%` : '-' }}</b> / 24h变化 <b>{{ Number.isFinite(perfKpi.cpu.delta) ? `${perfKpi.cpu.delta.toFixed(1)}%` : '-' }}</b></div>
-        <div>内存: 当前 <b>{{ Number.isFinite(perfKpi.mem.current) ? `${perfKpi.mem.current.toFixed(1)}%` : '-' }}</b> / 峰值 <b>{{ Number.isFinite(perfKpi.mem.peak) ? `${perfKpi.mem.peak.toFixed(1)}%` : '-' }}</b> / 24h变化 <b>{{ Number.isFinite(perfKpi.mem.delta) ? `${perfKpi.mem.delta.toFixed(1)}%` : '-' }}</b></div>
-        <div>存储: 当前 <b>{{ Number.isFinite(perfKpi.storage.current) ? `${perfKpi.storage.current.toFixed(1)}%` : '-' }}</b> / 峰值 <b>{{ Number.isFinite(perfKpi.storage.peak) ? `${perfKpi.storage.peak.toFixed(1)}%` : '-' }}</b> / 24h变化 <b>{{ Number.isFinite(perfKpi.storage.delta) ? `${perfKpi.storage.delta.toFixed(1)}%` : '-' }}</b></div>
+        <div class="np-kpi-inline">CPU: 当前 <b>{{ Number.isFinite(perfKpi.cpu.current) ? `${perfKpi.cpu.current.toFixed(1)}%` : '-' }}</b> / 峰值 <b>{{ Number.isFinite(perfKpi.cpu.peak) ? `${perfKpi.cpu.peak.toFixed(1)}%` : '-' }}</b> / 24h变化 <b>{{ Number.isFinite(perfKpi.cpu.delta) ? `${perfKpi.cpu.delta.toFixed(1)}%` : '-' }}</b></div>
+        <div class="np-kpi-inline">内存: 当前 <b>{{ Number.isFinite(perfKpi.mem.current) ? `${perfKpi.mem.current.toFixed(1)}%` : '-' }}</b> / 峰值 <b>{{ Number.isFinite(perfKpi.mem.peak) ? `${perfKpi.mem.peak.toFixed(1)}%` : '-' }}</b> / 24h变化 <b>{{ Number.isFinite(perfKpi.mem.delta) ? `${perfKpi.mem.delta.toFixed(1)}%` : '-' }}</b></div>
+        <div class="np-kpi-inline">存储: 当前 <b>{{ Number.isFinite(perfKpi.storage.current) ? `${perfKpi.storage.current.toFixed(1)}%` : '-' }}</b> / 峰值 <b>{{ Number.isFinite(perfKpi.storage.peak) ? `${perfKpi.storage.peak.toFixed(1)}%` : '-' }}</b> / 24h变化 <b>{{ Number.isFinite(perfKpi.storage.delta) ? `${perfKpi.storage.delta.toFixed(1)}%` : '-' }}</b></div>
       </div>
       <div ref="cpuMemRef" class="h-[180px] w-full" v-loading="chartLoading"></div>
     </el-card>
@@ -438,7 +439,7 @@ watch(
     <el-card>
       <template #header>
         <div class="flex items-center justify-between">
-          <span class="text-base font-semibold">存储空间监控（24h）</span>
+          <span class="np-section-title text-base font-semibold">存储空间监控（24h）</span>
           <el-tag :type="Number(storageSummary.usage || 0) >= 85 ? 'danger' : 'success'">
             当前: {{ Number.isFinite(Number(storageSummary.usage)) ? `${Number(storageSummary.usage).toFixed(1)}%` : '-' }}
           </el-tag>

@@ -12,7 +12,12 @@ defineProps({
 
 <template>
   <el-card>
-    <template #header><span class="text-lg font-semibold">{{ zhCN.deviceList.liveFeed }}</span></template>
+    <template #header>
+      <div class="flex items-center justify-between">
+        <span class="text-lg font-semibold">{{ zhCN.deviceList.liveFeed }}</span>
+        <span class="np-chip">Live</span>
+      </div>
+    </template>
     <el-skeleton :loading="loading" animated :rows="10">
       <template #default>
         <div class="space-y-2 np-live-feed">
@@ -49,6 +54,7 @@ defineProps({
 }
 .np-live-item-clickable:hover {
   transform: translateY(-1px);
+  box-shadow: 0 12px 24px -18px rgba(15, 23, 42, 0.7);
 }
 @keyframes npFeedIn {
   from { opacity: 0; transform: translateY(8px); }

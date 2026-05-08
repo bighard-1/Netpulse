@@ -1,6 +1,7 @@
 <script setup>
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { formatBps } from "../../utils/format";
+import { npAxisLabel, npAxisLine, npChartGrid, npSplitLine, npTooltip } from "../../utils/chartTheme";
 
 const props = defineProps({
   hotspots: { type: Array, default: () => [] }
@@ -14,21 +15,26 @@ function render() {
   const list = props.hotspots || [];
   chart.setOption({
     animation: false,
-    grid: { left: "3%", right: "4%", bottom: "10%", containLabel: true },
-    tooltip: {
-      trigger: "axis",
+    grid: npChartGrid,
+    tooltip: npTooltip({
       axisPointer: { type: "shadow" },
       formatter: (params) => {
         const p = params?.[0];
         if (!p) return "";
         return `${p.name}<br/>带宽: ${formatBps(Number(p.value || 0))}`;
       }
+    }),
+    xAxis: {
+      type: "value",
+      axisLabel: { ...npAxisLabel, formatter: (v) => formatBps(v) },
+      axisLine: npAxisLine,
+      splitLine: npSplitLine
     },
-    xAxis: { type: "value", axisLabel: { formatter: (v) => formatBps(v) } },
     yAxis: {
       type: "category",
       data: list.map((x) => `${x.deviceName}/${x.interfaceName}`),
-      axisLabel: { width: 260, overflow: "truncate" }
+      axisLabel: { ...npAxisLabel, width: 260, overflow: "truncate" },
+      axisLine: npAxisLine
     },
     series: [
       {
@@ -72,7 +78,7 @@ watch(() => props.hotspots, render, { deep: true });
     <template #header>
       <span class="text-lg font-semibold">Top N 端口流量排行</span>
     </template>
-    <div ref="chartRef" class="h-[260px] w-full"></div>
+    <el-empty v-if="!(props.hotspots || []).length" description="暂无端口流量数据（等待采样入库）" :image-size="72" />
+    <div v-else ref="chartRef" class="h-[260px] w-full"></div>
   </el-card>
 </template>
-

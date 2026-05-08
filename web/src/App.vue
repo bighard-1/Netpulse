@@ -33,10 +33,16 @@ const permissionCatalog = [
 const quickSearchVisible = ref(false);
 const quickSearchKeyword = ref("");
 const quickSearchLoading = ref(false);
+const quickSearchCategory = ref("all");
 let quickSearchDebounce = null;
 let authExpiredNoticeAt = 0;
 const quickPinned = ref(JSON.parse(localStorage.getItem("np_quick_pinned") || "[]"));
 const quickRecent = ref(JSON.parse(localStorage.getItem("np_quick_recent") || "[]"));
+const filteredSearchResults = computed(() => {
+  const list = ops.globalSearchResults || [];
+  if (quickSearchCategory.value === "all") return list;
+  return list.filter((x) => String(x.category || "").toLowerCase() === quickSearchCategory.value);
+});
 
 const pageTitle = computed(() => String(route.meta?.title || zhCN.app.title));
 const isAuthed = computed(() => auth.isAuthed);
@@ -57,6 +63,23 @@ function searchCategoryLabel(v) {
   if (x === "log" || x === "event") return "事件";
   if (x === "user") return "用户";
   return v || "-";
+}
+
+function escapeHtml(s) {
+  return String(s || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function highlightText(text) {
+  const kw = String(quickSearchKeyword.value || "").trim();
+  const safe = escapeHtml(text);
+  if (!kw) return safe;
+  const reg = new RegExp(`(${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "ig");
+  return safe.replace(reg, "<mark class=\"np-hl\">$1</mark>");
 }
 
 const activeMenu = computed(() => {
@@ -301,7 +324,7 @@ onBeforeUnmount(() => {
       </section>
     </main>
 
-    <el-dialog v-model="loginVisible" title="登录 NetPulse" width="420" :close-on-click-modal="false" :show-close="false">
+    <el-dialog v-model="loginVisible" class="np-login-dialog" title="登录 NetPulse" width="420" :close-on-click-modal="false" :show-close="false">
       <el-form label-position="top">
         <el-form-item label="用户名"><el-input v-model="loginForm.username" placeholder="请输入用户名" /></el-form-item>
         <el-form-item label="密码"><el-input v-model="loginForm.password" show-password placeholder="请输入密码" @keyup.enter="doLogin" /></el-form-item>
@@ -326,14 +349,25 @@ onBeforeUnmount(() => {
       </div>
       <div class="flex gap-2">
         <el-input v-model="quickSearchKeyword" placeholder="搜索 IP / 备注 / 端口名 / 设备名" @keyup.enter="runQuickSearch" />
+        <el-select v-model="quickSearchCategory" class="w-[120px]">
+          <el-option label="全部" value="all" />
+          <el-option label="设备" value="device" />
+          <el-option label="端口" value="interface" />
+          <el-option label="日志" value="device_log" />
+          <el-option label="审计" value="audit_log" />
+        </el-select>
         <el-button type="primary" :loading="quickSearchLoading" @click="runQuickSearch">搜索</el-button>
       </div>
-      <el-table :data="ops.globalSearchResults" class="mt-3 np-borderless-table" max-height="420" @row-click="goSearchResult">
+      <el-table :data="filteredSearchResults" class="mt-3 np-borderless-table" max-height="420" @row-click="goSearchResult">
         <el-table-column label="类型" width="120">
           <template #default="{ row }">{{ searchCategoryLabel(row.category) }}</template>
         </el-table-column>
-        <el-table-column prop="title" label="标题" min-width="240" />
-        <el-table-column prop="sub" label="详情" min-width="320" />
+        <el-table-column label="标题" min-width="240">
+          <template #default="{ row }"><span v-html="highlightText(row.title)" /></template>
+        </el-table-column>
+        <el-table-column label="详情" min-width="320">
+          <template #default="{ row }"><span v-html="highlightText(row.sub)" /></template>
+        </el-table-column>
         <el-table-column label="收藏" width="90">
           <template #default="{ row }">
             <el-button text @click.stop="togglePin(row)">{{ isPinned(row) ? "取消" : "收藏" }}</el-button>
@@ -393,3 +427,11 @@ onBeforeUnmount(() => {
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.np-hl {
+  background: #fde68a;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+</style>

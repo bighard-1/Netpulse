@@ -20,6 +20,12 @@ const bootstrapSchemaSQL = `
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version BIGINT PRIMARY KEY,
+    description TEXT NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS devices (
     id BIGSERIAL PRIMARY KEY,
     ip INET NOT NULL UNIQUE,
@@ -47,10 +53,12 @@ CREATE TABLE IF NOT EXISTS interfaces (
     device_id BIGINT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     "index" INTEGER NOT NULL,
     name VARCHAR(128) NOT NULL,
+    custom_name VARCHAR(128),
     remark TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (device_id, "index")
 );
+ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS custom_name VARCHAR(128);
 
 CREATE TABLE IF NOT EXISTS metrics (
     ts TIMESTAMPTZ NOT NULL,
@@ -665,7 +673,10 @@ type Interface struct {
 	DeviceID int64  `json:"device_id,omitempty"`
 	Index    int    `json:"index"`
 	Name     string `json:"name"`
+	RawName  string `json:"raw_name,omitempty"`
 	Remark   string `json:"remark"`
+	TrafficInBps  int64 `json:"traffic_in_bps,omitempty"`
+	TrafficOutBps int64 `json:"traffic_out_bps,omitempty"`
 }
 
 type InterfaceMetric struct {
@@ -874,6 +885,44 @@ func (r *Repository) EnsureSchema() error {
 
 	if _, err := r.db.ExecContext(ctx, bootstrapSchemaSQL); err != nil {
 		return fmt.Errorf("schema bootstrap failed: %w", err)
+	}
+	if err := r.ensureSchemaVersion(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
+	const ensureBase = `
+		INSERT INTO schema_migrations(version, description)
+		VALUES (1, 'bootstrap base schema')
+		ON CONFLICT (version) DO NOTHING;
+	`
+	if _, err := r.db.ExecContext(ctx, ensureBase); err != nil {
+		return fmt.Errorf("ensure migration baseline: %w", err)
+	}
+
+	// v2: interfaces custom_name support for human-friendly alias.
+	const mig2 = `
+		ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS custom_name VARCHAR(128);
+		INSERT INTO schema_migrations(version, description)
+		VALUES (2, 'add interfaces.custom_name')
+		ON CONFLICT (version) DO NOTHING;
+	`
+	if _, err := r.db.ExecContext(ctx, mig2); err != nil {
+		return fmt.Errorf("apply migration v2 failed: %w", err)
+	}
+
+	// v3: indexes for latest-metric join paths.
+	const mig3 = `
+		CREATE INDEX IF NOT EXISTS idx_metrics_interface_ts ON metrics (interface_id, ts DESC);
+		CREATE INDEX IF NOT EXISTS idx_metrics_device_ts ON metrics (device_id, ts DESC);
+		INSERT INTO schema_migrations(version, description)
+		VALUES (3, 'ensure metrics latest-point indexes')
+		ON CONFLICT (version) DO NOTHING;
+	`
+	if _, err := r.db.ExecContext(ctx, mig3); err != nil {
+		return fmt.Errorf("apply migration v3 failed: %w", err)
 	}
 	return nil
 }
@@ -1157,10 +1206,23 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 	}
 
 	const iq = `
-		SELECT id, device_id, "index", name, COALESCE(remark, '')
-		FROM interfaces
-		WHERE device_id = $1
-		ORDER BY "index";
+		WITH latest_metrics AS (
+			SELECT DISTINCT ON (interface_id)
+			       interface_id, traffic_in_bps, traffic_out_bps
+			FROM metrics
+			WHERE interface_id IS NOT NULL
+			ORDER BY interface_id, ts DESC
+		)
+		SELECT i.id, i.device_id, i."index",
+		       COALESCE(NULLIF(i.custom_name,''), i.name) AS display_name,
+		       i.name AS raw_name,
+		       COALESCE(i.remark, ''),
+		       COALESCE(m.traffic_in_bps, 0),
+		       COALESCE(m.traffic_out_bps, 0)
+		FROM interfaces i
+		LEFT JOIN latest_metrics m ON m.interface_id = i.id
+		WHERE i.device_id = $1
+		ORDER BY i."index";
 	`
 	rows, err := r.db.QueryContext(ctx, iq, id)
 	if err != nil {
@@ -1169,7 +1231,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 	defer rows.Close()
 	for rows.Next() {
 		var itf Interface
-		if err := rows.Scan(&itf.ID, &itf.DeviceID, &itf.Index, &itf.Name, &itf.Remark); err != nil {
+		if err := rows.Scan(&itf.ID, &itf.DeviceID, &itf.Index, &itf.Name, &itf.RawName, &itf.Remark, &itf.TrafficInBps, &itf.TrafficOutBps); err != nil {
 			return nil, fmt.Errorf("scan interface by device id: %w", err)
 		}
 		ds.Interfaces = append(ds.Interfaces, itf)
@@ -1598,11 +1660,15 @@ func (r *Repository) GlobalSearch(ctx context.Context, q string, limit int) ([]G
 			LIMIT $2
 		),
 		ifs AS (
-			SELECT 'interface' AS category, i.id, i.name AS title,
+			SELECT 'interface' AS category, i.id, COALESCE(NULLIF(i.custom_name,''), i.name) AS title,
 			       ('设备='||COALESCE(d.name,host(d.ip))||' ifIndex='||i."index"||' 备注='||COALESCE(i.remark,'')) AS sub
 			FROM interfaces i
 			JOIN devices d ON d.id=i.device_id
-			WHERE i.name ILIKE $1 OR COALESCE(i.remark,'') ILIKE $1 OR host(d.ip) ILIKE $1 OR COALESCE(d.name,'') ILIKE $1
+			WHERE i.name ILIKE $1
+			   OR COALESCE(i.custom_name,'') ILIKE $1
+			   OR COALESCE(i.remark,'') ILIKE $1
+			   OR host(d.ip) ILIKE $1
+			   OR COALESCE(d.name,'') ILIKE $1
 			LIMIT $2
 		),
 		logs AS (
@@ -1724,9 +1790,22 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 	}
 
 	const iq = `
-		SELECT id, device_id, "index", name, COALESCE(remark, '')
-		FROM interfaces
-		ORDER BY device_id, "index";
+		WITH latest_metrics AS (
+			SELECT DISTINCT ON (interface_id)
+			       interface_id, traffic_in_bps, traffic_out_bps
+			FROM metrics
+			WHERE interface_id IS NOT NULL
+			ORDER BY interface_id, ts DESC
+		)
+		SELECT i.id, i.device_id, i."index",
+		       COALESCE(NULLIF(i.custom_name,''), i.name) AS display_name,
+		       i.name AS raw_name,
+		       COALESCE(i.remark, ''),
+		       COALESCE(m.traffic_in_bps, 0),
+		       COALESCE(m.traffic_out_bps, 0)
+		FROM interfaces i
+		LEFT JOIN latest_metrics m ON m.interface_id = i.id
+		ORDER BY i.device_id, i."index";
 	`
 	iRows, err := r.db.QueryContext(ctx, iq)
 	if err != nil {
@@ -1737,7 +1816,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 	byDevice := make(map[int64][]Interface)
 	for iRows.Next() {
 		var itf Interface
-		if err := iRows.Scan(&itf.ID, &itf.DeviceID, &itf.Index, &itf.Name, &itf.Remark); err != nil {
+		if err := iRows.Scan(&itf.ID, &itf.DeviceID, &itf.Index, &itf.Name, &itf.RawName, &itf.Remark, &itf.TrafficInBps, &itf.TrafficOutBps); err != nil {
 			return nil, fmt.Errorf("scan interface: %w", err)
 		}
 		byDevice[itf.DeviceID] = append(byDevice[itf.DeviceID], itf)
@@ -1923,7 +2002,7 @@ func (r *Repository) UpdateInterfaceRemark(ctx context.Context, id int64, remark
 	return nil
 }
 
-func (r *Repository) UpdateInterfaceProfile(ctx context.Context, id int64, name, remark string) error {
+func (r *Repository) UpdateInterfaceProfile(ctx context.Context, id int64, name, remark *string) error {
 	const uq = `
 		SELECT i.device_id
 		FROM interfaces i
@@ -1937,15 +2016,22 @@ func (r *Repository) UpdateInterfaceProfile(ctx context.Context, id int64, name,
 		return fmt.Errorf("query interface device: %w", err)
 	}
 
-	if strings.TrimSpace(name) != "" {
+	nameTrim := ""
+	hasName := name != nil
+	if hasName {
+		nameTrim = strings.TrimSpace(*name)
+	}
+	if hasName && nameTrim != "" {
 		const cq = `
 			SELECT EXISTS(
 				SELECT 1 FROM interfaces
-				WHERE device_id = $1 AND lower(name) = lower($2) AND id <> $3
+				WHERE device_id = $1
+				  AND lower(COALESCE(NULLIF(custom_name,''), name)) = lower($2)
+				  AND id <> $3
 			);
 		`
 		var exists bool
-		if err := r.db.QueryRowContext(ctx, cq, deviceID, strings.TrimSpace(name), id).Scan(&exists); err != nil {
+		if err := r.db.QueryRowContext(ctx, cq, deviceID, nameTrim, id).Scan(&exists); err != nil {
 			return fmt.Errorf("check interface name conflict: %w", err)
 		}
 		if exists {
@@ -1953,13 +2039,28 @@ func (r *Repository) UpdateInterfaceProfile(ctx context.Context, id int64, name,
 		}
 	}
 
+	hasRemark := remark != nil
+	remarkVal := ""
+	if hasRemark {
+		remarkVal = *remark
+	}
+	clearName := hasName && nameTrim == ""
+	setName := hasName && nameTrim != ""
+
 	const q = `
 		UPDATE interfaces
-		SET name = CASE WHEN $2 <> '' THEN $2 ELSE name END,
-			remark = $3
+		SET custom_name = CASE
+				WHEN $2 THEN NULL
+				WHEN $3 THEN NULLIF($4, '')
+				ELSE custom_name
+			END,
+			remark = CASE
+				WHEN $5 THEN $6
+				ELSE remark
+			END
 		WHERE id = $1;
 	`
-	if _, err := r.db.ExecContext(ctx, q, id, strings.TrimSpace(name), remark); err != nil {
+	if _, err := r.db.ExecContext(ctx, q, id, clearName, setName, nameTrim, hasRemark, remarkVal); err != nil {
 		return fmt.Errorf("update interface profile: %w", err)
 	}
 	return nil

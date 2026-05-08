@@ -4,7 +4,7 @@ import { useRouter } from "vue-router";
 import { api } from "../services/api";
 import { useOpsStore } from "../stores/ops";
 import { formatBps } from "../utils/format";
-import { normalizeStatus, statusClass } from "../utils/status";
+import { normalizeStatus, statusClass, statusLabel } from "../utils/status";
 import { useFeedback } from "../composables/useFeedback";
 import StatsCards from "../components/dashboard/StatsCards.vue";
 import LiveEventFeed from "../components/dashboard/LiveEventFeed.vue";
@@ -21,9 +21,21 @@ const feedLoading = ref(false);
 const devices = ref([]);
 const globalKeyword = ref("");
 let timer = null;
+let refreshInFlight = false;
 const healthTrend = ref([]);
+const healthExplainVisible = ref(false);
 const eventDetailVisible = ref(false);
 const eventDetail = ref(null);
+const statusQuickFilter = ref("all");
+const healthRef = ref(null);
+const hotspotRef = ref(null);
+const todoActions = computed(() => {
+  const out = [];
+  if (devices.value.length === 0) out.push({ key: "add", title: "添加首台资产", action: () => router.push("/assets") });
+  if (activeAlerts.value > 0) out.push({ key: "alert", title: `处理 ${activeAlerts.value} 条活动告警`, action: () => router.push("/alerts") });
+  if (trafficHotspots.value.length === 0) out.push({ key: "traffic", title: "等待流量采样，检查采集设置", action: () => router.push("/settings") });
+  return out.slice(0, 3);
+});
 
 const onlineCount = computed(() => devices.value.filter((d) => {
   return normalizeStatus(d.status) === "online";
@@ -64,8 +76,12 @@ const storageRiskCount = computed(() => {
 
 const filteredDevices = computed(() => {
   const kw = globalKeyword.value.trim().toLowerCase();
-  if (!kw) return devices.value;
-  return devices.value.filter((d) => {
+  let list = devices.value;
+  if (statusQuickFilter.value !== "all") {
+    list = list.filter((d) => normalizeStatus(d.status) === statusQuickFilter.value);
+  }
+  if (!kw) return list;
+  return list.filter((d) => {
     const ports = (d.interfaces || [])
       .map((p) => `${p.name || ""} ${p.alias || ""} ${p.custom_name || ""} ${p.remark || ""} ${p.index || ""}`)
       .join(" ");
@@ -75,7 +91,33 @@ const filteredDevices = computed(() => {
 const showOnboarding = computed(() => devices.value.length === 0);
 
 function deviceStatusClass(row) {
-  return statusClass(row?.status);
+  return statusClass(row);
+}
+
+function scrollToRef(elRef) {
+  const el = elRef?.value;
+  if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function openHealthDetail() {
+  scrollToRef(healthRef);
+}
+
+function openAvailabilityDetail() {
+  statusQuickFilter.value = "online";
+}
+
+function openAlertsDetail() {
+  router.push("/alerts");
+}
+
+function openHotspotsDetail() {
+  scrollToRef(hotspotRef);
+}
+
+function openStorageDetail() {
+  router.push("/assets");
 }
 
 function severityTag(sev) {
@@ -110,17 +152,22 @@ async function loadAlerts(opts = {}) {
 }
 
 async function refreshAll(opts = {}) {
+  if (refreshInFlight) return;
+  if (document.visibilityState === "hidden") return;
+  refreshInFlight = true;
   const silent = Boolean(opts.silent);
-  await Promise.all([loadDevices({ silent }), loadAlerts({ silent }), loadHealthTrend({ silent })]);
+  try {
+    await Promise.all([loadDevices({ silent }), loadAlerts({ silent }), loadHealthTrend({ silent })]);
+  } finally {
+    refreshInFlight = false;
+  }
 }
 
 async function loadHealthTrend(opts = {}) {
   const silent = Boolean(opts.silent);
   try {
-    const end = new Date();
-    const start = new Date(end.getTime() - 30 * 24 * 3600 * 1000);
-    const res = await api.getSystemHealthTrend(start.toISOString(), end.toISOString());
-    healthTrend.value = res.data || [];
+    const res = await api.getSystemHealthTrend(30);
+    healthTrend.value = res?.data?.data || [];
   } catch (err) {
     if (!silent) fb.apiError(err, "加载健康趋势失败");
   }
@@ -156,13 +203,19 @@ onMounted(async () => {
   timer = setInterval(() => {
     refreshAll({ silent: true });
   }, 20000);
+  document.addEventListener("visibilitychange", onVisibilityChange);
 });
 
 onActivated(() => refreshAll({ silent: true }));
 
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer);
+  document.removeEventListener("visibilitychange", onVisibilityChange);
 });
+
+function onVisibilityChange() {
+  if (document.visibilityState === "visible") refreshAll({ silent: true });
+}
 </script>
 
 <template>
@@ -189,20 +242,48 @@ onBeforeUnmount(() => {
       :alert-breakdown="alertBreakdown"
       :traffic-hotspots="trafficHotspots"
       :storage-risk-count="storageRiskCount"
+      @open-health="openHealthDetail"
+      @open-availability="openAvailabilityDetail"
+      @open-alerts="openAlertsDetail"
+      @open-hotspots="openHotspotsDetail"
+      @open-storage="openStorageDetail"
     />
 
-    <section class="grid grid-cols-1 gap-5 2xl:grid-cols-[3fr,2fr]">
+    <el-card v-if="todoActions.length">
+      <template #header><span class="text-lg font-semibold">今日待处理</span></template>
+      <div class="grid grid-cols-1 gap-2 md:grid-cols-3">
+        <button
+          v-for="x in todoActions"
+          :key="x.key"
+          class="rounded-xl border border-slate-200 bg-slate-50 p-3 text-left transition hover:bg-indigo-50 hover:border-indigo-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+          @click="x.action()"
+        >
+          <div class="text-sm font-semibold text-slate-800">{{ x.title }}</div>
+          <div class="mt-1 text-xs text-slate-500">点击立即处理</div>
+        </button>
+      </div>
+    </el-card>
+
+    <section ref="healthRef" class="grid grid-cols-1 gap-5 2xl:grid-cols-[3fr,2fr]">
       <HealthTrendArea :trend="healthTrend" />
-      <TrafficTopBar :hotspots="trafficHotspots" />
+      <div ref="hotspotRef"><TrafficTopBar :hotspots="trafficHotspots" /></div>
     </section>
 
     <section class="grid grid-cols-1 gap-5 2xl:grid-cols-[2fr,1fr]">
       <el-card>
         <template #header>
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <span class="text-lg font-semibold">资产总览（只读）</span>
+            <div class="flex items-center gap-2">
+              <span class="text-lg font-semibold">资产总览（只读）</span>
+              <el-button text type="primary" @click="healthExplainVisible = true">指标口径说明</el-button>
+            </div>
             <div class="flex items-center gap-2">
               <el-input v-model="globalKeyword" placeholder="搜索 IP / 名称 / 备注 / 端口名" clearable class="w-[320px]" />
+              <el-select v-model="statusQuickFilter" class="w-[130px]">
+                <el-option label="全部状态" value="all" />
+                <el-option label="仅在线" value="online" />
+                <el-option label="仅离线" value="offline" />
+              </el-select>
               <el-button @click="refreshAll">刷新</el-button>
             </div>
           </div>
@@ -213,7 +294,12 @@ onBeforeUnmount(() => {
             <el-table :data="filteredDevices" class="np-borderless-table" size="large">
               <el-table-column label="状态" width="90">
                 <template #default="{ row }">
-                  <span class="inline-block align-middle" :class="deviceStatusClass(row)" />
+                  <el-tooltip :content="statusLabel(row)">
+                    <span class="inline-flex items-center gap-1 align-middle">
+                      <span class="inline-block" :class="deviceStatusClass(row)" />
+                      <span class="text-xs text-slate-500">{{ statusLabel(row) }}</span>
+                    </span>
+                  </el-tooltip>
                 </template>
               </el-table-column>
               <el-table-column label="名称" min-width="160">
@@ -278,5 +364,17 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </el-drawer>
+
+    <el-dialog v-model="healthExplainVisible" title="指标口径说明" width="760">
+      <div class="space-y-2 text-sm text-slate-700">
+        <p>全局健康评分：设备可用率 - 告警惩罚分（严重*6 + 警告*2，上限35）。</p>
+        <p>设备可用率：在线设备数 / 设备总数。</p>
+        <p>活动告警：实时事件流中严重+警告数量。</p>
+        <p>流量热点：按端口最新入/出流量总和排序 Top 3。</p>
+      </div>
+      <template #footer>
+        <el-button type="primary" @click="healthExplainVisible = false">我知道了</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>

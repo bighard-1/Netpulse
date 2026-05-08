@@ -28,6 +28,10 @@ const opsSummary = ref({
   last_event_at: "",
   last_audit_at: ""
 });
+const opsDetailVisible = ref(false);
+const opsDetailTitle = ref("");
+const opsDetailRows = ref([]);
+const opsDetailType = ref("events");
 
 const templateForm = ref({
   name: "",
@@ -166,6 +170,21 @@ async function runBackupDrill() {
   }
 }
 
+async function downloadInspectionBundle() {
+  try {
+    const res = await api.downloadInspectionBundle();
+    const blobUrl = URL.createObjectURL(res.data);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = "netpulse_inspection_bundle.json";
+    a.click();
+    URL.revokeObjectURL(blobUrl);
+    fb.success("巡检包已导出");
+  } catch (err) {
+    fb.apiError(err, "导出巡检包失败");
+  }
+}
+
 async function loadDrillReports() {
   drillReportsLoading.value = true;
   try {
@@ -224,6 +243,39 @@ async function loadOpsSummary() {
     fb.apiError(err, "加载运维概况失败");
   } finally {
     opsLoading.value = false;
+  }
+}
+
+async function openOpsDetail(type) {
+  try {
+    opsDetailType.value = type;
+    opsDetailVisible.value = true;
+    opsDetailRows.value = [];
+    if (type === "devices") {
+      opsDetailTitle.value = "设备列表明细";
+      const res = await api.listDevices();
+      opsDetailRows.value = res.data || [];
+      return;
+    }
+    if (type === "alerts") {
+      opsDetailTitle.value = "开放告警明细";
+      const res = await api.listAlertEvents(200, "open");
+      opsDetailRows.value = res.data?.data || [];
+      return;
+    }
+    if (type === "events") {
+      opsDetailTitle.value = "近期事件明细";
+      const res = await api.listRecentEvents(200);
+      opsDetailRows.value = res.data?.data || res.data || [];
+      return;
+    }
+    if (type === "audits") {
+      opsDetailTitle.value = "近期审计明细";
+      const res = await api.listAuditLogs();
+      opsDetailRows.value = res.data || [];
+    }
+  } catch (err) {
+    fb.apiError(err, "加载运行观测明细失败");
   }
 }
 
@@ -475,6 +527,7 @@ onMounted(async () => {
         <template #header><span class="text-lg font-semibold">备份与恢复</span></template>
         <div class="space-y-3">
           <el-button type="primary" @click="onBackup">下载备份</el-button>
+          <el-button @click="downloadInspectionBundle">导出一键巡检包</el-button>
           <el-upload :auto-upload="false" :show-file-list="false" accept=".gz" :on-change="onRestore" :disabled="restoreLoading">
             <el-button>恢复数据</el-button>
           </el-upload>
@@ -511,13 +564,45 @@ onMounted(async () => {
         </div>
       </template>
       <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <div class="rounded-lg bg-slate-50 p-3">设备总数：<b>{{ opsSummary.device_total }}</b></div>
-        <div class="rounded-lg bg-slate-50 p-3">开放告警：<b>{{ opsSummary.open_alert_events }}</b></div>
-        <div class="rounded-lg bg-slate-50 p-3">近期事件：<b>{{ opsSummary.recent_events }}</b></div>
-        <div class="rounded-lg bg-slate-50 p-3">近期审计：<b>{{ opsSummary.recent_audits }}</b></div>
+        <div class="cursor-pointer rounded-lg bg-slate-50 p-3 hover:bg-slate-100" @click="openOpsDetail('devices')">设备总数：<b>{{ opsSummary.device_total }}</b></div>
+        <div class="cursor-pointer rounded-lg bg-slate-50 p-3 hover:bg-slate-100" @click="openOpsDetail('alerts')">开放告警：<b>{{ opsSummary.open_alert_events }}</b></div>
+        <div class="cursor-pointer rounded-lg bg-slate-50 p-3 hover:bg-slate-100" @click="openOpsDetail('events')">近期事件：<b>{{ opsSummary.recent_events }}</b></div>
+        <div class="cursor-pointer rounded-lg bg-slate-50 p-3 hover:bg-slate-100" @click="openOpsDetail('audits')">近期审计：<b>{{ opsSummary.recent_audits }}</b></div>
         <div class="rounded-lg bg-slate-50 p-3">最新事件时间：<b>{{ opsSummary.last_event_at || "-" }}</b></div>
         <div class="rounded-lg bg-slate-50 p-3">最新审计时间：<b>{{ opsSummary.last_audit_at || "-" }}</b></div>
       </div>
     </el-card>
+
+    <el-dialog v-model="opsDetailVisible" :title="opsDetailTitle" width="960">
+      <el-table v-if="opsDetailType === 'devices'" :data="opsDetailRows" class="np-borderless-table" height="520">
+        <el-table-column prop="id" label="ID" width="90" />
+        <el-table-column prop="name" label="名称" min-width="200" />
+        <el-table-column prop="ip" label="IP" min-width="180" />
+        <el-table-column prop="brand" label="品牌" width="120" />
+        <el-table-column prop="status" label="状态" width="100" />
+      </el-table>
+      <el-table v-else-if="opsDetailType === 'alerts'" :data="opsDetailRows" class="np-borderless-table" height="520">
+        <el-table-column prop="id" label="ID" width="90" />
+        <el-table-column prop="level" label="级别" width="100" />
+        <el-table-column prop="code" label="代码" width="160" />
+        <el-table-column prop="message" label="内容" min-width="360" />
+        <el-table-column prop="created_at" label="时间" width="190" />
+      </el-table>
+      <el-table v-else-if="opsDetailType === 'events'" :data="opsDetailRows" class="np-borderless-table" height="520">
+        <el-table-column prop="id" label="ID" width="90" />
+        <el-table-column prop="level" label="级别" width="100" />
+        <el-table-column prop="message" label="内容" min-width="420" />
+        <el-table-column prop="created_at" label="时间" width="190" />
+      </el-table>
+      <el-table v-else :data="opsDetailRows" class="np-borderless-table" height="520">
+        <el-table-column prop="id" label="ID" width="90" />
+        <el-table-column prop="action" label="动作" width="200" />
+        <el-table-column prop="target" label="目标" min-width="260" />
+        <el-table-column prop="timestamp" label="时间" width="190" />
+      </el-table>
+      <template #footer>
+        <el-button type="primary" @click="opsDetailVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>

@@ -5,6 +5,7 @@ import { api } from "../services/api";
 import { formatBps } from "../utils/format";
 import { zhCN } from "../i18n/zhCN";
 import { useFeedback } from "../composables/useFeedback";
+import { npAxisLabel, npAxisLine, npChartGrid, npSplitLine, npTooltip } from "../utils/chartTheme";
 
 const props = defineProps({ id: { type: [String, Number], required: true } });
 const route = useRoute();
@@ -100,7 +101,7 @@ function pickUnit(maxVal) {
 function baseOption(title, unitInfo) {
   return {
     animation: false,
-    grid: { left: "3%", right: "4%", bottom: "10%", containLabel: true },
+    grid: npChartGrid,
     title: {
       text: title,
       subtext: `单位: ${unitInfo.unit}`,
@@ -109,8 +110,7 @@ function baseOption(title, unitInfo) {
       textStyle: { fontSize: 14, fontWeight: 600 },
       subtextStyle: { fontSize: 12, color: "#64748b", lineHeight: 14 }
     },
-    tooltip: {
-      trigger: "axis",
+    tooltip: npTooltip({
       axisPointer: { type: "line", animation: false },
       formatter(params) {
         if (!params?.length) return "";
@@ -121,7 +121,7 @@ function baseOption(title, unitInfo) {
         }
         return lines.join("<br/>");
       }
-    },
+    }),
     legend: { top: 8, right: 10, data: ["入方向", "出方向"] },
     dataZoom: [
       { type: "inside", throttle: 60, zoomOnMouseWheel: true, moveOnMouseMove: true },
@@ -129,12 +129,15 @@ function baseOption(title, unitInfo) {
     ],
     xAxis: {
       type: "time",
-      axisLabel: { hideOverlap: true, rotate: 45 }
+      axisLabel: { ...npAxisLabel, hideOverlap: true, rotate: 45 },
+      axisLine: npAxisLine
     },
     yAxis: {
       type: "value",
       splitNumber: 6,
-      axisLabel: { formatter: (val) => `${(val / unitInfo.div).toFixed(2)}` }
+      axisLabel: { ...npAxisLabel, formatter: (val) => `${(val / unitInfo.div).toFixed(2)}` },
+      axisLine: npAxisLine,
+      splitLine: npSplitLine
     },
     series: [
       {
@@ -373,6 +376,23 @@ async function savePortProfile() {
   }
 }
 
+async function restoreDefaultPortName() {
+  savingPort.value = true;
+  try {
+    await api.updateInterfaceProfile(props.id, {
+      name: "",
+      remark: portEdit.value.remark || ""
+    });
+    portEdit.value.name = "";
+    await loadPortMeta();
+    fb.success("已恢复设备默认端口名称");
+  } catch (err) {
+    fb.apiError(err, "恢复默认名称失败");
+  } finally {
+    savingPort.value = false;
+  }
+}
+
 async function copyTerminalTarget() {
   const ip = String(route.query.deviceIp || "").trim();
   if (!ip) return fb.warn("缺少设备IP");
@@ -429,6 +449,7 @@ onBeforeUnmount(() => {
             <el-input v-model="portEdit.name" placeholder="自定义端口名称" class="w-[200px]" />
             <el-input v-model="portEdit.remark" placeholder="端口备注" class="w-[220px]" />
             <el-button type="warning" plain @click="savePortProfile" :loading="savingPort">保存</el-button>
+            <el-button plain @click="restoreDefaultPortName" :loading="savingPort">恢复默认名</el-button>
           </div>
           <div class="flex flex-wrap items-center gap-2">
             <el-input-number v-model="trafficThresholdBps" :min="0" :step="1000000" placeholder="告警阈值(bps)" />
