@@ -23,6 +23,10 @@ const (
 	OIDIfInOctets     = ".1.3.6.1.2.1.2.2.1.10"
 	OIDIfOutOctets    = ".1.3.6.1.2.1.2.2.1.16"
 	OIDIfOperStatus   = ".1.3.6.1.2.1.2.2.1.8"
+	OIDHrStorageType  = ".1.3.6.1.2.1.25.2.3.1.2"
+	OIDHrStorageAlloc = ".1.3.6.1.2.1.25.2.3.1.4"
+	OIDHrStorageSize  = ".1.3.6.1.2.1.25.2.3.1.5"
+	OIDHrStorageUsed  = ".1.3.6.1.2.1.25.2.3.1.6"
 )
 
 type InterfaceInfo struct {
@@ -39,10 +43,13 @@ type InterfaceCounters struct {
 }
 
 type PollResult struct {
-	CPUUsage    float64
-	MemoryUsage float64
-	Interfaces  []InterfaceCounters
-	PolledAt    time.Time
+	CPUUsage     float64
+	MemoryUsage  float64
+	StorageUsage float64
+	StorageTotal float64
+	StorageFree  float64
+	Interfaces   []InterfaceCounters
+	PolledAt     time.Time
 }
 
 type OIDProfile struct {
@@ -206,12 +213,108 @@ func (c *Collector) PollDevice(ip string, opt PollOptions) (PollResult, error) {
 		})
 	}
 
+	stUsage, stTotal, stFree := c.fetchStorageSummary(client)
+
 	return PollResult{
-		CPUUsage:    cpuUsage,
-		MemoryUsage: memUsage,
-		Interfaces:  merged,
-		PolledAt:    time.Now(),
+		CPUUsage:     cpuUsage,
+		MemoryUsage:  memUsage,
+		StorageUsage: stUsage,
+		StorageTotal: stTotal,
+		StorageFree:  stFree,
+		Interfaces:   merged,
+		PolledAt:     time.Now(),
 	}, nil
+}
+
+func (c *Collector) fetchStorageSummary(client *gosnmp.GoSNMP) (float64, float64, float64) {
+	types, err1 := client.BulkWalkAll(OIDHrStorageType)
+	allocs, err2 := client.BulkWalkAll(OIDHrStorageAlloc)
+	sizes, err3 := client.BulkWalkAll(OIDHrStorageSize)
+	useds, err4 := client.BulkWalkAll(OIDHrStorageUsed)
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		return 0, 0, 0
+	}
+	typeByIdx := map[int]string{}
+	for _, p := range types {
+		idx, err := oidIndex(p.Name)
+		if err != nil {
+			continue
+		}
+		typeByIdx[idx] = pduToString(p)
+	}
+	allocByIdx := map[int]uint64{}
+	for _, p := range allocs {
+		idx, err := oidIndex(p.Name)
+		if err != nil {
+			continue
+		}
+		allocByIdx[idx] = toUint64(p.Value)
+	}
+	sizeByIdx := map[int]uint64{}
+	for _, p := range sizes {
+		idx, err := oidIndex(p.Name)
+		if err != nil {
+			continue
+		}
+		sizeByIdx[idx] = toUint64(p.Value)
+	}
+	usedByIdx := map[int]uint64{}
+	for _, p := range useds {
+		idx, err := oidIndex(p.Name)
+		if err != nil {
+			continue
+		}
+		usedByIdx[idx] = toUint64(p.Value)
+	}
+
+	var totalBytes float64
+	var usedBytes float64
+	for idx, size := range sizeByIdx {
+		alloc := allocByIdx[idx]
+		used := usedByIdx[idx]
+		if size == 0 || alloc == 0 {
+			continue
+		}
+		stType := typeByIdx[idx]
+		if !includeStorageType(stType) {
+			continue
+		}
+		total := float64(size) * float64(alloc)
+		use := float64(used) * float64(alloc)
+		if total <= 0 || use < 0 {
+			continue
+		}
+		totalBytes += total
+		usedBytes += use
+	}
+	if totalBytes <= 0 {
+		return 0, 0, 0
+	}
+	usage := (usedBytes / totalBytes) * 100
+	if usage < 0 {
+		usage = 0
+	}
+	if usage > 100 {
+		usage = 100
+	}
+	return usage, totalBytes, totalBytes - usedBytes
+}
+
+func includeStorageType(storageTypeOID string) bool {
+	t := strings.TrimSpace(storageTypeOID)
+	if t == "" {
+		return true
+	}
+	// HOST-RESOURCES-MIB::hrStorageTypes:
+	// .2 ram, .3 virtualMemory, .4 fixedDisk, .5 removableDisk, .8 ramDisk, .9 flashMemory, .10 networkDisk.
+	if strings.HasSuffix(t, ".2") || strings.HasSuffix(t, ".3") {
+		return false
+	}
+	return strings.HasSuffix(t, ".4") ||
+		strings.HasSuffix(t, ".5") ||
+		strings.HasSuffix(t, ".8") ||
+		strings.HasSuffix(t, ".9") ||
+		strings.HasSuffix(t, ".10")
 }
 
 func v3MsgFlags(level string) gosnmp.SnmpV3MsgFlags {

@@ -62,7 +62,10 @@ func (h *Handler) Router() http.Handler {
 		pr.With(h.requirePermission("metrics.read")).Get("/api/metrics/history", h.handleMetricsHistory)
 		pr.With(h.requirePermission("logs.read")).Get("/api/devices/{id}/logs", h.handleDeviceLogs)
 		pr.Get("/api/events/recent", h.handleRecentEvents)
+		pr.With(h.requirePermission("logs.read")).Get("/api/alerts/events", h.handleListAlertEvents)
+		pr.With(h.adminOnly).Put("/api/alerts/events/{id}", h.handleUpdateAlertEventWorkflow)
 		pr.Get("/api/system/health", h.handleSystemHealthTrend)
+		pr.With(h.adminOnly).Get("/api/system/ops", h.handleSystemOps)
 		pr.Get("/api/system/backup", h.rateLimit("backup", 10, time.Minute, h.handleSystemBackup))
 		pr.With(h.auditMiddleware("RESTORE_SYSTEM")).Post("/api/system/restore", h.rateLimit("restore", 5, time.Minute, h.handleSystemRestore))
 		pr.With(h.adminOnly).Get("/api/audit-logs", h.handleAuditLogs)
@@ -79,6 +82,7 @@ func (h *Handler) Router() http.Handler {
 		pr.With(h.adminOnly).Post("/api/templates", h.handleCreateTemplate)
 		pr.With(h.adminOnly).Get("/api/alerts/rules", h.handleListAlertRules)
 		pr.With(h.adminOnly).Post("/api/alerts/rules", h.handleUpsertAlertRule)
+		pr.With(h.adminOnly).Delete("/api/alerts/rules/{id}", h.handleDeleteAlertRule)
 		pr.With(h.adminOnly).Get("/api/reports/summary", h.handleReportSummary)
 		pr.With(h.adminOnly).Post("/api/discovery/scan", h.handleDiscoveryScan)
 		pr.With(h.adminOnly).Post("/api/devices/{id}/config/snapshot", h.handleConfigSnapshot)
@@ -155,6 +159,7 @@ func (h *Handler) handleGetDeviceCapabilities(w http.ResponseWriter, r *http.Req
 type addDeviceRequest struct {
 	IP              string `json:"ip"`
 	Name            string `json:"name"`
+	TemplateID      *int64 `json:"template_id,omitempty"`
 	Brand           string `json:"brand"`
 	Community       string `json:"community"`
 	SNMPVersion     string `json:"snmp_version"`
@@ -288,6 +293,7 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 	deviceID, err := h.repo.AddDevice(r.Context(), db.Device{
 		IP:          req.IP,
 		Name:        req.Name,
+		TemplateID:  req.TemplateID,
 		Brand:       req.Brand,
 		Community:   req.Community,
 		SNMPVersion: req.SNMPVersion,
@@ -534,8 +540,22 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			"interval": interval,
 			"data":     items,
 		})
+	case "storage":
+		items, err := h.repo.GetDeviceStorageHistory(r.Context(), id, start, end, interval)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"type":     metricType,
+			"id":       id,
+			"start":    start,
+			"end":      end,
+			"interval": interval,
+			"data":     items,
+		})
 	default:
-		writeError(w, http.StatusBadRequest, "type must be one of: cpu, mem, traffic")
+		writeError(w, http.StatusBadRequest, "type must be one of: cpu, mem, traffic, storage")
 	}
 }
 

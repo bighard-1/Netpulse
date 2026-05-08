@@ -172,7 +172,7 @@ private fun MainShell(vm: MainViewModel, nav: androidx.navigation.NavHostControl
                     selected = tab == "assets",
                     onClick = { tab = "assets" },
                     icon = { Icon(Icons.Default.Home, contentDescription = null) },
-                    label = { Text("资产管理") }
+                    label = { Text("资产中心") }
                 )
                 NavigationBarItem(
                     selected = tab == "me",
@@ -196,7 +196,7 @@ private fun MainShell(vm: MainViewModel, nav: androidx.navigation.NavHostControl
                 modifier = Modifier.padding(p)
             )
             "assets" -> HomeScreen(
-                title = "资产管理",
+                title = "资产中心（只读）",
                 vm = vm,
                 devices = devices,
                 loading = loading,
@@ -266,7 +266,10 @@ fun HomeScreen(
     val ctx = LocalContext.current
 
     Column(modifier.fillMaxSize().padding(Np.screenPadding), verticalArrangement = Arrangement.spacedBy(Np.sectionGap)) {
-        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            AssistChip(onClick = {}, label = { Text("仅查看") })
+        }
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             MiniStatCard("总数", "$total", Brush.linearGradient(listOf(Color(0xFF334155), Color(0xFF1E293B))))
             MiniStatCard("在线", "$online", Brush.linearGradient(listOf(Color(0xFF0F766E), Color(0xFF065F46))), showPulse = true)
@@ -276,6 +279,8 @@ fun HomeScreen(
 
         if (loading) {
             repeat(3) { SkeletonCard() }
+        } else if (devices.isEmpty()) {
+            EmptyStateCard(title = "暂无资产", desc = "请先在 Web 端添加资产后再查看")
         } else {
             LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(devices, key = { it.id }) { d ->
@@ -312,7 +317,7 @@ fun HomeScreen(
                     TextButton(onClick = onRefresh) { Text("刷新") }
                 }
                 if (recentEvents.isEmpty()) {
-                    Text("暂无关键事件", color = Color.Gray)
+                    Text("暂无关键事件（Web 端配置告警后将显示）", color = Color.Gray)
                 } else {
                     recentEvents.take(3).forEach { event ->
                         val sev = severityOf(event)
@@ -347,6 +352,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
     val logs by vm.logs.collectAsStateWithLifecycle()
     val loading by vm.loading.collectAsStateWithLifecycle()
     var keyword by remember { mutableStateOf("") }
+    var showLogs by remember { mutableStateOf(false) }
     var start by remember { mutableStateOf(OffsetDateTime.now().minusDays(1)) }
     var end by remember { mutableStateOf(OffsetDateTime.now()) }
     val ctx = LocalContext.current
@@ -360,6 +366,12 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
         refreshing = loading,
         onRefresh = { vm.loadDeviceDetail(deviceId, start, end) }
     )
+    val cpuVals = cpu.map { it.cpuUsage ?: 0.0 }
+    val memVals = mem.map { it.memUsage ?: 0.0 }
+    val cpuCurrent = cpuVals.lastOrNull() ?: 0.0
+    val memCurrent = memVals.lastOrNull() ?: 0.0
+    val cpuPeak = cpuVals.maxOrNull() ?: 0.0
+    val memPeak = memVals.maxOrNull() ?: 0.0
 
     Scaffold(topBar = {
         TopAppBar(
@@ -379,7 +391,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                 Text("${device?.brand ?: "-"} · ${device?.remark ?: "-"}")
-                                Text("只读", color = Color.Gray)
+                                AssistChip(onClick = {}, label = { Text("只读") })
                             }
                         }
                     }
@@ -388,9 +400,12 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                     ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))) {
                         Column(Modifier.padding(Np.cardPadding)) {
                             Text("CPU / 内存", style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.height(6.dp))
+                            Text("CPU 当前 ${"%.1f".format(cpuCurrent)}% / 峰值 ${"%.1f".format(cpuPeak)}%", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                            Text("内存 当前 ${"%.1f".format(memCurrent)}% / 峰值 ${"%.1f".format(memPeak)}%", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                             Spacer(Modifier.height(8.dp))
                             if (loading) SkeletonBox(Modifier.fillMaxWidth().height(220.dp))
-                            else MiniLineChart(cpu.map { it.cpuUsage ?: 0.0 }, mem.map { it.memUsage ?: 0.0 })
+                            else MiniLineChart(cpuVals, memVals)
                         }
                     }
                 }
@@ -413,18 +428,28 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                             }
                         }
                     }
+                    if (ports.isEmpty()) {
+                        item { EmptyStateCard(title = "无匹配端口", desc = "请调整关键字后再试") }
+                    }
                 }
                 item {
                     ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))) {
                         Column(Modifier.padding(Np.cardPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("设备日志", style = MaterialTheme.typography.titleMedium)
-                            logs.take(5).forEach { log ->
-                                val c = when (log.level.uppercase()) {
-                                    "ERROR" -> Np.Danger
-                                    "WARNING", "WARN" -> Np.Warning
-                                    else -> Np.Success
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text("设备日志", style = MaterialTheme.typography.titleMedium)
+                                TextButton(onClick = { showLogs = !showLogs }) { Text(if (showLogs) "收起" else "展开") }
+                            }
+                            AnimatedVisibility(visible = showLogs) {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    logs.take(10).forEach { log ->
+                                        val c = when (log.level.uppercase()) {
+                                            "ERROR" -> Np.Danger
+                                            "WARNING", "WARN" -> Np.Warning
+                                            else -> Np.Success
+                                        }
+                                        Text("[${log.level}] ${log.message}", color = c, style = MaterialTheme.typography.bodySmall)
+                                    }
                                 }
-                                Text("[${log.level}] ${log.message}", color = c, style = MaterialTheme.typography.bodySmall)
                             }
                         }
                     }
@@ -443,6 +468,7 @@ fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
     val loading by vm.loading.collectAsStateWithLifecycle()
     var start by remember { mutableStateOf(OffsetDateTime.now().minusDays(1)) }
     var end by remember { mutableStateOf(OffsetDateTime.now()) }
+    var showCustomRange by remember { mutableStateOf(false) }
 
     LaunchedEffect(portId) { vm.loadPortTraffic(portId, start, end) }
 
@@ -454,9 +480,45 @@ fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
         )
     }) { p ->
         Column(Modifier.padding(p).fillMaxSize().padding(Np.screenPadding), verticalArrangement = Arrangement.spacedBy(Np.sectionGap)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { start = OffsetDateTime.now().minusDays(30) }) { Text("近30天") }
-                OutlinedButton(onClick = { start = OffsetDateTime.now().minusDays(365 * 3L) }) { Text("近3年") }
+            ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth().padding(Np.cardPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("时间范围", style = MaterialTheme.typography.titleMedium, color = Color.White)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                        OutlinedButton(onClick = {
+                            end = OffsetDateTime.now()
+                            start = end.minusDays(1)
+                            vm.loadPortTraffic(portId, start, end)
+                        }) { Text("当日") }
+                        OutlinedButton(onClick = {
+                            end = OffsetDateTime.now()
+                            start = end.minusDays(7)
+                            vm.loadPortTraffic(portId, start, end)
+                        }) { Text("近7天") }
+                        OutlinedButton(onClick = {
+                            end = OffsetDateTime.now()
+                            start = end.minusDays(30)
+                            vm.loadPortTraffic(portId, start, end)
+                        }) { Text("近30天") }
+                        OutlinedButton(onClick = {
+                            end = OffsetDateTime.now()
+                            start = end.minusDays(365 * 3L)
+                            vm.loadPortTraffic(portId, start, end)
+                        }) { Text("近3年") }
+                    }
+                    TextButton(onClick = { showCustomRange = !showCustomRange }) {
+                        Text(if (showCustomRange) "收起自定义时间" else "展开自定义时间")
+                    }
+                    AnimatedVisibility(visible = showCustomRange) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("开始: ${start}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                            Text("结束: ${end}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                            Text("提示: 当前版本请先用预设范围快速查询；自定义精确选择将在下轮补充日期时间选择器。", style = MaterialTheme.typography.bodySmall, color = Np.Warning)
+                            Button(onClick = { vm.loadPortTraffic(portId, start, end) }, modifier = Modifier.fillMaxWidth()) {
+                                Text("按当前范围查询")
+                            }
+                        }
+                    }
+                }
             }
             ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth().weight(1f)) {
                 if (loading) {

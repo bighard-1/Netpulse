@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS devices (
     id BIGSERIAL PRIMARY KEY,
     ip INET NOT NULL UNIQUE,
     name VARCHAR(128),
+    template_id BIGINT,
     brand VARCHAR(32) NOT NULL,
     community VARCHAR(128) NOT NULL,
     snmp_version VARCHAR(8) NOT NULL DEFAULT '2c',
@@ -38,6 +39,8 @@ CREATE TABLE IF NOT EXISTS devices (
     remark TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS template_id BIGINT;
 
 CREATE TABLE IF NOT EXISTS interfaces (
     id BIGSERIAL PRIMARY KEY,
@@ -55,9 +58,16 @@ CREATE TABLE IF NOT EXISTS metrics (
     interface_id BIGINT REFERENCES interfaces(id) ON DELETE CASCADE,
     cpu_usage NUMERIC(5,2),
     memory_usage NUMERIC(5,2),
+    storage_usage NUMERIC(5,2),
+    storage_total NUMERIC(20,2),
+    storage_free NUMERIC(20,2),
     traffic_in_bps BIGINT,
     traffic_out_bps BIGINT
 );
+
+ALTER TABLE metrics ADD COLUMN IF NOT EXISTS storage_usage NUMERIC(5,2);
+ALTER TABLE metrics ADD COLUMN IF NOT EXISTS storage_total NUMERIC(20,2);
+ALTER TABLE metrics ADD COLUMN IF NOT EXISTS storage_free NUMERIC(20,2);
 
 DO $$
 BEGIN
@@ -247,6 +257,7 @@ CREATE TABLE IF NOT EXISTS device_templates (
     id BIGSERIAL PRIMARY KEY,
     name VARCHAR(128) NOT NULL UNIQUE,
     brand VARCHAR(32) NOT NULL,
+    description TEXT,
     snmp_version VARCHAR(8) NOT NULL DEFAULT '2c',
     snmp_port INTEGER NOT NULL DEFAULT 161,
     community VARCHAR(128),
@@ -256,8 +267,36 @@ CREATE TABLE IF NOT EXISTS device_templates (
     v3_priv_protocol VARCHAR(16),
     v3_priv_password VARCHAR(256),
     v3_security_level VARCHAR(32),
+    cpu_oid TEXT,
+    mem_oid TEXT,
+    if_in_oid TEXT,
+    if_out_oid TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE device_templates ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE device_templates ADD COLUMN IF NOT EXISTS cpu_oid TEXT;
+ALTER TABLE device_templates ADD COLUMN IF NOT EXISTS mem_oid TEXT;
+ALTER TABLE device_templates ADD COLUMN IF NOT EXISTS if_in_oid TEXT;
+ALTER TABLE device_templates ADD COLUMN IF NOT EXISTS if_out_oid TEXT;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='devices' AND column_name='template_id'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname='devices_template_id_fkey'
+    ) THEN
+        BEGIN
+            ALTER TABLE devices
+                ADD CONSTRAINT devices_template_id_fkey
+                FOREIGN KEY (template_id) REFERENCES device_templates(id) ON DELETE SET NULL;
+        EXCEPTION
+            WHEN duplicate_object THEN NULL;
+        END;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS topology_links (
     id BIGSERIAL PRIMARY KEY,
@@ -292,8 +331,20 @@ CREATE TABLE IF NOT EXISTS alert_events (
     level VARCHAR(16) NOT NULL,
     code VARCHAR(64) NOT NULL,
     message TEXT NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'open',
+    assignee VARCHAR(64),
+    note TEXT,
+    silenced_until TIMESTAMPTZ,
+    acknowledged_at TIMESTAMPTZ,
+    resolved_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'open';
+ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS assignee VARCHAR(64);
+ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS note TEXT;
+ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS silenced_until TIMESTAMPTZ;
+ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ;
+ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS role_permissions (
     id BIGSERIAL PRIMARY KEY,
@@ -590,6 +641,7 @@ type Device struct {
 	ID              int64     `json:"id"`
 	IP              string    `json:"ip"`
 	Name            string    `json:"name"`
+	TemplateID      *int64    `json:"template_id,omitempty"`
 	Brand           string    `json:"brand"`
 	Community       string    `json:"-"`
 	SNMPVersion     string    `json:"snmp_version,omitempty"`
@@ -601,6 +653,9 @@ type Device struct {
 	V3PrivPass      string    `json:"-"`
 	V3SecLevel      string    `json:"v3_security_level,omitempty"`
 	MaintenanceMode bool      `json:"maintenance_mode"`
+	StorageUsage    float64   `json:"storage_usage,omitempty"`
+	StorageTotal    float64   `json:"storage_total,omitempty"`
+	StorageFree     float64   `json:"storage_free,omitempty"`
 	Remark          string    `json:"remark"`
 	CreatedAt       time.Time `json:"created_at"`
 }
@@ -618,6 +673,9 @@ type InterfaceMetric struct {
 	IfName        string
 	CPUUsage      float64
 	MemoryUsage   float64
+	StorageUsage  float64
+	StorageTotal  float64
+	StorageFree   float64
 	TrafficInBps  int64
 	TrafficOutBps int64
 }
@@ -634,6 +692,13 @@ type DeviceHistoryPoint struct {
 	Timestamp time.Time `json:"timestamp"`
 	CPUUsage  float64   `json:"cpu_usage"`
 	MemUsage  float64   `json:"mem_usage"`
+}
+
+type DeviceStorageHistoryPoint struct {
+	Timestamp    time.Time `json:"timestamp"`
+	StorageUsage float64   `json:"storage_usage"`
+	StorageTotal float64   `json:"storage_total"`
+	StorageFree  float64   `json:"storage_free"`
 }
 
 type InterfaceHistoryPoint struct {
@@ -691,6 +756,7 @@ type DeviceTemplate struct {
 	ID              int64     `json:"id"`
 	Name            string    `json:"name"`
 	Brand           string    `json:"brand"`
+	Description     string    `json:"description,omitempty"`
 	SNMPVersion     string    `json:"snmp_version"`
 	SNMPPort        int       `json:"snmp_port"`
 	Community       string    `json:"community,omitempty"`
@@ -700,6 +766,10 @@ type DeviceTemplate struct {
 	V3PrivProtocol  string    `json:"v3_priv_protocol,omitempty"`
 	V3PrivPassword  string    `json:"-"`
 	V3SecurityLevel string    `json:"v3_security_level,omitempty"`
+	CPUOID          string    `json:"cpu_oid,omitempty"`
+	MemOID          string    `json:"mem_oid,omitempty"`
+	IfInOID         string    `json:"if_in_oid,omitempty"`
+	IfOutOID        string    `json:"if_out_oid,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 }
 
@@ -769,6 +839,24 @@ type RecentEvent struct {
 	Level      string    `json:"level"`
 	Message    string    `json:"message"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+type AlertEvent struct {
+	ID             int64      `json:"id"`
+	RuleID         *int64     `json:"rule_id,omitempty"`
+	DeviceID       int64      `json:"device_id"`
+	DeviceIP       string     `json:"device_ip"`
+	DeviceName     string     `json:"device_name"`
+	Level          string     `json:"level"`
+	Code           string     `json:"code"`
+	Message        string     `json:"message"`
+	Status         string     `json:"status"`
+	Assignee       string     `json:"assignee,omitempty"`
+	Note           string     `json:"note,omitempty"`
+	SilencedUntil  *time.Time `json:"silenced_until,omitempty"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at,omitempty"`
+	ResolvedAt     *time.Time `json:"resolved_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
 }
 
 func NewRepository(db *sql.DB) *Repository {
@@ -1023,7 +1111,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 		onlineWindow = 5 * time.Minute
 	}
 	const q = `
-		SELECT d.id, host(d.ip), COALESCE(d.name, host(d.ip)), d.brand, d.community, d.snmp_version, d.snmp_port,
+		SELECT d.id, host(d.ip), COALESCE(d.name, host(d.ip)), d.template_id, d.brand, d.community, d.snmp_version, d.snmp_port,
 		       COALESCE(d.v3_username,''), COALESCE(d.v3_auth_protocol,''), COALESCE(d.v3_auth_password,''),
 		       COALESCE(d.v3_priv_protocol,''), COALESCE(d.v3_priv_password,''), COALESCE(d.v3_security_level,''),
 		       COALESCE(d.maintenance_mode, FALSE),
@@ -1045,7 +1133,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 	`
 	var ds DeviceStatus
 	if err := r.db.QueryRowContext(ctx, q, id).Scan(
-		&ds.ID, &ds.IP, &ds.Name, &ds.Brand, &ds.Community, &ds.SNMPVersion, &ds.SNMPPort,
+		&ds.ID, &ds.IP, &ds.Name, &ds.TemplateID, &ds.Brand, &ds.Community, &ds.SNMPVersion, &ds.SNMPPort,
 		&ds.V3Username, &ds.V3AuthProto, &ds.V3AuthPass, &ds.V3PrivProto, &ds.V3PrivPass, &ds.V3SecLevel,
 		&ds.MaintenanceMode,
 		&ds.Remark, &ds.CreatedAt, &ds.LastMetricAt, &ds.StatusReason,
@@ -1098,16 +1186,16 @@ func (r *Repository) AddDevice(ctx context.Context, d Device) (int64, error) {
 	d.V3PrivPass = r.encryptOpt(d.V3PrivPass)
 	const q = `
 		INSERT INTO devices (
-			ip, name, brand, community, snmp_version, snmp_port,
+			ip, name, template_id, brand, community, snmp_version, snmp_port,
 			v3_username, v3_auth_protocol, v3_auth_password, v3_priv_protocol, v3_priv_password, v3_security_level, maintenance_mode,
 			remark
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		RETURNING id;
 	`
 	var id int64
 	if err := r.db.QueryRowContext(
-		ctx, q, d.IP, d.Name, d.Brand, d.Community, d.SNMPVersion, d.SNMPPort, d.V3Username, d.V3AuthProto,
+		ctx, q, d.IP, d.Name, d.TemplateID, d.Brand, d.Community, d.SNMPVersion, d.SNMPPort, d.V3Username, d.V3AuthProto,
 		d.V3AuthPass, d.V3PrivProto, d.V3PrivPass, d.V3SecLevel, d.MaintenanceMode, d.Remark,
 	).Scan(&id); err != nil {
 		return 0, fmt.Errorf("add device: %w", err)
@@ -1125,7 +1213,7 @@ func (r *Repository) DeleteDevice(ctx context.Context, id int64) error {
 
 func (r *Repository) ListDevices(ctx context.Context) ([]Device, error) {
 	const q = `
-		SELECT id, host(ip), COALESCE(name, host(ip)), brand, community, snmp_version, snmp_port,
+		SELECT id, host(ip), COALESCE(name, host(ip)), template_id, brand, community, snmp_version, snmp_port,
 		       COALESCE(v3_username,''), COALESCE(v3_auth_protocol,''), COALESCE(v3_auth_password,''),
 		       COALESCE(v3_priv_protocol,''), COALESCE(v3_priv_password,''), COALESCE(v3_security_level,''),
 		       COALESCE(maintenance_mode,FALSE),
@@ -1142,7 +1230,7 @@ func (r *Repository) ListDevices(ctx context.Context) ([]Device, error) {
 	out := make([]Device, 0)
 	for rows.Next() {
 		var d Device
-		if err := rows.Scan(&d.ID, &d.IP, &d.Name, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.MaintenanceMode, &d.Remark, &d.CreatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.IP, &d.Name, &d.TemplateID, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.MaintenanceMode, &d.Remark, &d.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan device: %w", err)
 		}
 		d.Community = r.decryptOpt(d.Community)
@@ -1277,16 +1365,16 @@ func (r *Repository) CreateTemplate(ctx context.Context, t DeviceTemplate) (int6
 	t.Community = r.encryptOpt(t.Community)
 	t.V3AuthPassword = r.encryptOpt(t.V3AuthPassword)
 	t.V3PrivPassword = r.encryptOpt(t.V3PrivPassword)
-	const q = `INSERT INTO device_templates(name,brand,snmp_version,snmp_port,community,v3_username,v3_auth_protocol,v3_auth_password,v3_priv_protocol,v3_priv_password,v3_security_level) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id;`
+	const q = `INSERT INTO device_templates(name,brand,description,snmp_version,snmp_port,community,v3_username,v3_auth_protocol,v3_auth_password,v3_priv_protocol,v3_priv_password,v3_security_level,cpu_oid,mem_oid,if_in_oid,if_out_oid) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id;`
 	var id int64
-	if err := r.db.QueryRowContext(ctx, q, t.Name, t.Brand, t.SNMPVersion, t.SNMPPort, t.Community, t.V3Username, t.V3AuthProtocol, t.V3AuthPassword, t.V3PrivProtocol, t.V3PrivPassword, t.V3SecurityLevel).Scan(&id); err != nil {
+	if err := r.db.QueryRowContext(ctx, q, t.Name, t.Brand, t.Description, t.SNMPVersion, t.SNMPPort, t.Community, t.V3Username, t.V3AuthProtocol, t.V3AuthPassword, t.V3PrivProtocol, t.V3PrivPassword, t.V3SecurityLevel, t.CPUOID, t.MemOID, t.IfInOID, t.IfOutOID).Scan(&id); err != nil {
 		return 0, err
 	}
 	return id, nil
 }
 
 func (r *Repository) ListTemplates(ctx context.Context) ([]DeviceTemplate, error) {
-	const q = `SELECT id,name,brand,snmp_version,snmp_port,COALESCE(community,''),COALESCE(v3_username,''),COALESCE(v3_auth_protocol,''),COALESCE(v3_auth_password,''),COALESCE(v3_priv_protocol,''),COALESCE(v3_priv_password,''),COALESCE(v3_security_level,''),created_at FROM device_templates ORDER BY id DESC;`
+	const q = `SELECT id,name,brand,COALESCE(description,''),snmp_version,snmp_port,COALESCE(community,''),COALESCE(v3_username,''),COALESCE(v3_auth_protocol,''),COALESCE(v3_auth_password,''),COALESCE(v3_priv_protocol,''),COALESCE(v3_priv_password,''),COALESCE(v3_security_level,''),COALESCE(cpu_oid,''),COALESCE(mem_oid,''),COALESCE(if_in_oid,''),COALESCE(if_out_oid,''),created_at FROM device_templates ORDER BY id DESC;`
 	rows, err := r.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, err
@@ -1295,7 +1383,7 @@ func (r *Repository) ListTemplates(ctx context.Context) ([]DeviceTemplate, error
 	out := []DeviceTemplate{}
 	for rows.Next() {
 		var t DeviceTemplate
-		if err := rows.Scan(&t.ID, &t.Name, &t.Brand, &t.SNMPVersion, &t.SNMPPort, &t.Community, &t.V3Username, &t.V3AuthProtocol, &t.V3AuthPassword, &t.V3PrivProtocol, &t.V3PrivPassword, &t.V3SecurityLevel, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Brand, &t.Description, &t.SNMPVersion, &t.SNMPPort, &t.Community, &t.V3Username, &t.V3AuthProtocol, &t.V3AuthPassword, &t.V3PrivProtocol, &t.V3PrivPassword, &t.V3SecurityLevel, &t.CPUOID, &t.MemOID, &t.IfInOID, &t.IfOutOID, &t.CreatedAt); err != nil {
 			return nil, err
 		}
 		t.Community = r.decryptOpt(t.Community)
@@ -1307,9 +1395,65 @@ func (r *Repository) ListTemplates(ctx context.Context) ([]DeviceTemplate, error
 }
 
 func (r *Repository) SaveAlertEvent(ctx context.Context, ruleID *int64, deviceID int64, level, code, message string) error {
-	const q = `INSERT INTO alert_events(rule_id,device_id,level,code,message) VALUES($1,$2,$3,$4,$5);`
+	const q = `INSERT INTO alert_events(rule_id,device_id,level,code,message,status) VALUES($1,$2,$3,$4,$5,'open');`
 	_, err := r.db.ExecContext(ctx, q, ruleID, deviceID, level, code, message)
 	return err
+}
+
+func (r *Repository) ListAlertEvents(ctx context.Context, limit int, status string) ([]AlertEvent, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	const q = `
+		SELECT ae.id, ae.rule_id, ae.device_id, host(d.ip), COALESCE(d.name,host(d.ip)),
+		       ae.level, ae.code, ae.message, ae.status, COALESCE(ae.assignee,''), COALESCE(ae.note,''),
+		       ae.silenced_until, ae.acknowledged_at, ae.resolved_at, ae.created_at
+		FROM alert_events ae
+		JOIN devices d ON d.id = ae.device_id
+		WHERE ($2='' OR ae.status=$2)
+		ORDER BY ae.created_at DESC
+		LIMIT $1;
+	`
+	rows, err := r.db.QueryContext(ctx, q, limit, strings.TrimSpace(status))
+	if err != nil {
+		return nil, fmt.Errorf("list alert events: %w", err)
+	}
+	defer rows.Close()
+	out := make([]AlertEvent, 0, limit)
+	for rows.Next() {
+		var a AlertEvent
+		if err := rows.Scan(&a.ID, &a.RuleID, &a.DeviceID, &a.DeviceIP, &a.DeviceName, &a.Level, &a.Code, &a.Message, &a.Status, &a.Assignee, &a.Note, &a.SilencedUntil, &a.AcknowledgedAt, &a.ResolvedAt, &a.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan alert event: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (r *Repository) UpdateAlertEventWorkflow(ctx context.Context, id int64, action, assignee, note string, silenceMinutes int) error {
+	action = strings.TrimSpace(strings.ToLower(action))
+	if id <= 0 || action == "" {
+		return fmt.Errorf("invalid alert workflow update")
+	}
+	switch action {
+	case "ack":
+		_, err := r.db.ExecContext(ctx, `UPDATE alert_events SET status='ack', assignee=$2, note=$3, acknowledged_at=NOW() WHERE id=$1;`, id, strings.TrimSpace(assignee), strings.TrimSpace(note))
+		return err
+	case "resolve":
+		_, err := r.db.ExecContext(ctx, `UPDATE alert_events SET status='resolved', assignee=$2, note=$3, resolved_at=NOW() WHERE id=$1;`, id, strings.TrimSpace(assignee), strings.TrimSpace(note))
+		return err
+	case "reopen":
+		_, err := r.db.ExecContext(ctx, `UPDATE alert_events SET status='open', note=$2 WHERE id=$1;`, id, strings.TrimSpace(note))
+		return err
+	case "silence":
+		if silenceMinutes <= 0 {
+			silenceMinutes = 30
+		}
+		_, err := r.db.ExecContext(ctx, `UPDATE alert_events SET status='silenced', assignee=$2, note=$3, silenced_until=NOW() + ($4 || ' minutes')::interval WHERE id=$1;`, id, strings.TrimSpace(assignee), strings.TrimSpace(note), silenceMinutes)
+		return err
+	default:
+		return fmt.Errorf("unsupported alert action")
+	}
 }
 
 func (r *Repository) UpsertAlertRule(ctx context.Context, ar AlertRule) (int64, error) {
@@ -1342,6 +1486,17 @@ func (r *Repository) ListAlertRules(ctx context.Context) ([]AlertRule, error) {
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+func (r *Repository) DeleteAlertRule(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("invalid alert rule id")
+	}
+	_, err := r.db.ExecContext(ctx, `DELETE FROM alert_rules WHERE id=$1;`, id)
+	if err != nil {
+		return fmt.Errorf("delete alert rule: %w", err)
+	}
+	return nil
 }
 
 func (r *Repository) UpsertTopologyLink(ctx context.Context, l TopologyLink) (int64, error) {
@@ -1382,9 +1537,9 @@ func (r *Repository) DeleteTopologyLink(ctx context.Context, id int64) error {
 }
 
 func (r *Repository) FindDeviceByIP(ctx context.Context, ip string) (*Device, error) {
-	const q = `SELECT id, host(ip), COALESCE(name, host(ip)), brand, community, snmp_version, snmp_port, COALESCE(v3_username,''), COALESCE(v3_auth_protocol,''), COALESCE(v3_auth_password,''), COALESCE(v3_priv_protocol,''), COALESCE(v3_priv_password,''), COALESCE(v3_security_level,''), COALESCE(remark,''), created_at FROM devices WHERE ip = $1::inet LIMIT 1;`
+	const q = `SELECT id, host(ip), COALESCE(name, host(ip)), template_id, brand, community, snmp_version, snmp_port, COALESCE(v3_username,''), COALESCE(v3_auth_protocol,''), COALESCE(v3_auth_password,''), COALESCE(v3_priv_protocol,''), COALESCE(v3_priv_password,''), COALESCE(v3_security_level,''), COALESCE(remark,''), created_at FROM devices WHERE ip = $1::inet LIMIT 1;`
 	var d Device
-	if err := r.db.QueryRowContext(ctx, q, ip).Scan(&d.ID, &d.IP, &d.Name, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.Remark, &d.CreatedAt); err != nil {
+	if err := r.db.QueryRowContext(ctx, q, ip).Scan(&d.ID, &d.IP, &d.Name, &d.TemplateID, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.Remark, &d.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -1459,14 +1614,6 @@ func (r *Repository) GlobalSearch(ctx context.Context, q string, limit int) ([]G
 			ORDER BY l.created_at DESC
 			LIMIT $2
 		),
-		topos AS (
-			SELECT 'topology' AS category, t.id,
-			       ('链路 '||t.src_device_id||':'||t.src_if_index||' -> '||t.dst_device_id||':'||t.dst_if_index) AS title,
-			       ('协议='||COALESCE(t.protocol,'')||' 备注='||COALESCE(t.remark,'')) AS sub
-			FROM topology_links t
-			WHERE COALESCE(t.protocol,'') ILIKE $1 OR COALESCE(t.remark,'') ILIKE $1
-			LIMIT $2
-		),
 		audits AS (
 			SELECT 'audit_log' AS category, a.id, LEFT(COALESCE(a.action,''), 64) AS title,
 			       (COALESCE(a.path,'')||' '||COALESCE(a.target,'')) AS sub
@@ -1480,8 +1627,6 @@ func (r *Repository) GlobalSearch(ctx context.Context, q string, limit int) ([]G
 		SELECT category, id, title, sub FROM ifs
 		UNION ALL
 		SELECT category, id, title, sub FROM logs
-		UNION ALL
-		SELECT category, id, title, sub FROM topos
 		UNION ALL
 		SELECT category, id, title, sub FROM audits
 		LIMIT $2;
@@ -1509,17 +1654,25 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		onlineWindow = 5 * time.Minute
 	}
 	const q = `
-		SELECT d.id, host(d.ip), COALESCE(d.name, host(d.ip)), d.brand, d.community, d.snmp_version, d.snmp_port,
+		SELECT d.id, host(d.ip), COALESCE(d.name, host(d.ip)), d.template_id, d.brand, d.community, d.snmp_version, d.snmp_port,
 		       COALESCE(d.v3_username,''), COALESCE(d.v3_auth_protocol,''), COALESCE(d.v3_auth_password,''),
 		       COALESCE(d.v3_priv_protocol,''), COALESCE(d.v3_priv_password,''), COALESCE(d.v3_security_level,''),
 		       COALESCE(d.maintenance_mode,FALSE),
-		       COALESCE(d.remark, ''), d.created_at, lm.last_ts, COALESCE(dl.message, '')
+		       COALESCE(d.remark, ''), d.created_at, lm.last_ts, COALESCE(dl.message, ''),
+		       COALESCE(lm2.storage_usage, 0), COALESCE(lm2.storage_total, 0), COALESCE(lm2.storage_free, 0)
 		FROM devices d
 		LEFT JOIN (
 			SELECT device_id, MAX(ts) AS last_ts
 			FROM metrics
 			GROUP BY device_id
 		) lm ON lm.device_id = d.id
+		LEFT JOIN LATERAL (
+			SELECT storage_usage, storage_total, storage_free
+			FROM metrics
+			WHERE device_id = d.id
+			ORDER BY ts DESC
+			LIMIT 1
+		) lm2 ON TRUE
 		LEFT JOIN LATERAL (
 			SELECT message
 			FROM device_logs
@@ -1540,10 +1693,11 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 	for rows.Next() {
 		var ds DeviceStatus
 		if err := rows.Scan(
-			&ds.ID, &ds.IP, &ds.Name, &ds.Brand, &ds.Community, &ds.SNMPVersion, &ds.SNMPPort,
+			&ds.ID, &ds.IP, &ds.Name, &ds.TemplateID, &ds.Brand, &ds.Community, &ds.SNMPVersion, &ds.SNMPPort,
 			&ds.V3Username, &ds.V3AuthProto, &ds.V3AuthPass, &ds.V3PrivProto, &ds.V3PrivPass, &ds.V3SecLevel,
 			&ds.MaintenanceMode,
 			&ds.Remark, &ds.CreatedAt, &ds.LastMetricAt, &ds.StatusReason,
+			&ds.StorageUsage, &ds.StorageTotal, &ds.StorageFree,
 		); err != nil {
 			return nil, fmt.Errorf("scan device status: %w", err)
 		}
@@ -1688,9 +1842,9 @@ func (r *Repository) SaveMetrics(
 			RETURNING id
 		)
 		INSERT INTO metrics (
-			ts, device_id, interface_id, cpu_usage, memory_usage, traffic_in_bps, traffic_out_bps
+			ts, device_id, interface_id, cpu_usage, memory_usage, storage_usage, storage_total, storage_free, traffic_in_bps, traffic_out_bps
 		)
-		VALUES ($1, $2, (SELECT id FROM upsert_if LIMIT 1), $4, $5, $6, $7);
+		VALUES ($1, $2, (SELECT id FROM upsert_if LIMIT 1), $4, $5, $6, $7, $8, $9, $10);
 	`
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1707,7 +1861,7 @@ func (r *Repository) SaveMetrics(
 		outBps := clampTrafficBps(m.TrafficOutBps)
 
 		if _, err := tx.ExecContext(
-			ctx, q, ts, deviceID, m.IfIndex, cpu, mem, inBps, outBps, m.IfName,
+			ctx, q, ts, deviceID, m.IfIndex, cpu, mem, clampPercent(m.StorageUsage), clampNonNegative(m.StorageTotal), clampNonNegative(m.StorageFree), inBps, outBps, m.IfName,
 		); err != nil {
 			return fmt.Errorf("insert metric ifIndex=%d: %w", m.IfIndex, err)
 		}
@@ -1738,6 +1892,16 @@ func clampTrafficBps(v int64) int64 {
 	}
 	const maxReasonableBps int64 = 9_000_000_000_000_000
 	if v > maxReasonableBps {
+		return 0
+	}
+	return v
+}
+
+func clampNonNegative(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	if v < 0 {
 		return 0
 	}
 	return v
@@ -1867,16 +2031,34 @@ func (r *Repository) GetRecentEvents(ctx context.Context, limit int) ([]RecentEv
 		limit = 30
 	}
 	const q = `
-		SELECT l.id, l.device_id, host(d.ip), COALESCE(d.name, host(d.ip)),
-		       l.level, l.message, l.created_at
-		FROM device_logs l
-		JOIN devices d ON d.id = l.device_id
-		WHERE l.message ILIKE '%DEVICE_UP%'
-		   OR l.message ILIKE '%DEVICE_DOWN%'
-		   OR l.message ILIKE '%PORT_UP%'
-		   OR l.message ILIKE '%PORT_DOWN%'
-		   OR l.level IN ('ERROR','WARNING')
-		ORDER BY l.created_at DESC
+		SELECT id, device_id, device_ip, device_name, level, message, created_at
+		FROM (
+			SELECT l.id AS id,
+			       l.device_id AS device_id,
+			       host(d.ip) AS device_ip,
+			       COALESCE(d.name, host(d.ip)) AS device_name,
+			       l.level AS level,
+			       l.message AS message,
+			       l.created_at AS created_at
+			FROM device_logs l
+			JOIN devices d ON d.id = l.device_id
+			WHERE l.message ILIKE '%DEVICE_UP%'
+			   OR l.message ILIKE '%DEVICE_DOWN%'
+			   OR l.message ILIKE '%PORT_UP%'
+			   OR l.message ILIKE '%PORT_DOWN%'
+			   OR l.level IN ('ERROR','WARNING')
+			UNION ALL
+			SELECT (ae.id + 1000000000) AS id,
+			       ae.device_id AS device_id,
+			       host(d.ip) AS device_ip,
+			       COALESCE(d.name, host(d.ip)) AS device_name,
+			       UPPER(ae.level) AS level,
+			       ('[' || COALESCE(ae.code, 'ALERT') || '] ' || ae.message) AS message,
+			       ae.created_at AS created_at
+			FROM alert_events ae
+			JOIN devices d ON d.id = ae.device_id
+		) e
+		ORDER BY created_at DESC
 		LIMIT $1;
 	`
 	rows, err := r.db.QueryContext(ctx, q, limit)
@@ -2013,6 +2195,68 @@ func (r *Repository) GetInterfaceHistory(
 		return nil, fmt.Errorf("iterate interface history: %w", err)
 	}
 	return decimateInterfaceHistory(out, end.Sub(start)), nil
+}
+
+func (r *Repository) GetDeviceStorageHistory(
+	ctx context.Context, deviceID int64, start, end time.Time, interval string,
+) ([]DeviceStorageHistoryPoint, error) {
+	interval = strings.TrimSpace(strings.ToLower(interval))
+	q := `
+		SELECT ts,
+		       COALESCE(storage_usage, 0) AS storage_usage,
+		       COALESCE(storage_total, 0) AS storage_total,
+		       COALESCE(storage_free, 0) AS storage_free
+		FROM metrics
+		WHERE device_id = $1 AND ts >= $2 AND ts <= $3
+		ORDER BY ts;
+	`
+	if interval == "5m" || interval == "1h" {
+		b := "5 minutes"
+		if interval == "1h" {
+			b = "1 hour"
+		}
+		q = fmt.Sprintf(`
+			SELECT time_bucket('%s', ts) AS ts,
+			       AVG(COALESCE(storage_usage, 0)) AS storage_usage,
+			       AVG(COALESCE(storage_total, 0)) AS storage_total,
+			       AVG(COALESCE(storage_free, 0)) AS storage_free
+			FROM metrics
+			WHERE device_id = $1 AND ts >= $2 AND ts <= $3
+			GROUP BY 1
+			ORDER BY 1;
+		`, b)
+	}
+	rows, err := r.db.QueryContext(ctx, q, deviceID, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("get device storage history: %w", err)
+	}
+	defer rows.Close()
+	out := make([]DeviceStorageHistoryPoint, 0)
+	for rows.Next() {
+		var p DeviceStorageHistoryPoint
+		if err := rows.Scan(&p.Timestamp, &p.StorageUsage, &p.StorageTotal, &p.StorageFree); err != nil {
+			return nil, fmt.Errorf("scan device storage history: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate device storage history: %w", err)
+	}
+	if len(out) <= 4000 {
+		return out, nil
+	}
+	step := int(math.Ceil(float64(len(out)) / 2500))
+	if step < 1 {
+		step = 1
+	}
+	cut := make([]DeviceStorageHistoryPoint, 0, 2500)
+	for i := 0; i < len(out); i += step {
+		cut = append(cut, out[i])
+	}
+	if cut[len(cut)-1].Timestamp != out[len(out)-1].Timestamp {
+		cut = append(cut, out[len(out)-1])
+	}
+	return cut, nil
 }
 
 func decimateDeviceHistory(in []DeviceHistoryPoint, span time.Duration) []DeviceHistoryPoint {

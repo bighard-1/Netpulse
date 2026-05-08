@@ -1,6 +1,8 @@
 <script setup>
 import { zhCN } from "../../i18n/zhCN";
 
+const emit = defineEmits(["open-event"]);
+
 defineProps({
   loading: { type: Boolean, default: false },
   alerts: { type: Array, default: () => [] },
@@ -14,7 +16,13 @@ defineProps({
     <el-skeleton :loading="loading" animated :rows="10">
       <template #default>
         <div class="space-y-2 np-live-feed">
-          <div v-for="a in alerts" :key="a.id" class="log-item rounded-lg p-2 np-live-item" :class="{ 'log-error': a.severity === 'critical', 'log-warning': a.severity === 'warning' }">
+          <div
+            v-for="a in alerts"
+            :key="a.id"
+            class="log-item rounded-lg p-2 np-live-item np-live-item-clickable"
+            :class="{ 'log-error': a.severity === 'critical', 'log-warning': a.severity === 'warning' }"
+            @click="emit('open-event', a)"
+          >
             <div class="flex items-center justify-between gap-2">
               <el-tag size="small" :type="severityTag(a.severity)">{{ a.severity === "critical" ? "严重" : (a.severity === "warning" ? "警告" : "正常") }}</el-tag>
               <div class="text-xs text-slate-500">{{ a.timestamp || a.created_at || '-' }}</div>
@@ -36,9 +44,14 @@ defineProps({
 .np-live-item {
   animation: npFeedIn 280ms ease-out;
 }
+.np-live-item-clickable {
+  cursor: pointer;
+}
+.np-live-item-clickable:hover {
+  transform: translateY(-1px);
+}
 @keyframes npFeedIn {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
 </style>
-

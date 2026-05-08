@@ -8,6 +8,20 @@ function severityOf(item) {
   return "info";
 }
 
+function parseInterfaceId(message) {
+  const text = String(message || "");
+  const patterns = [
+    /interface[_\s-]*id[:=\s]+(\d+)/i,
+    /port[_\s-]*id[:=\s]+(\d+)/i,
+    /ifindex[:=\s]+(\d+)/i
+  ];
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (m && m[1]) return Number(m[1]);
+  }
+  return null;
+}
+
 export const useOpsStore = defineStore("ops", {
   state: () => ({
     realtimeAlerts: [],
@@ -25,7 +39,9 @@ export const useOpsStore = defineStore("ops", {
         const rows = src.slice(0, limit).map((x) => ({
           ...x,
           severity: severityOf(x),
-          timestamp: x.created_at || x.timestamp || ""
+          timestamp: x.created_at || x.timestamp || "",
+          interface_id: x.interface_id || x.port_id || parseInterfaceId(x.message),
+          level: x.level || x.severity || ""
         }));
         // Basic alert-state machine: dedupe repeated same event within short window.
         const seen = new Map();

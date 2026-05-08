@@ -48,6 +48,14 @@ type Worker struct {
 	lastHealthSnapshot time.Time
 }
 
+type alertPolicy struct {
+	cpuThreshold     float64
+	memThreshold     float64
+	trafficThreshold int64
+	muted            bool
+	webhook          string
+}
+
 func NewWorker(repo *db.Repository, collector *Collector, interval time.Duration) *Worker {
 	p := runtime.NumCPU()
 	if p < 2 {
@@ -200,10 +208,11 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 			reason = "设备网络不可达，请检查路由/VLAN/网关配置"
 		}
 		w.addDeviceEvent(ctx, d.ID, "ERROR", fmt.Sprintf("[%s] %s", code, reason), 2*time.Minute)
-		w.emitAlert(ctx, "error", d, code, reason)
+		w.emitAlert(ctx, "error", d, code, reason, "")
 		return
 	}
 	w.trackDeviceState(ctx, d, true)
+	policy := w.resolveAlertPolicy(ctx, d)
 	factor := w.calibrationFactor(d)
 	result.CPUUsage = calibratePercentForDevice(d, result.CPUUsage, factor)
 	result.MemoryUsage = calibratePercentForDevice(d, result.MemoryUsage, factor)
@@ -230,6 +239,9 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 			IfName:        itf.IfName,
 			CPUUsage:      result.CPUUsage,
 			MemoryUsage:   result.MemoryUsage,
+			StorageUsage:  result.StorageUsage,
+			StorageTotal:  result.StorageTotal,
+			StorageFree:   result.StorageFree,
 			TrafficInBps:  inBps,
 			TrafficOutBps: outBps,
 		})
@@ -249,11 +261,35 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 		InterfaceCount:    len(result.Interfaces),
 	})
 	w.addDeviceEvent(ctx, d.ID, "INFO", "[OK] 设备轮询成功", 5*time.Minute)
-	if result.CPUUsage >= w.cpuThreshold {
-		w.emitAlert(ctx, "warning", d, "CPU_HIGH", fmt.Sprintf("CPU利用率 %.2f%% 超过阈值 %.2f%%", result.CPUUsage, w.cpuThreshold))
+	if policy.muted {
+		w.addDeviceEvent(ctx, d.ID, "INFO", "[ALERT_MUTED] 当前处于告警静默窗口", 10*time.Minute)
+		return
 	}
-	if result.MemoryUsage >= w.memThreshold {
-		w.emitAlert(ctx, "warning", d, "MEM_HIGH", fmt.Sprintf("内存利用率 %.2f%% 超过阈值 %.2f%%", result.MemoryUsage, w.memThreshold))
+	cpuTh := policy.cpuThreshold
+	if cpuTh <= 0 {
+		cpuTh = w.cpuThreshold
+	}
+	memTh := policy.memThreshold
+	if memTh <= 0 {
+		memTh = w.memThreshold
+	}
+	if result.CPUUsage >= cpuTh {
+		w.emitAlert(ctx, "warning", d, "CPU_HIGH", fmt.Sprintf("CPU利用率 %.2f%% 超过阈值 %.2f%%", result.CPUUsage, cpuTh), policy.webhook)
+	}
+	if result.MemoryUsage >= memTh {
+		w.emitAlert(ctx, "warning", d, "MEM_HIGH", fmt.Sprintf("内存利用率 %.2f%% 超过阈值 %.2f%%", result.MemoryUsage, memTh), policy.webhook)
+	}
+	if policy.trafficThreshold > 0 {
+		var peak int64
+		for _, m := range mList {
+			v := m.TrafficInBps + m.TrafficOutBps
+			if v > peak {
+				peak = v
+			}
+		}
+		if peak >= policy.trafficThreshold {
+			w.emitAlert(ctx, "warning", d, "TRAFFIC_HIGH", fmt.Sprintf("端口峰值流量 %d bps 超过阈值 %d bps", peak, policy.trafficThreshold), policy.webhook)
+		}
 	}
 }
 
@@ -413,16 +449,18 @@ func tcpProbe(ip string, port int, timeout time.Duration) bool {
 	return true
 }
 
-func (w *Worker) emitAlert(ctx context.Context, level string, d db.Device, code, msg string) {
+func (w *Worker) emitAlert(ctx context.Context, level string, d db.Device, code, msg, webhookOverride string) {
 	if w.alertMgr == nil {
 		return
 	}
 	devState := w.snapshotDeviceStates()
 	suppressed, related := w.alertMgr.ShouldSuppress(d, devState)
+	_ = w.repo.SaveAlertEvent(ctx, nil, d.ID, level, code, msg)
 	if suppressed {
 		_ = w.repo.AddDeviceLog(ctx, d.ID, "INFO", fmt.Sprintf("[ALERT_SUPPRESSED] %s (%s)", msg, related))
+		_ = w.repo.SaveAlertEvent(ctx, nil, d.ID, "info", "ALERT_SUPPRESSED", fmt.Sprintf("%s (%s)", msg, related))
 	}
-	w.alertMgr.Notify(Alert{
+	w.alertMgr.NotifyWithWebhook(webhookOverride, Alert{
 		Level:      level,
 		Code:       code,
 		DeviceID:   d.ID,
@@ -434,6 +472,77 @@ func (w *Worker) emitAlert(ctx context.Context, level string, d db.Device, code,
 		RelatedTo:  related,
 		TS:         time.Now(),
 	})
+}
+
+func (w *Worker) resolveAlertPolicy(ctx context.Context, d db.Device) alertPolicy {
+	out := alertPolicy{
+		cpuThreshold: w.cpuThreshold,
+		memThreshold: w.memThreshold,
+	}
+	rules, err := w.repo.ListAlertRules(ctx)
+	if err != nil || len(rules) == 0 {
+		return out
+	}
+	for _, r := range rules {
+		if !r.Enabled {
+			continue
+		}
+		if !(r.Scope == "global" || (r.DeviceID != nil && *r.DeviceID == d.ID)) {
+			continue
+		}
+		if inMuteWindow(r.MuteStart, r.MuteEnd, time.Now()) {
+			out.muted = true
+		}
+		if r.CPUThreshold != nil && *r.CPUThreshold > 0 {
+			out.cpuThreshold = *r.CPUThreshold
+		}
+		if r.MemThreshold != nil && *r.MemThreshold > 0 {
+			out.memThreshold = *r.MemThreshold
+		}
+		if r.TrafficThreshold != nil && *r.TrafficThreshold > 0 {
+			out.trafficThreshold = *r.TrafficThreshold
+		}
+		if strings.TrimSpace(r.NotifyWebhook) != "" {
+			out.webhook = strings.TrimSpace(r.NotifyWebhook)
+		}
+	}
+	if out.webhook == "" {
+		out.webhook = w.alertWebhook
+	}
+	return out
+}
+
+func inMuteWindow(start, end string, now time.Time) bool {
+	start = strings.TrimSpace(start)
+	end = strings.TrimSpace(end)
+	if start == "" || end == "" {
+		return false
+	}
+	parse := func(v string) (int, bool) {
+		parts := strings.Split(v, ":")
+		if len(parts) != 2 {
+			return 0, false
+		}
+		h, err1 := strconv.Atoi(parts[0])
+		m, err2 := strconv.Atoi(parts[1])
+		if err1 != nil || err2 != nil || h < 0 || h > 23 || m < 0 || m > 59 {
+			return 0, false
+		}
+		return h*60 + m, true
+	}
+	s, ok1 := parse(start)
+	e, ok2 := parse(end)
+	if !ok1 || !ok2 {
+		return false
+	}
+	n := now.Hour()*60 + now.Minute()
+	if s == e {
+		return true
+	}
+	if s < e {
+		return n >= s && n < e
+	}
+	return n >= s || n < e
 }
 
 func (w *Worker) snapshotDeviceStates() map[int64]bool {

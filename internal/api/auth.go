@@ -161,7 +161,8 @@ func (h *Handler) authMiddleware(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "invalid token user")
 			return
 		}
-		u := AuthUser{ID: dbUser.ID, Username: claims.Username, Role: claims.Role, Client: claims.Client}
+		// Always trust current DB role so role changes take effect immediately.
+		u := AuthUser{ID: dbUser.ID, Username: claims.Username, Role: dbUser.Role, Client: claims.Client}
 		ctx := context.WithValue(r.Context(), userCtxKey, u)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

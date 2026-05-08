@@ -1,13 +1,14 @@
 <script setup>
 import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
-import { ElMessage } from "element-plus";
-import { api, getApiError } from "../services/api";
+import { api } from "../services/api";
 import { formatBps } from "../utils/format";
 import { zhCN } from "../i18n/zhCN";
+import { useFeedback } from "../composables/useFeedback";
 
 const props = defineProps({ id: { type: [String, Number], required: true } });
 const route = useRoute();
+const fb = useFeedback();
 
 const loading = ref(false);
 const customRange = ref([]);
@@ -21,6 +22,14 @@ const portEdit = ref({ name: route.query.portName || "", remark: route.query.por
 const savingPort = ref(false);
 const terminalType = ref("ssh");
 const customChartAnchorRef = ref(null);
+const trafficThresholdBps = ref(0);
+const chartCardActive = ref("today");
+const lastSeriesCache = ref({
+  today: [],
+  d7: [],
+  d30: [],
+  custom: []
+});
 let charts = { today: null, d7: null, d30: null, custom: null };
 
 function startOfDay(d = new Date()) {
@@ -114,6 +123,10 @@ function baseOption(title, unitInfo) {
       }
     },
     legend: { top: 8, right: 10, data: ["入方向", "出方向"] },
+    dataZoom: [
+      { type: "inside", throttle: 60, zoomOnMouseWheel: true, moveOnMouseMove: true },
+      { type: "slider", height: 18, bottom: 0 }
+    ],
     xAxis: {
       type: "time",
       axisLabel: { hideOverlap: true, rotate: 45 }
@@ -131,7 +144,13 @@ function baseOption(title, unitInfo) {
         smooth: true,
         sampling: "average",
         progressive: 5000,
-        data: []
+        data: [],
+        markLine: trafficThresholdBps.value > 0 ? {
+          symbol: "none",
+          label: { show: true, formatter: `阈值 ${formatBps(trafficThresholdBps.value)}` },
+          lineStyle: { color: "#ef4444", type: "dashed" },
+          data: [{ yAxis: trafficThresholdBps.value }]
+        } : undefined
       },
       {
         name: "出方向",
@@ -140,7 +159,13 @@ function baseOption(title, unitInfo) {
         smooth: true,
         sampling: "average",
         progressive: 5000,
-        data: []
+        data: [],
+        markLine: trafficThresholdBps.value > 0 ? {
+          symbol: "none",
+          label: { show: false },
+          lineStyle: { color: "#ef4444", type: "dashed" },
+          data: [{ yAxis: trafficThresholdBps.value }]
+        } : undefined
       }
     ]
   };
@@ -158,6 +183,16 @@ function toSeriesData(data) {
   return { inbound, outbound };
 }
 
+function decimatePoints(points, maxPoints = 2200) {
+  const arr = points || [];
+  if (arr.length <= maxPoints) return arr;
+  const step = Math.ceil(arr.length / maxPoints);
+  const out = [];
+  for (let i = 0; i < arr.length; i += step) out.push(arr[i]);
+  if (arr.length > 0 && out[out.length - 1] !== arr[arr.length - 1]) out.push(arr[arr.length - 1]);
+  return out;
+}
+
 async function fetchRange(start, end) {
   const spanMs = end.getTime() - start.getTime();
   const interval = spanMs > 180 * 24 * 3600 * 1000 ? "1h" : (spanMs > 30 * 24 * 3600 * 1000 ? "5m" : "1m");
@@ -168,12 +203,20 @@ async function fetchRange(start, end) {
 function applyChart(chart, title, data) {
   if (!chart) return;
   const { inbound, outbound } = toSeriesData(data);
-  const hasData = inbound.length > 0 || outbound.length > 0;
-  const maxVal = Math.max(1, ...inbound.map((x) => x[1]), ...outbound.map((x) => x[1]));
+  const inView = decimatePoints(inbound);
+  const outView = decimatePoints(outbound);
+  const hasData = inView.length > 0 || outView.length > 0;
+  const maxVal = Math.max(1, ...inView.map((x) => x[1]), ...outView.map((x) => x[1]));
   const unitInfo = pickUnit(maxVal);
   const opt = baseOption(title, unitInfo);
-  opt.series[0].data = inbound;
-  opt.series[1].data = outbound;
+  opt.tooltip.confine = true;
+  opt.tooltip.transitionDuration = 0;
+  opt.series[0].large = true;
+  opt.series[1].large = true;
+  opt.series[0].largeThreshold = 2000;
+  opt.series[1].largeThreshold = 2000;
+  opt.series[0].data = inView;
+  opt.series[1].data = outView;
   if (!hasData) {
     opt.graphic = [{
       type: "text",
@@ -182,7 +225,32 @@ function applyChart(chart, title, data) {
       style: { text: "当前时间范围暂无流量数据", fill: "#94a3b8", fontSize: 14 }
     }];
   }
-  chart.setOption(opt, true);
+  chart.setOption(opt, { notMerge: true, lazyUpdate: true, silent: true });
+}
+
+function saveChartPNG(chartKey) {
+  const chart = charts[chartKey];
+  if (!chart) return;
+  const url = chart.getDataURL({ type: "png", pixelRatio: 2, backgroundColor: "#fff" });
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `netpulse_port_${chartKey}_${Date.now()}.png`;
+  a.click();
+}
+
+function exportChartCSV(chartKey, title) {
+  const src = lastSeriesCache.value[chartKey] || [];
+  if (!src.length) return fb.warn("当前图表无数据可导出");
+  const lines = ["timestamp,traffic_in_bps,traffic_out_bps"];
+  for (const p of src) {
+    lines.push(`${p.timestamp},${Number(p.traffic_in_bps || 0)},${Number(p.traffic_out_bps || 0)}`);
+  }
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `netpulse_${title}_${Date.now()}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 async function loadAllCharts() {
@@ -198,6 +266,9 @@ async function loadAllCharts() {
       fetchRange(d7Start, now),
       fetchRange(d30Start, now)
     ]);
+    lastSeriesCache.value.today = today;
+    lastSeriesCache.value.d7 = d7;
+    lastSeriesCache.value.d30 = d30;
 
     applyChart(charts.today, "当日流量", today);
     applyChart(charts.d7, "近7天流量", d7);
@@ -206,7 +277,7 @@ async function loadAllCharts() {
       await loadCustomChart();
     }
   } catch (err) {
-    ElMessage.error(getApiError(err, "加载端口流量失败"));
+    fb.apiError(err, "加载端口流量失败");
   } finally {
     loading.value = false;
   }
@@ -221,9 +292,10 @@ async function loadCustomChart() {
   loading.value = true;
   try {
     const data = await fetchRange(new Date(start), new Date(end));
+    lastSeriesCache.value.custom = data;
     applyChart(charts.custom, "自定义时间段流量", data);
   } catch (err) {
-    ElMessage.error(getApiError(err, "加载自定义时间段流量失败"));
+    fb.apiError(err, "加载自定义时间段流量失败");
   } finally {
     loading.value = false;
   }
@@ -231,7 +303,7 @@ async function loadCustomChart() {
 
 function confirmCustomRange() {
   if (!customRangeDraft.value || customRangeDraft.value.length !== 2) {
-    ElMessage.warning("请先选择开始与结束时间");
+    fb.warn("请先选择开始与结束时间");
     return;
   }
   customRange.value = [...customRangeDraft.value];
@@ -251,6 +323,18 @@ function resizeCharts() {
   charts.custom?.resize();
 }
 
+function applyThresholdToAllCharts() {
+  applyChart(charts.today, "当日流量", lastSeriesCache.value.today || []);
+  applyChart(charts.d7, "近7天流量", lastSeriesCache.value.d7 || []);
+  applyChart(charts.d30, "近30天流量", lastSeriesCache.value.d30 || []);
+  applyChart(charts.custom, "自定义时间段流量", lastSeriesCache.value.custom || []);
+}
+
+function switchChartCard(name) {
+  chartCardActive.value = name;
+  nextTick(() => resizeCharts());
+}
+
 function buildTerminalUrl() {
   const ip = String(route.query.deviceIp || "").trim();
   if (!ip) return "";
@@ -267,7 +351,7 @@ function buildTerminalUrl() {
 function openTerminal() {
   const url = buildTerminalUrl();
   if (!url) {
-    ElMessage.warning("缺少设备IP，无法打开终端");
+    fb.warn("缺少设备IP，无法打开终端");
     return;
   }
   window.open(url, "_blank", "noopener");
@@ -281,9 +365,9 @@ async function savePortProfile() {
       remark: portEdit.value.remark || ""
     });
     portMeta.value.name = portEdit.value.name || portMeta.value.name;
-    ElMessage.success("端口名称/备注已保存");
+    fb.success("端口名称/备注已保存");
   } catch (err) {
-    ElMessage.error(getApiError(err, "保存端口信息失败"));
+    fb.apiError(err, "保存端口信息失败");
   } finally {
     savingPort.value = false;
   }
@@ -291,13 +375,13 @@ async function savePortProfile() {
 
 async function copyTerminalTarget() {
   const ip = String(route.query.deviceIp || "").trim();
-  if (!ip) return ElMessage.warning("缺少设备IP");
+  if (!ip) return fb.warn("缺少设备IP");
   const cmd = `ssh ${ip}`;
   try {
     await navigator.clipboard.writeText(cmd);
-    ElMessage.success("已复制连接命令");
+    fb.success("已复制连接命令");
   } catch {
-    ElMessage.warning("复制失败，请手动复制");
+    fb.warn("复制失败，请手动复制");
   }
 }
 
@@ -335,46 +419,77 @@ onBeforeUnmount(() => {
     </el-breadcrumb>
 
     <el-card>
-      <div class="flex items-center justify-between gap-2">
-        <div>
-          <div class="text-xs text-slate-500">端口</div>
-          <div class="text-lg font-semibold">{{ portMeta.name }}</div>
+      <div class="grid grid-cols-1 gap-3 xl:grid-cols-[1.3fr,1fr]">
+        <div class="space-y-3">
+          <div>
+            <div class="text-xs text-slate-500">端口</div>
+            <div class="text-lg font-semibold">{{ portMeta.name }}</div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <el-input v-model="portEdit.name" placeholder="自定义端口名称" class="w-[200px]" />
+            <el-input v-model="portEdit.remark" placeholder="端口备注" class="w-[220px]" />
+            <el-button type="warning" plain @click="savePortProfile" :loading="savingPort">保存</el-button>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <el-input-number v-model="trafficThresholdBps" :min="0" :step="1000000" placeholder="告警阈值(bps)" />
+            <el-button @click="applyThresholdToAllCharts">应用阈值线</el-button>
+            <el-button @click="loadAllCharts" :loading="loading">{{ zhCN.portDetail.refresh }}</el-button>
+          </div>
         </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <el-input v-model="portEdit.name" placeholder="自定义端口名称" class="w-[200px]" />
-          <el-input v-model="portEdit.remark" placeholder="端口备注" class="w-[220px]" />
-          <el-button type="warning" plain @click="savePortProfile" :loading="savingPort">保存名称/备注</el-button>
-          <el-date-picker
-            v-model="customRangeDraft"
-            type="datetimerange"
-            unlink-panels
-            range-separator="至"
-            start-placeholder="开始时间"
-            end-placeholder="结束时间"
-            :shortcuts="pickerShortcuts"
-          />
-          <el-button type="primary" @click="confirmCustomRange" :loading="loading">确定</el-button>
-          <el-button @click="cancelCustomRange">取消</el-button>
-          <el-button @click="loadAllCharts" :loading="loading">{{ zhCN.portDetail.refresh }}</el-button>
+        <div class="space-y-3">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-xs text-slate-500">终端跳转模板</span>
+            <el-select v-model="terminalType" class="w-[180px]">
+              <el-option label="系统默认 SSH" value="ssh" />
+              <el-option label="Termius" value="termius" />
+              <el-option label="SecureCRT" value="securecrt" />
+              <el-option label="自定义模板" value="custom" />
+            </el-select>
+            <el-button type="primary" @click="openTerminal">连接设备终端</el-button>
+            <el-button @click="copyTerminalTarget">复制 SSH</el-button>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <el-date-picker
+              v-model="customRangeDraft"
+              type="datetimerange"
+              unlink-panels
+              range-separator="至"
+              start-placeholder="开始时间"
+              end-placeholder="结束时间"
+              :shortcuts="pickerShortcuts"
+            />
+            <el-button type="primary" @click="confirmCustomRange" :loading="loading">查询自定义区间</el-button>
+            <el-button @click="cancelCustomRange">取消</el-button>
+          </div>
         </div>
-      </div>
-      <div class="mt-3 flex flex-wrap items-center gap-2">
-        <span class="text-xs text-slate-500">终端跳转模板</span>
-        <el-select v-model="terminalType" class="w-[180px]">
-          <el-option label="系统默认 SSH" value="ssh" />
-          <el-option label="Termius" value="termius" />
-          <el-option label="SecureCRT" value="securecrt" />
-          <el-option label="自定义模板" value="custom" />
-        </el-select>
-        <el-button type="primary" @click="openTerminal">快速进入设备终端</el-button>
-        <el-button @click="copyTerminalTarget">复制 SSH 命令</el-button>
       </div>
     </el-card>
 
-    <el-card><div ref="chartTodayRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
-    <el-card><div ref="chart7dRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
-    <el-card><div ref="chart30dRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
-    <div ref="customChartAnchorRef"></div>
-    <el-card><div ref="chartCustomRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
+    <el-card>
+      <template #header>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <el-segmented
+            :model-value="chartCardActive"
+            :options="[
+              { label: '当日流量', value: 'today' },
+              { label: '近7天', value: 'd7' },
+              { label: '近30天', value: 'd30' },
+              { label: '自定义', value: 'custom' }
+            ]"
+            @change="switchChartCard"
+          />
+          <div class="flex items-center gap-2">
+            <el-button size="small" @click="saveChartPNG(chartCardActive)">导出PNG</el-button>
+            <el-button size="small" @click="exportChartCSV(chartCardActive, chartCardActive)">导出CSV</el-button>
+          </div>
+        </div>
+      </template>
+
+      <div v-show="chartCardActive === 'today'" ref="chartTodayRef" class="h-[360px] w-full" v-loading="loading"></div>
+      <div v-show="chartCardActive === 'd7'" ref="chart7dRef" class="h-[360px] w-full" v-loading="loading"></div>
+      <div v-show="chartCardActive === 'd30'" ref="chart30dRef" class="h-[360px] w-full" v-loading="loading"></div>
+      <div ref="customChartAnchorRef"></div>
+      <div v-show="chartCardActive === 'custom'" ref="chartCustomRef" class="h-[360px] w-full" v-loading="loading"></div>
+    </el-card>
   </div>
 </template>

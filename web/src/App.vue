@@ -1,16 +1,17 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { ElMessage } from "element-plus";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAuthStore } from "./stores/auth";
 import { useOpsStore } from "./stores/ops";
-import { api, getApiError } from "./services/api";
+import { api } from "./services/api";
 import { zhCN } from "./i18n/zhCN";
+import { useFeedback } from "./composables/useFeedback";
 
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
 const ops = useOpsStore();
+const fb = useFeedback();
 
 const isMobile = ref(false);
 const sidebarOpen = ref(true);
@@ -32,6 +33,10 @@ const permissionCatalog = [
 const quickSearchVisible = ref(false);
 const quickSearchKeyword = ref("");
 const quickSearchLoading = ref(false);
+let quickSearchDebounce = null;
+let authExpiredNoticeAt = 0;
+const quickPinned = ref(JSON.parse(localStorage.getItem("np_quick_pinned") || "[]"));
+const quickRecent = ref(JSON.parse(localStorage.getItem("np_quick_recent") || "[]"));
 
 const pageTitle = computed(() => String(route.meta?.title || zhCN.app.title));
 const isAuthed = computed(() => auth.isAuthed);
@@ -45,6 +50,15 @@ const menuItems = [
   { path: "/settings", label: "设置" }
 ];
 
+function searchCategoryLabel(v) {
+  const x = String(v || "").toLowerCase();
+  if (x === "device") return "设备";
+  if (x === "interface" || x === "port") return "端口";
+  if (x === "log" || x === "event") return "事件";
+  if (x === "user") return "用户";
+  return v || "-";
+}
+
 const activeMenu = computed(() => {
   if (route.path.startsWith("/assets") || route.path.startsWith("/device/") || route.path.startsWith("/port/")) return "/assets";
   if (route.path.startsWith("/alerts")) return "/alerts";
@@ -56,10 +70,10 @@ async function doLogin() {
   try {
     await auth.login(loginForm.value.username, loginForm.value.password);
     loginVisible.value = false;
-    ElMessage.success("登录成功");
+    fb.success("登录成功");
     router.push("/dashboard");
   } catch (err) {
-    ElMessage.error(getApiError(err, "用户名或密码错误"));
+    fb.apiError(err, "用户名或密码错误");
   }
 }
 
@@ -67,7 +81,7 @@ function logout() {
   auth.logout();
   loginVisible.value = true;
   loginForm.value = { username: "", password: "" };
-  ElMessage.success("已退出登录");
+  fb.success("已退出登录");
   router.push("/dashboard");
 }
 
@@ -87,19 +101,19 @@ async function openUsers() {
     const res = await api.listUsers();
     users.value = res.data || [];
   } catch (err) {
-    ElMessage.error(getApiError(err, "加载用户失败"));
+    fb.apiError(err, "加载用户失败");
   }
 }
 
 async function createUser() {
   try {
     await api.createUser(addUserForm.value);
-    ElMessage.success("用户已创建");
+    fb.success("用户已创建");
     addUserForm.value = { username: "", password: "", role: "user" };
     const res = await api.listUsers();
     users.value = res.data || [];
   } catch (err) {
-    ElMessage.error(getApiError(err, "创建用户失败"));
+    fb.apiError(err, "创建用户失败");
   }
 }
 
@@ -115,23 +129,23 @@ async function saveEditUser() {
       password: editUserForm.value.password,
       role: editUserForm.value.role
     });
-    ElMessage.success("用户已更新");
+    fb.success("用户已更新");
     editUserVisible.value = false;
     const res = await api.listUsers();
     users.value = res.data || [];
   } catch (err) {
-    ElMessage.error(getApiError(err, "更新用户失败"));
+    fb.apiError(err, "更新用户失败");
   }
 }
 
 async function deleteUser(row) {
   try {
     await api.deleteUser(row.id);
-    ElMessage.success("用户已删除");
+    fb.success("用户已删除");
     const res = await api.listUsers();
     users.value = res.data || [];
   } catch (err) {
-    ElMessage.error(getApiError(err, "删除用户失败"));
+    fb.apiError(err, "删除用户失败");
   }
 }
 
@@ -142,7 +156,7 @@ async function openPerms(row) {
     permValues.value = res.data?.permissions || [];
     permVisible.value = true;
   } catch (err) {
-    ElMessage.error(getApiError(err, "加载权限失败"));
+    fb.apiError(err, "加载权限失败");
   }
 }
 
@@ -150,10 +164,10 @@ async function savePerms() {
   try {
     if (!permUser.value?.id) return;
     await api.setUserPermissions(permUser.value.id, permValues.value);
-    ElMessage.success("权限已更新");
+    fb.success("权限已更新");
     permVisible.value = false;
   } catch (err) {
-    ElMessage.error(getApiError(err, "保存权限失败"));
+    fb.apiError(err, "保存权限失败");
   }
 }
 
@@ -162,7 +176,7 @@ async function runQuickSearch() {
   try {
     await ops.runGlobalSearch(quickSearchKeyword.value);
   } catch (err) {
-    ElMessage.error(getApiError(err, "全局搜索失败"));
+    fb.apiError(err, "全局搜索失败");
   } finally {
     quickSearchLoading.value = false;
   }
@@ -186,14 +200,37 @@ function goSearchResult(item) {
   } else if (item?.category === "interface" && item?.id) {
     router.push(`/port/${item.id}`);
   }
+  if (item?.id) {
+    const nowItem = { category: item.category, id: item.id, title: item.title, sub: item.sub };
+    quickRecent.value = [nowItem, ...quickRecent.value.filter((x) => !(x.category === nowItem.category && x.id === nowItem.id))].slice(0, 12);
+    localStorage.setItem("np_quick_recent", JSON.stringify(quickRecent.value));
+  }
   quickSearchVisible.value = false;
+}
+
+function togglePin(item) {
+  const exists = quickPinned.value.find((x) => x.category === item.category && x.id === item.id);
+  if (exists) {
+    quickPinned.value = quickPinned.value.filter((x) => !(x.category === item.category && x.id === item.id));
+  } else {
+    quickPinned.value = [{ category: item.category, id: item.id, title: item.title, sub: item.sub }, ...quickPinned.value].slice(0, 20);
+  }
+  localStorage.setItem("np_quick_pinned", JSON.stringify(quickPinned.value));
+}
+
+function isPinned(item) {
+  return !!quickPinned.value.find((x) => x.category === item.category && x.id === item.id);
 }
 
 function onAuthExpired() {
   auth.logout();
   loginVisible.value = true;
   loginForm.value = { username: "", password: "" };
-  ElMessage.warning("登录已失效，请重新登录");
+  const now = Date.now();
+  if (now - authExpiredNoticeAt > 3000) {
+    authExpiredNoticeAt = now;
+    fb.warn("登录已失效，请重新登录");
+  }
 }
 
 onMounted(() => {
@@ -203,10 +240,19 @@ onMounted(() => {
   window.addEventListener("netpulse-auth-expired", onAuthExpired);
 });
 
+watch(quickSearchKeyword, () => {
+  if (!quickSearchVisible.value) return;
+  if (quickSearchDebounce) clearTimeout(quickSearchDebounce);
+  quickSearchDebounce = setTimeout(() => {
+    runQuickSearch();
+  }, 260);
+});
+
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
   window.removeEventListener("keydown", onGlobalKeydown);
   window.removeEventListener("netpulse-auth-expired", onAuthExpired);
+  if (quickSearchDebounce) clearTimeout(quickSearchDebounce);
 });
 </script>
 
@@ -226,6 +272,9 @@ onBeforeUnmount(() => {
         <div class="text-xs text-slate-400">当前用户</div>
         <div class="mt-1 text-sm text-slate-100">{{ currentUser?.username || "未登录" }}</div>
         <div class="mt-3 flex gap-2">
+          <el-tooltip v-if="!isAdmin" content="仅管理员可管理用户" placement="top">
+            <el-button size="small" disabled>用户管理</el-button>
+          </el-tooltip>
           <el-button v-if="isAdmin" size="small" @click="openUsers">用户管理</el-button>
           <el-button size="small" plain @click="openQuickSearch">Ctrl+K</el-button>
           <el-button size="small" type="danger" plain @click="logout">退出</el-button>
@@ -261,14 +310,35 @@ onBeforeUnmount(() => {
     </el-dialog>
 
     <el-dialog v-model="quickSearchVisible" title="全局搜索 (Ctrl+K)" width="760">
+      <div class="mb-3">
+        <div class="mb-1 text-xs text-slate-500">已收藏</div>
+        <div class="flex flex-wrap gap-2">
+          <el-tag v-for="x in quickPinned" :key="`pin-${x.category}-${x.id}`" class="cursor-pointer" @click="goSearchResult(x)">{{ x.title }}</el-tag>
+          <span v-if="!quickPinned.length" class="text-xs text-slate-400">暂无收藏</span>
+        </div>
+      </div>
+      <div class="mb-3">
+        <div class="mb-1 text-xs text-slate-500">最近访问</div>
+        <div class="flex flex-wrap gap-2">
+          <el-tag v-for="x in quickRecent" :key="`recent-${x.category}-${x.id}`" type="info" class="cursor-pointer" @click="goSearchResult(x)">{{ x.title }}</el-tag>
+          <span v-if="!quickRecent.length" class="text-xs text-slate-400">暂无记录</span>
+        </div>
+      </div>
       <div class="flex gap-2">
         <el-input v-model="quickSearchKeyword" placeholder="搜索 IP / 备注 / 端口名 / 设备名" @keyup.enter="runQuickSearch" />
         <el-button type="primary" :loading="quickSearchLoading" @click="runQuickSearch">搜索</el-button>
       </div>
       <el-table :data="ops.globalSearchResults" class="mt-3 np-borderless-table" max-height="420" @row-click="goSearchResult">
-        <el-table-column prop="category" label="类型" width="120" />
+        <el-table-column label="类型" width="120">
+          <template #default="{ row }">{{ searchCategoryLabel(row.category) }}</template>
+        </el-table-column>
         <el-table-column prop="title" label="标题" min-width="240" />
         <el-table-column prop="sub" label="详情" min-width="320" />
+        <el-table-column label="收藏" width="90">
+          <template #default="{ row }">
+            <el-button text @click.stop="togglePin(row)">{{ isPinned(row) ? "取消" : "收藏" }}</el-button>
+          </template>
+        </el-table-column>
       </el-table>
     </el-dialog>
 

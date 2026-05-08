@@ -9,12 +9,13 @@ defineProps({
   totalCount: { type: Number, required: true },
   activeAlerts: { type: Number, required: true },
   alertBreakdown: { type: Object, required: true },
-  trafficHotspots: { type: Array, required: true }
+  trafficHotspots: { type: Array, required: true },
+  storageRiskCount: { type: Number, default: 0 }
 });
 </script>
 
 <template>
-  <section class="grid grid-cols-1 gap-4 xl:grid-cols-4">
+  <section class="grid grid-cols-1 gap-4 xl:grid-cols-5">
     <el-card>
       <div class="text-sm text-slate-500">{{ zhCN.deviceList.healthScore }}</div>
       <div class="mt-2 flex items-center gap-4">
@@ -49,6 +50,11 @@ defineProps({
         <el-empty v-if="!trafficHotspots.length" description="暂无热点端口" :image-size="48" />
       </div>
     </el-card>
+
+    <el-card>
+      <div class="text-sm text-slate-500">存储风险设备</div>
+      <div class="mt-3 text-3xl font-semibold text-slate-900">{{ storageRiskCount }}</div>
+      <div class="mt-2 text-xs text-slate-500">阈值: 使用率 ≥ 85%</div>
+    </el-card>
   </section>
 </template>
-

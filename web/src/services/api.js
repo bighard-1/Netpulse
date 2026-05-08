@@ -56,6 +56,18 @@ export function getApiError(err, fallback = "请求失败") {
   );
 }
 
+export function getApiErrorDetail(err, fallback = "请求失败") {
+  return {
+    code: err?.response?.data?.code || "",
+    message:
+      err?.response?.data?.error ||
+      err?.response?.data?.message ||
+      err?.message ||
+      fallback,
+    hint: err?.response?.data?.hint || ""
+  };
+}
+
 export const api = {
   login(username, password) {
     return http.post("/auth/login", { username, password });
@@ -145,6 +157,12 @@ export const api = {
   listRecentEvents(limit = 20) {
     return http.get("/events/recent", { params: { limit } });
   },
+  listAlertEvents(limit = 200, status = "") {
+    return http.get("/alerts/events", { params: { limit, status } });
+  },
+  updateAlertEvent(id, payload) {
+    return http.put(`/alerts/events/${id}`, payload);
+  },
   importDevicesCSV(csvText) {
     return http.post("/devices/import", csvText, {
       headers: { "Content-Type": "text/csv" }
@@ -161,6 +179,9 @@ export const api = {
   },
   upsertAlertRule(payload) {
     return http.post("/alerts/rules", payload);
+  },
+  deleteAlertRule(id) {
+    return http.delete(`/alerts/rules/${id}`);
   },
   discoveryScan(payload) {
     return http.post("/discovery/scan", payload);
@@ -179,5 +200,8 @@ export const api = {
   },
   getSystemHealthTrend(start, end) {
     return http.get("/system/health", { params: { start, end } });
+  },
+  getSystemOps() {
+    return http.get("/system/ops");
   }
 };

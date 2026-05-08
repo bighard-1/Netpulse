@@ -1,18 +1,29 @@
 <script setup>
 import * as echarts from "echarts";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessageBox } from "element-plus";
 import { useRouter } from "vue-router";
 import { api, getApiError } from "../services/api";
 import { useOpsStore } from "../stores/ops";
+import { useFeedback } from "../composables/useFeedback";
+import { statusClass } from "../utils/status";
 
 const ops = useOpsStore();
 const router = useRouter();
+const fb = useFeedback();
 
 const loading = ref(false);
 const devices = ref([]);
 const globalKeyword = ref("");
 const groupBy = ref("brand");
+const statusFilter = ref("all");
+const manageMode = ref(false);
+const selectedRows = ref([]);
+const visibleCols = ref({
+  status: true, name: true, ip: true, brand: true, type: true, cpu: true, uptime: true, remark: true
+});
+const templates = ref([]);
+const selectedTemplateId = ref(null);
 
 const addVisible = ref(false);
 const addLoading = ref(false);
@@ -22,6 +33,7 @@ const editForm = ref({ id: null, name: "", brand: "", remark: "", maintenance_mo
 const defaultAddForm = () => ({
   ip: "",
   name: "",
+  template_id: null,
   brand: "H3C",
   community: "public",
   remark: "",
@@ -45,8 +57,9 @@ let cpuMemChart = null;
 
 const filteredDevices = computed(() => {
   const kw = globalKeyword.value.trim().toLowerCase();
-  if (!kw) return devices.value;
-  return devices.value.filter((d) => {
+  const byStatus = devices.value.filter((d) => statusFilter.value === "all" ? true : String(d.status || "").toLowerCase() === statusFilter.value);
+  if (!kw) return byStatus;
+  return byStatus.filter((d) => {
     const ports = (d.interfaces || []).map((p) => `${p.name || ""} ${p.remark || ""} ${p.index || ""}`).join(" ");
     return [d.ip, d.name, d.brand, d.remark, d.location, ports, d.status].join(" ").toLowerCase().includes(kw);
   });
@@ -62,6 +75,10 @@ const groupedDevices = computed(() => {
   return [...buckets.entries()].map(([group, rows]) => ({ group, rows }));
 });
 
+function deviceStatusClass(row) {
+  return statusClass(row?.status);
+}
+
 function iso(v) {
   return new Date(v).toISOString();
 }
@@ -76,30 +93,56 @@ async function loadDevices() {
     const res = await api.listDevices();
     devices.value = (res.data || []).map((x) => ({ ...x, location: x.location || "" }));
   } catch (err) {
-    ElMessage.error(getApiError(err, "加载资产失败"));
+    fb.apiError(err, "加载资产失败");
   } finally {
     loading.value = false;
   }
 }
 
+async function loadTemplates() {
+  try {
+    const res = await api.listTemplates();
+    templates.value = res.data || [];
+  } catch {
+    templates.value = [];
+  }
+}
+
+function applyTemplateById() {
+  const id = Number(selectedTemplateId.value || 0);
+  if (!id) return;
+  const t = templates.value.find((x) => Number(x.id) === id);
+  if (!t) return;
+  addForm.value.brand = t.brand || addForm.value.brand;
+  addForm.value.template_id = t.id || null;
+  addForm.value.snmp_version = t.snmp_version || addForm.value.snmp_version;
+  addForm.value.snmp_port = Number(t.snmp_port || addForm.value.snmp_port || 161);
+  addForm.value.community = t.community || addForm.value.community;
+  addForm.value.v3_username = t.v3_username || "";
+  addForm.value.v3_security_level = t.v3_security_level || "noAuthNoPriv";
+  addForm.value.v3_auth_protocol = t.v3_auth_protocol || "SHA";
+  addForm.value.v3_priv_protocol = t.v3_priv_protocol || "AES";
+}
+
 async function addDevice() {
   if (isSnmpV3.value) {
-    if (!addForm.value.v3_username) return ElMessage.warning("SNMP v3 需要填写用户名");
-    if (addForm.value.v3_security_level !== "noAuthNoPriv" && !addForm.value.v3_auth_password) return ElMessage.warning("SNMP v3 需要填写认证密码");
-    if (addForm.value.v3_security_level === "authPriv" && !addForm.value.v3_priv_password) return ElMessage.warning("SNMP v3(authPriv) 需要填写加密密码");
+    if (!addForm.value.v3_username) return fb.warn("参数不完整", "SNMP v3 需要填写用户名");
+    if (addForm.value.v3_security_level !== "noAuthNoPriv" && !addForm.value.v3_auth_password) return fb.warn("参数不完整", "SNMP v3 需要填写认证密码");
+    if (addForm.value.v3_security_level === "authPriv" && !addForm.value.v3_priv_password) return fb.warn("参数不完整", "SNMP v3(authPriv) 需要填写加密密码");
   } else if (!addForm.value.community) {
-    return ElMessage.warning("SNMP v1/v2c 需要填写团体字串");
+    return fb.warn("参数不完整", "SNMP v1/v2c 需要填写团体字串");
   }
   addLoading.value = true;
   try {
     await api.precheckDevice(addForm.value);
     await api.addDevice(addForm.value);
-    ElMessage.success("资产添加成功");
+    fb.success("资产添加成功");
     addVisible.value = false;
     addForm.value = defaultAddForm();
+    selectedTemplateId.value = null;
     await loadDevices();
   } catch (err) {
-    ElMessage.error(getApiError(err, "添加资产失败"));
+    fb.apiError(err, "添加资产失败");
   } finally {
     addLoading.value = false;
   }
@@ -109,11 +152,27 @@ async function removeDevice(row) {
   try {
     await ElMessageBox.confirm(`确认删除资产 ${row.name || row.ip} 吗？`, "删除确认", { type: "warning" });
     await api.deleteDevice(row.id);
-    ElMessage.success("资产已删除");
+    fb.success("资产已删除");
     await loadDevices();
   } catch (err) {
-    if (err !== "cancel") ElMessage.error(getApiError(err, "删除资产失败"));
+    if (err !== "cancel") fb.apiError(err, "删除资产失败");
   }
+}
+
+async function bulkRemove() {
+  if (!selectedRows.value.length) return fb.warn("请先选择资产");
+  let ok = 0;
+  for (const row of selectedRows.value) {
+    try {
+      await api.deleteDevice(row.id);
+      ok += 1;
+    } catch {
+      // ignore per-row errors
+    }
+  }
+  fb.info("批量删除完成", `${ok}/${selectedRows.value.length}`);
+  selectedRows.value = [];
+  await loadDevices();
 }
 
 function openEditDevice(row) {
@@ -137,11 +196,11 @@ async function saveEditDevice() {
       remark: editForm.value.remark || "",
       maintenance_mode: Boolean(editForm.value.maintenance_mode)
     });
-    ElMessage.success("资产信息已更新");
+    fb.success("资产信息已更新");
     editVisible.value = false;
     await loadDevices();
   } catch (err) {
-    ElMessage.error(getApiError(err, "更新资产失败"));
+    fb.apiError(err, "更新资产失败");
   } finally {
     editLoading.value = false;
   }
@@ -161,7 +220,7 @@ async function openQuickPeek(row) {
     drawerPorts.value = detail?.interfaces || [];
     await loadDrawerCpuMem();
   } catch (err) {
-    ElMessage.error(getApiError(err, "加载设备详情失败"));
+    fb.apiError(err, "加载设备详情失败");
   } finally {
     drawerLoading.value = false;
   }
@@ -179,7 +238,7 @@ async function loadDrawerCpuMem() {
     await nextTick();
     renderCpuMemChart(cpuRes.data?.data || [], memRes.data?.data || []);
   } catch (err) {
-    ElMessage.error(getApiError(err, "加载CPU/内存趋势失败"));
+    fb.apiError(err, "加载CPU/内存趋势失败");
   }
 }
 
@@ -218,7 +277,7 @@ function onResize() {
 }
 
 onMounted(async () => {
-  await loadDevices();
+  await Promise.all([loadDevices(), loadTemplates()]);
   window.addEventListener("resize", onResize);
 });
 
@@ -246,10 +305,37 @@ watch(() => ops.isDrawerOpen, async (v) => {
               <el-option label="按品牌" value="brand" />
               <el-option label="按位置" value="location" />
             </el-select>
+            <el-select v-model="statusFilter" class="w-[120px]">
+              <el-option label="全部状态" value="all" />
+              <el-option label="在线" value="online" />
+              <el-option label="离线" value="offline" />
+              <el-option label="未知" value="unknown" />
+            </el-select>
           </div>
           <div class="flex items-center gap-2">
             <el-input v-model="globalKeyword" placeholder="搜索 IP / 名称 / 备注 / 端口名" clearable class="w-[320px]" />
-            <el-button type="primary" @click="addVisible = true">添加资产</el-button>
+            <el-popover trigger="click" placement="bottom" width="240">
+              <template #reference><el-button>列设置</el-button></template>
+              <div class="grid grid-cols-2 gap-2">
+                <el-checkbox v-model="visibleCols.status">状态</el-checkbox>
+                <el-checkbox v-model="visibleCols.name">名称</el-checkbox>
+                <el-checkbox v-model="visibleCols.ip">IP</el-checkbox>
+                <el-checkbox v-model="visibleCols.brand">品牌</el-checkbox>
+                <el-checkbox v-model="visibleCols.type">类型</el-checkbox>
+                <el-checkbox v-model="visibleCols.cpu">CPU</el-checkbox>
+                <el-checkbox v-model="visibleCols.uptime">运行时长</el-checkbox>
+                <el-checkbox v-model="visibleCols.remark">备注</el-checkbox>
+              </div>
+            </el-popover>
+            <el-segmented
+              v-model="manageMode"
+              :options="[
+                { label: '查看模式', value: false },
+                { label: '管理模式', value: true }
+              ]"
+            />
+            <el-button v-if="manageMode" type="danger" plain @click="bulkRemove">批量删除</el-button>
+            <el-button v-if="manageMode" type="primary" @click="addVisible = true">添加资产</el-button>
             <el-button @click="loadDevices">刷新</el-button>
           </div>
         </div>
@@ -259,25 +345,35 @@ watch(() => ops.isDrawerOpen, async (v) => {
         <template #default>
           <div v-for="grp in groupedDevices" :key="grp.group" class="mb-5">
             <div class="mb-2 text-sm font-semibold text-slate-600">{{ grp.group }} ({{ grp.rows.length }})</div>
-            <el-table :data="grp.rows" class="np-borderless-table" size="large" @row-dblclick="openQuickPeek">
-              <el-table-column label="状态" width="90">
+            <el-table :data="grp.rows" class="np-borderless-table" size="large" @selection-change="(rows)=>selectedRows.value=rows" @row-dblclick="openQuickPeek">
+              <el-table-column v-if="manageMode" type="selection" width="46" />
+              <el-table-column v-if="visibleCols.status" label="状态" width="90">
                 <template #default="{ row }">
-                  <span class="inline-block h-2.5 w-2.5 rounded-full" :class="row.status === 'online' ? 'status-dot-online' : (row.status === 'offline' ? 'bg-rose-500' : 'bg-amber-400')" />
+                  <span class="inline-block align-middle" :class="deviceStatusClass(row)" />
                 </template>
               </el-table-column>
-              <el-table-column label="名称" min-width="180">
+              <el-table-column v-if="visibleCols.name" label="名称" min-width="180">
                 <template #default="{ row }">
                   <el-button link type="primary" @click="openDeviceDetail(row)">{{ row.name || row.ip }}</el-button>
                 </template>
               </el-table-column>
-              <el-table-column prop="ip" label="IP" min-width="160" />
-              <el-table-column prop="brand" label="品牌" width="120" />
-              <el-table-column prop="remark" label="备注" min-width="220" />
-              <el-table-column label="操作" width="240">
+              <el-table-column v-if="visibleCols.ip" prop="ip" label="IP" min-width="160" />
+              <el-table-column v-if="visibleCols.brand" prop="brand" label="品牌" width="120" />
+              <el-table-column v-if="visibleCols.type" label="类型" width="140">
+                <template #default="{ row }">{{ row.device_type || row.type || "-" }}</template>
+              </el-table-column>
+              <el-table-column v-if="visibleCols.cpu" label="CPU快照" width="120">
+                <template #default="{ row }">{{ Number.isFinite(Number(row.cpu_usage)) ? `${Number(row.cpu_usage).toFixed(1)}%` : "-" }}</template>
+              </el-table-column>
+              <el-table-column v-if="visibleCols.uptime" label="运行时长" min-width="140">
+                <template #default="{ row }">{{ row.uptime || "-" }}</template>
+              </el-table-column>
+              <el-table-column v-if="visibleCols.remark" prop="remark" label="备注" min-width="220" />
+              <el-table-column label="操作" :width="manageMode ? 240 : 120">
                 <template #default="{ row }">
                   <el-button type="primary" text @click="openQuickPeek(row)">快速预览</el-button>
-                  <el-button type="warning" text @click="openEditDevice(row)">编辑</el-button>
-                  <el-button type="danger" text @click="removeDevice(row)">删除</el-button>
+                  <el-button v-if="manageMode" type="warning" text @click="openEditDevice(row)">编辑</el-button>
+                  <el-button v-if="manageMode" type="danger" text @click="removeDevice(row)">删除</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -319,6 +415,11 @@ watch(() => ops.isDrawerOpen, async (v) => {
 
     <el-dialog v-model="addVisible" title="添加资产" width="560">
       <el-form label-position="top">
+        <el-form-item label="监控模板">
+          <el-select v-model="selectedTemplateId" class="w-full" clearable placeholder="可选：按模板自动填充SNMP参数" @change="applyTemplateById">
+            <el-option v-for="t in templates" :key="t.id" :label="`${t.name} (${t.brand})`" :value="t.id" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="设备IP"><el-input v-model="addForm.ip" /></el-form-item>
         <el-form-item label="资产名称"><el-input v-model="addForm.name" /></el-form-item>
         <el-form-item label="品牌"><el-input v-model="addForm.brand" /></el-form-item>

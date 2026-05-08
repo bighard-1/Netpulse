@@ -393,7 +393,7 @@ struct MainTabView: View {
             AssetCenterView()
                 .environmentObject(vm)
                 .tabItem {
-                    Label("资产管理", systemImage: "rectangle.grid.1x2")
+                    Label("资产中心", systemImage: "rectangle.grid.1x2")
                 }
 
             NavigationStack {
@@ -463,6 +463,14 @@ struct DashboardView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: UiSpec.sectionGap) {
+                    HStack {
+                        Text("只读模式").font(.caption).padding(.horizontal, 10).padding(.vertical, 4)
+                            .background(NpColor.indigo.opacity(0.25))
+                            .clipShape(Capsule())
+                        Spacer()
+                    }
+                    .padding(.horizontal, UiSpec.pagePadding)
+
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
                             StatCard(title: "总数", value: "\(vm.devices.count)", gradient: [.slate1, .slate2])
@@ -473,16 +481,21 @@ struct DashboardView: View {
                         .padding(.horizontal, UiSpec.pagePadding)
                     }
 
-                    VStack(spacing: 8) {
-                        ForEach(vm.devices) { d in
-                            NavigationLink(value: d.id) { DeviceRow(device: d) }
-                                .buttonStyle(.plain)
-                                .contextMenu {
-                                    Button("快速预览") { quickPeekDevice = d }
-                                }
+                    if vm.devices.isEmpty {
+                        EmptyStateCard(title: "暂无资产", desc: "请先在 Web 端添加资产后再查看")
+                            .padding(.horizontal, UiSpec.pagePadding)
+                    } else {
+                        VStack(spacing: 8) {
+                            ForEach(vm.devices) { d in
+                                NavigationLink(value: d.id) { DeviceRow(device: d) }
+                                    .buttonStyle(.plain)
+                                    .contextMenu {
+                                        Button("快速预览") { quickPeekDevice = d }
+                                    }
+                            }
                         }
+                        .padding(.horizontal, UiSpec.pagePadding)
                     }
-                    .padding(.horizontal, UiSpec.pagePadding)
 
                     NpCard {
                         VStack(alignment: .leading, spacing: 8) {
@@ -534,28 +547,33 @@ struct AssetCenterView: View {
                 VStack(spacing: UiSpec.sectionGap) {
                     NpCard {
                         HStack {
-                            Text("资产管理").font(.headline)
+                            Text("资产中心（只读）").font(.headline)
                             Spacer()
                             Button("刷新") { Task { await vm.refreshDevices() } }
                         }
                     }
                     .padding(.horizontal, UiSpec.pagePadding)
 
-                    VStack(spacing: 8) {
-                        ForEach(vm.devices) { d in
-                            NavigationLink(value: d.id) { DeviceRow(device: d) }
-                                .buttonStyle(.plain)
-                                .contextMenu {
-                                    Button("快速预览") { quickPeekDevice = d }
-                                }
+                    if vm.devices.isEmpty {
+                        EmptyStateCard(title: "暂无资产", desc: "该页面仅提供查询，新增请使用 Web 端")
+                            .padding(.horizontal, UiSpec.pagePadding)
+                    } else {
+                        VStack(spacing: 8) {
+                            ForEach(vm.devices) { d in
+                                NavigationLink(value: d.id) { DeviceRow(device: d) }
+                                    .buttonStyle(.plain)
+                                    .contextMenu {
+                                        Button("快速预览") { quickPeekDevice = d }
+                                    }
+                            }
                         }
+                        .padding(.horizontal, UiSpec.pagePadding)
                     }
-                    .padding(.horizontal, UiSpec.pagePadding)
                 }
                 .padding(.vertical, 8)
             }
             .background(NpColor.bg)
-            .navigationTitle("资产管理")
+            .navigationTitle("资产中心")
             .navigationDestination(for: Int64.self) { id in
                 DeviceDetailView(deviceID: id).environmentObject(vm)
             }
@@ -574,6 +592,7 @@ struct DeviceDetailView: View {
     @EnvironmentObject var vm: AppVM
     let deviceID: Int64
     @State private var keyword = ""
+    @State private var showLogs = false
     @State private var dateEnd = Date()
     @State private var dateStart = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
 
@@ -583,6 +602,12 @@ struct DeviceDetailView: View {
         if key.isEmpty { return list }
         return list.filter { "\($0.id) \($0.index) \($0.name) \($0.remark)".lowercased().contains(key) }
     }
+    private var cpuValues: [Double] { vm.cpu.map { $0.cpu_usage ?? 0 } }
+    private var memValues: [Double] { vm.mem.map { $0.mem_usage ?? 0 } }
+    private var cpuCurrent: Double { cpuValues.last ?? 0 }
+    private var memCurrent: Double { memValues.last ?? 0 }
+    private var cpuPeak: Double { cpuValues.max() ?? 0 }
+    private var memPeak: Double { memValues.max() ?? 0 }
 
     var body: some View {
         ScrollView {
@@ -602,6 +627,10 @@ struct DeviceDetailView: View {
 
                 NpCard {
                     Text("CPU / 内存").font(.headline)
+                    Text("CPU 当前 \(cpuCurrent, specifier: "%.1f")% / 峰值 \(cpuPeak, specifier: "%.1f")%")
+                        .font(.caption).foregroundStyle(.white.opacity(0.72))
+                    Text("内存 当前 \(memCurrent, specifier: "%.1f")% / 峰值 \(memPeak, specifier: "%.1f")%")
+                        .font(.caption).foregroundStyle(.white.opacity(0.72))
                     if vm.loading {
                         ShimmerRect(height: 240)
                     } else {
@@ -625,6 +654,8 @@ struct DeviceDetailView: View {
 
                 if vm.loading {
                     ForEach(0..<3, id: \.self) { _ in ShimmerRect(height: 80) }
+                } else if filteredPorts.isEmpty {
+                    EmptyStateCard(title: "无匹配端口", desc: "请调整关键字后再试")
                 } else {
                     ForEach(filteredPorts) { p in
                         NavigationLink(value: p.id) {
@@ -642,11 +673,14 @@ struct DeviceDetailView: View {
                 }
 
                 NpCard {
-                    Text("设备日志").font(.headline)
-                    ForEach(vm.logs.prefix(5)) { log in
-                        Text("[\(log.level)] \(log.message)")
-                            .font(.footnote)
-                            .foregroundStyle(logLevelColor(log.level))
+                    DisclosureGroup(isExpanded: $showLogs) {
+                        ForEach(vm.logs.prefix(10)) { log in
+                            Text("[\(log.level)] \(log.message)")
+                                .font(.footnote)
+                                .foregroundStyle(logLevelColor(log.level))
+                        }
+                    } label: {
+                        Text("设备日志").font(.headline)
                     }
                 }
             }
@@ -677,6 +711,7 @@ struct PortDetailView: View {
     let portID: Int64
     @State private var start = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
     @State private var end = Date()
+    @State private var showCustom = false
 
     private var minDate: Date {
         Calendar.current.date(byAdding: .year, value: -3, to: Date()) ?? .distantPast
@@ -684,15 +719,43 @@ struct PortDetailView: View {
 
     var body: some View {
         VStack(spacing: UiSpec.sectionGap) {
-            HStack {
-                DatePicker("开始", selection: $start, in: minDate...Date(), displayedComponents: [.date, .hourAndMinute])
-                DatePicker("结束", selection: $end, in: minDate...Date(), displayedComponents: [.date, .hourAndMinute])
-            }
-            .padding(.horizontal)
+            NpCard {
+                Text("时间范围").font(.headline)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        Button("当日") {
+                            end = Date()
+                            start = Calendar.current.startOfDay(for: end)
+                            Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
+                        }.buttonStyle(.bordered)
+                        Button("近7天") {
+                            end = Date()
+                            start = Calendar.current.date(byAdding: .day, value: -7, to: end) ?? end
+                            Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
+                        }.buttonStyle(.bordered)
+                        Button("近30天") {
+                            end = Date()
+                            start = Calendar.current.date(byAdding: .day, value: -30, to: end) ?? end
+                            Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
+                        }.buttonStyle(.bordered)
+                        Button("近3年") {
+                            end = Date()
+                            start = Calendar.current.date(byAdding: .day, value: -365*3, to: end) ?? end
+                            Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
+                        }.buttonStyle(.bordered)
+                    }
+                }
 
-            Button("刷新流量") { Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) } }
-                .buttonStyle(.borderedProminent)
-                .tint(NpColor.indigo)
+                DisclosureGroup(isExpanded: $showCustom) {
+                    DatePicker("开始", selection: $start, in: minDate...Date(), displayedComponents: [.date, .hourAndMinute])
+                    DatePicker("结束", selection: $end, in: minDate...Date(), displayedComponents: [.date, .hourAndMinute])
+                    Button("按自定义范围查询") { Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) } }
+                        .buttonStyle(.borderedProminent)
+                        .tint(NpColor.indigo)
+                } label: {
+                    Text("自定义时间")
+                }
+            }
 
             if vm.loading {
                 ShimmerRect(height: 360)
