@@ -8,13 +8,13 @@ const routes = [
   {
     path: "/dashboard",
     name: "dashboard",
-    component: () => import("../views/DeviceList.vue"),
+    component: () => import("../views/Dashboard.vue"),
     meta: { title: "NOC 仪表盘" }
   },
   {
     path: "/assets",
     name: "assets",
-    component: () => import("../views/DeviceList.vue"),
+    component: () => import("../views/AssetCenter.vue"),
     meta: { title: "资产中心" }
   },
   {

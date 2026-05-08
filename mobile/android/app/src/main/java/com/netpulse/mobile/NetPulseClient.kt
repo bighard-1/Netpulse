@@ -130,6 +130,15 @@ class NetPulseClient(
             ensureOk(resp.code, "更新设备备注失败")
         }
     }
+
+    fun updateDeviceProfile(deviceID: Long, name: String, brand: String, remark: String, maintenanceMode: Boolean) {
+        val body = """{"name":${json.encodeToString(name)},"brand":${json.encodeToString(brand)},"remark":${json.encodeToString(remark)},"maintenance_mode":$maintenanceMode}"""
+            .toRequestBody("application/json".toMediaType())
+        val req = reqBuilder("/devices/$deviceID").put(body).build()
+        http.newCall(req).execute().use { resp ->
+            ensureOk(resp.code, "更新资产失败")
+        }
+    }
 }
 
 @kotlinx.serialization.Serializable

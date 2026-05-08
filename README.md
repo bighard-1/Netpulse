@@ -103,6 +103,32 @@ You can override tag:
 IMAGE_TAG=netpulse:v1.0.1-pro ./build_release.sh
 ```
 
+## Local Packaging Output
+
+After local build/package, artifacts are stored in:
+
+```text
+package/
+```
+
+Recommended naming:
+- `NetPulse_v1.0.0-pro_linux_amd64.tar`
+- `NetPulse_v1.0.0-pro_android_universal.apk`
+- `NetPulse_v1.0.0-pro_android_amd64.apk`
+- `NetPulse_v1.0.0-pro_ios_unsigned.ipa`
+
+## GHCR Push
+
+Production image publish target:
+
+```text
+ghcr.io/bighard-1/netpulse
+```
+
+Recommended tags:
+- `v1.0.0-pro`
+- `latest`
+
 ---
 
 ## 1Panel Quick Start (Exact Variables)

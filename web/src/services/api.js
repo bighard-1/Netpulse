@@ -76,6 +76,9 @@ export const api = {
   deleteDevice(id) {
     return http.delete(`/devices/${id}`);
   },
+  updateDevice(id, payload) {
+    return http.put(`/devices/${id}`, payload);
+  },
   updateDeviceRemark(id, remark) {
     return http.put(`/devices/${id}/remark`, { remark });
   },

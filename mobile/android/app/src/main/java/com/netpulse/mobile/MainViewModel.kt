@@ -56,16 +56,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         client = NetPulseClient(base) { secureStore.getToken() }
     }
 
-    fun loadSavedCreds(): Pair<String, String> = (sp.getString("u", "") ?: "") to (sp.getString("p", "") ?: "")
-
-    fun login(username: String, password: String, rememberCreds: Boolean = true) {
+    fun login(username: String, password: String) {
         viewModelScope.launch {
             _loading.value = true
             try {
                 val res = withContext(Dispatchers.IO) { client.loginMobile(username, password) }
                 secureStore.setToken(res.token)
                 _token.value = res.token
-                if (rememberCreds) sp.edit().putString("u", username).putString("p", password).apply()
                 _message.value = "登录成功"
                 refreshDevices()
             } catch (e: Exception) {
@@ -74,6 +71,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _loading.value = false
             }
         }
+    }
+
+    fun biometricUnlock() {
+        val t = secureStore.getToken()
+        if (t.isBlank()) {
+            _message.value = "请先使用用户名密码完成首次登录"
+            return
+        }
+        _token.value = t
+        refreshDevices()
     }
 
     fun logout() {
@@ -168,6 +175,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 refreshDevices()
             } catch (ex: Exception) {
                 handleApiError(ex, "更新设备备注失败")
+            }
+        }
+    }
+
+    fun updateDeviceProfile(deviceId: Long, name: String, brand: String, remark: String, maintenanceMode: Boolean) {
+        if (_token.value.isBlank()) return
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { client.updateDeviceProfile(deviceId, name, brand, remark, maintenanceMode) }
+                _message.value = "资产信息已更新"
+                refreshDevices()
+            } catch (ex: Exception) {
+                handleApiError(ex, "更新资产失败")
             }
         }
     }

@@ -100,8 +100,7 @@ class MainActivity : FragmentActivity() {
         val executor = ContextCompat.getMainExecutor(this)
         val prompt = BiometricPrompt(this, executor, object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                val (u, p) = vm.loadSavedCreds()
-                if (u.isNotBlank() && p.isNotBlank()) vm.login(u, p, rememberCreds = true)
+                vm.biometricUnlock()
             }
         })
         val info = BiometricPrompt.PromptInfo.Builder()
@@ -158,38 +157,69 @@ private fun MainShell(vm: MainViewModel, nav: androidx.navigation.NavHostControl
     val devices by vm.devices.collectAsStateWithLifecycle()
     val loading by vm.loading.collectAsStateWithLifecycle()
     val auditLogs by vm.auditLogs.collectAsStateWithLifecycle()
-    val entry by nav.currentBackStackEntryAsState()
-    val current = entry?.destination?.route ?: "home-tab"
+    var tab by remember { mutableStateOf("dashboard") }
 
     Scaffold(
         bottomBar = {
             NavigationBar {
                 NavigationBarItem(
-                    selected = current == "home-tab" || current == "home",
-                    onClick = {},
+                    selected = tab == "dashboard",
+                    onClick = { tab = "dashboard" },
                     icon = { Icon(Icons.Default.Home, contentDescription = null) },
-                    label = { Text("资产") }
+                    label = { Text("仪表盘") }
                 )
                 NavigationBarItem(
-                    selected = current == "me-tab",
-                    onClick = { vm.logout() },
+                    selected = tab == "assets",
+                    onClick = { tab = "assets" },
+                    icon = { Icon(Icons.Default.Home, contentDescription = null) },
+                    label = { Text("资产管理") }
+                )
+                NavigationBarItem(
+                    selected = tab == "me",
+                    onClick = { tab = "me" },
                     icon = { Icon(Icons.Default.Person, contentDescription = null) },
-                    label = { Text("退出") }
+                    label = { Text("我的") }
                 )
             }
         }
     ) { p ->
-        HomeScreen(
-            vm = vm,
-            devices = devices,
-            loading = loading,
-            recentEvents = auditLogs,
-            onRefresh = vm::refreshDevices,
-            onOpen = { id -> nav.navigate("device/$id") },
-            onQuickPeek = { id -> vm.openQuickPeek(id) },
-            onEditRemark = vm::updateDeviceRemark,
-            modifier = Modifier.padding(p)
-        )
+        when (tab) {
+            "dashboard" -> HomeScreen(
+                title = "仪表盘",
+                vm = vm,
+                devices = devices,
+                loading = loading,
+                recentEvents = auditLogs,
+                onRefresh = vm::refreshDevices,
+                onOpen = { id -> nav.navigate("device/$id") },
+                onQuickPeek = { id -> vm.openQuickPeek(id) },
+                modifier = Modifier.padding(p)
+            )
+            "assets" -> HomeScreen(
+                title = "资产管理",
+                vm = vm,
+                devices = devices,
+                loading = loading,
+                recentEvents = auditLogs,
+                onRefresh = vm::refreshDevices,
+                onOpen = { id -> nav.navigate("device/$id") },
+                onQuickPeek = { id -> vm.openQuickPeek(id) },
+                modifier = Modifier.padding(p)
+            )
+            else -> ProfileScreen(vm = vm, modifier = Modifier.padding(p))
+        }
+    }
+}
+
+@Composable
+private fun ProfileScreen(vm: MainViewModel, modifier: Modifier = Modifier) {
+    Column(
+        modifier.fillMaxSize().padding(Np.screenPadding),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("NetPulse", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text("移动端设置", color = Color.Gray)
+        OutlinedButton(onClick = { vm.logout() }) { Text("退出登录") }
     }
 }
 
@@ -200,7 +230,7 @@ fun LoginScreen(loading: Boolean, onLogin: (String, String) -> Unit, onBio: () -
     var base by remember { mutableStateOf("http://119.40.55.18:18080/api") }
     Column(Modifier.fillMaxSize().padding(Np.screenPadding), verticalArrangement = Arrangement.Center) {
         Text("NetPulse", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Text("Modern SaaS Mobile", color = Color.Gray)
+        Text("移动端只读工作台", color = Color.Gray)
         Spacer(Modifier.height(Np.sectionGap))
         OutlinedTextField(u, { u = it }, label = { Text("用户名") }, modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
@@ -219,6 +249,7 @@ fun LoginScreen(loading: Boolean, onLogin: (String, String) -> Unit, onBio: () -
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
+    title: String,
     vm: MainViewModel,
     devices: List<DeviceStatus>,
     loading: Boolean,
@@ -226,25 +257,21 @@ fun HomeScreen(
     onRefresh: () -> Unit,
     onOpen: (Long) -> Unit,
     onQuickPeek: (Long) -> Unit,
-    onEditRemark: (Long, String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val total = devices.size
     val online = devices.count { it.status == "online" }
     val offline = devices.count { it.status == "offline" || it.status == "unknown" }
-    val critical = recentEvents.count { severityOf(it) == "error" }
     val healthScore = (online.toFloat() / (total.coerceAtLeast(1)).toFloat() * 100f).toInt()
     val ctx = LocalContext.current
-    var editingDevice by remember { mutableStateOf<DeviceStatus?>(null) }
-    var newRemark by remember { mutableStateOf("") }
 
     Column(modifier.fillMaxSize().padding(Np.screenPadding), verticalArrangement = Arrangement.spacedBy(Np.sectionGap)) {
-        Text("资产总览", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            MiniStatCard("Total", "$total", Brush.linearGradient(listOf(Color(0xFF334155), Color(0xFF1E293B))))
-            MiniStatCard("Online", "$online", Brush.linearGradient(listOf(Color(0xFF0F766E), Color(0xFF065F46))), showPulse = true)
-            MiniStatCard("Offline", "$offline", Brush.linearGradient(listOf(Color(0xFF991B1B), Color(0xFF7F1D1D))))
-            MiniStatCard("Health", "$healthScore", Brush.linearGradient(listOf(Color(0xFF4338CA), Color(0xFF6366F1))))
+            MiniStatCard("总数", "$total", Brush.linearGradient(listOf(Color(0xFF334155), Color(0xFF1E293B))))
+            MiniStatCard("在线", "$online", Brush.linearGradient(listOf(Color(0xFF0F766E), Color(0xFF065F46))), showPulse = true)
+            MiniStatCard("离线", "$offline", Brush.linearGradient(listOf(Color(0xFF991B1B), Color(0xFF7F1D1D))))
+            MiniStatCard("健康度", "$healthScore", Brush.linearGradient(listOf(Color(0xFF4338CA), Color(0xFF6366F1))))
         }
 
         if (loading) {
@@ -254,11 +281,8 @@ fun HomeScreen(
                 items(devices, key = { it.id }) { d ->
                     ElevatedCard(
                         modifier = Modifier.fillMaxWidth().combinedClickable(
-                            onClick = { onQuickPeek(d.id) },
-                            onLongClick = {
-                                editingDevice = d
-                                newRemark = d.remark
-                            }
+                            onClick = { onOpen(d.id) },
+                            onLongClick = { onQuickPeek(d.id) }
                         ),
                         shape = RoundedCornerShape(Np.corner),
                         colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))
@@ -284,7 +308,7 @@ fun HomeScreen(
         ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))) {
             Column(Modifier.fillMaxWidth().padding(Np.cardPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Recent Events", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text("系统实时事件流", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     TextButton(onClick = onRefresh) { Text("刷新") }
                 }
                 if (recentEvents.isEmpty()) {
@@ -312,23 +336,6 @@ fun HomeScreen(
         }
     }
 
-    if (editingDevice != null) {
-        AlertDialog(
-            onDismissRequest = { editingDevice = null },
-            title = { Text("编辑备注") },
-            text = {
-                OutlinedTextField(value = newRemark, onValueChange = { newRemark = it }, label = { Text("备注") }, modifier = Modifier.fillMaxWidth())
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val target = editingDevice ?: return@TextButton
-                    onEditRemark(target.id, newRemark.trim())
-                    editingDevice = null
-                }) { Text("保存") }
-            },
-            dismissButton = { TextButton(onClick = { editingDevice = null }) { Text("取消") } }
-        )
-    }
 }
 
 @OptIn(ExperimentalMaterialApi::class, ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
@@ -342,8 +349,6 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
     var keyword by remember { mutableStateOf("") }
     var start by remember { mutableStateOf(OffsetDateTime.now().minusDays(1)) }
     var end by remember { mutableStateOf(OffsetDateTime.now()) }
-    var editingPort by remember { mutableStateOf<NetInterface?>(null) }
-    var portRemark by remember { mutableStateOf("") }
     val ctx = LocalContext.current
 
     LaunchedEffect(deviceId) { vm.loadDeviceDetail(deviceId, start, end) }
@@ -374,8 +379,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                 Text("${device?.brand ?: "-"} · ${device?.remark ?: "-"}")
-                                val maint = device?.maintenanceMode ?: false
-                                Switch(checked = maint, onCheckedChange = { vm.updateMaintenanceMode(deviceId, it, start, end) })
+                                Text("只读", color = Color.Gray)
                             }
                         }
                     }
@@ -398,7 +402,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                         ElevatedCard(
                             modifier = Modifier.fillMaxWidth().combinedClickable(
                                 onClick = { onOpenPort(itf.id) },
-                                onLongClick = { editingPort = itf; portRemark = itf.remark }
+                                onLongClick = { onOpenPort(itf.id) }
                             ),
                             shape = RoundedCornerShape(Np.corner),
                             colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))
@@ -413,7 +417,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                 item {
                     ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))) {
                         Column(Modifier.padding(Np.cardPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Recent Events", style = MaterialTheme.typography.titleMedium)
+                            Text("设备日志", style = MaterialTheme.typography.titleMedium)
                             logs.take(5).forEach { log ->
                                 val c = when (log.level.uppercase()) {
                                     "ERROR" -> Np.Danger
@@ -430,23 +434,6 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
         }
     }
 
-    if (editingPort != null) {
-        AlertDialog(
-            onDismissRequest = { editingPort = null },
-            title = { Text("编辑端口备注") },
-            text = {
-                OutlinedTextField(value = portRemark, onValueChange = { portRemark = it }, label = { Text("备注") }, modifier = Modifier.fillMaxWidth())
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val target = editingPort ?: return@TextButton
-                    vm.updateInterfaceRemark(deviceId, target.id, portRemark.trim(), start, end)
-                    editingPort = null
-                }) { Text("保存") }
-            },
-            dismissButton = { TextButton(onClick = { editingPort = null }) { Text("取消") } }
-        )
-    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

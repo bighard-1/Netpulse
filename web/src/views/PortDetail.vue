@@ -13,10 +13,10 @@ const loading = ref(false);
 const customRange = ref([]);
 const chartTodayRef = ref(null);
 const chart7dRef = ref(null);
-const chartMonthRef = ref(null);
+const chart30dRef = ref(null);
 const chartCustomRef = ref(null);
 const portMeta = ref({ id: props.id, name: route.query.portName || `端口-${props.id}` });
-let charts = { today: null, d7: null, month: null, custom: null };
+let charts = { today: null, d7: null, d30: null, custom: null };
 
 function startOfDay(d = new Date()) {
   const x = new Date(d);
@@ -186,17 +186,17 @@ async function loadAllCharts() {
     const now = new Date();
     const todayStart = startOfDay(now);
     const d7Start = startOfDay(new Date(now.getTime() - 6 * 24 * 3600 * 1000));
-    const monthStart = startOfMonth(now);
+    const d30Start = startOfDay(new Date(now.getTime() - 29 * 24 * 3600 * 1000));
 
-    const [today, d7, month] = await Promise.all([
+    const [today, d7, d30] = await Promise.all([
       fetchRange(todayStart, now),
       fetchRange(d7Start, now),
-      fetchRange(monthStart, now)
+      fetchRange(d30Start, now)
     ]);
 
     applyChart(charts.today, "当日流量", today);
     applyChart(charts.d7, "近7天流量", d7);
-    applyChart(charts.month, "本月流量", month);
+    applyChart(charts.d30, "近30天流量", d30);
     if (customRange.value?.length === 2) {
       await loadCustomChart();
     }
@@ -227,8 +227,24 @@ async function loadCustomChart() {
 function resizeCharts() {
   charts.today?.resize();
   charts.d7?.resize();
-  charts.month?.resize();
+  charts.d30?.resize();
   charts.custom?.resize();
+}
+
+function buildTerminalUrl() {
+  const ip = String(route.query.deviceIp || "").trim();
+  if (!ip) return "";
+  const tpl = localStorage.getItem("np_terminal_url_template") || "ssh://{ip}";
+  return String(tpl).replaceAll("{ip}", ip);
+}
+
+function openTerminal() {
+  const url = buildTerminalUrl();
+  if (!url) {
+    ElMessage.warning("缺少设备IP，无法打开终端");
+    return;
+  }
+  window.open(url, "_blank", "noopener");
 }
 
 onMounted(async () => {
@@ -236,11 +252,11 @@ onMounted(async () => {
   const e = await import("echarts");
   charts.today = e.init(chartTodayRef.value);
   charts.d7 = e.init(chart7dRef.value);
-  charts.month = e.init(chartMonthRef.value);
+  charts.d30 = e.init(chart30dRef.value);
   charts.custom = e.init(chartCustomRef.value);
   applyChart(charts.today, "当日流量", []);
   applyChart(charts.d7, "近7天流量", []);
-  applyChart(charts.month, "本月流量", []);
+  applyChart(charts.d30, "近30天流量", []);
   applyChart(charts.custom, "自定义时间段流量", []);
   await loadAllCharts();
   window.addEventListener("resize", resizeCharts);
@@ -250,7 +266,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("resize", resizeCharts);
   charts.today?.dispose();
   charts.d7?.dispose();
-  charts.month?.dispose();
+  charts.d30?.dispose();
   charts.custom?.dispose();
 });
 </script>
@@ -283,11 +299,15 @@ onBeforeUnmount(() => {
           <el-button @click="loadAllCharts" :loading="loading">{{ zhCN.portDetail.refresh }}</el-button>
         </div>
       </div>
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <span class="text-xs text-slate-500">终端跳转模板请在“系统设置”中统一配置</span>
+        <el-button type="primary" @click="openTerminal">快速进入设备终端</el-button>
+      </div>
     </el-card>
 
     <el-card><div ref="chartTodayRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
     <el-card><div ref="chart7dRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
-    <el-card><div ref="chartMonthRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
+    <el-card><div ref="chart30dRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
     <el-card><div ref="chartCustomRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
   </div>
 </template>

@@ -12,8 +12,11 @@ import (
 const (
 	OIDCPUUsage       = ".1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5"
 	OIDMemoryUsage    = ".1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7"
-	OIDCPUUsageH3C    = ".1.3.6.1.4.1.25506.2.6.1.1.1.1.8"
-	OIDMemoryUsageH3C = ".1.3.6.1.4.1.25506.2.6.1.1.1.1.12"
+	OIDCPUUsageH3C    = ".1.3.6.1.4.1.25506.2.6.1.1.1.1.6"
+	OIDMemoryUsageH3C = ".1.3.6.1.4.1.25506.2.6.1.1.1.1.8"
+	OIDCPUAvgH3C      = ".1.3.6.1.4.1.25506.2.6.1.1.1.1.26"
+	OIDMemAvgH3C      = ".1.3.6.1.4.1.25506.2.6.1.1.1.1.27"
+	OIDCPU1MinH3C     = ".1.3.6.1.4.1.25506.2.6.1.1.1.1.33"
 	OIDIfName         = ".1.3.6.1.2.1.31.1.1.1.1"
 	OIDIfHCInOctets   = ".1.3.6.1.2.1.31.1.1.1.6"
 	OIDIfHCOutOctets  = ".1.3.6.1.2.1.31.1.1.1.10"
@@ -86,8 +89,8 @@ func selectOIDProfile(brand string) OIDProfile {
 	switch b {
 	case "h3c":
 		return OIDProfile{
-			CPUOIDs:    []string{OIDCPUUsageH3C, OIDCPUUsage},
-			MemoryOIDs: []string{OIDMemoryUsageH3C, OIDMemoryUsage},
+			CPUOIDs:    []string{OIDCPU1MinH3C, OIDCPUAvgH3C, OIDCPUUsageH3C, OIDCPUUsage},
+			MemoryOIDs: []string{OIDMemAvgH3C, OIDMemoryUsageH3C, OIDMemoryUsage},
 		}
 	case "huawei":
 		return OIDProfile{

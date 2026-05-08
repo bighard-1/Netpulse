@@ -18,7 +18,8 @@ const runtimeForm = ref({
   alert_cpu_threshold: 90,
   alert_mem_threshold: 90,
   alert_webhook_url: "",
-  snmp_calibration_map: "{}"
+  snmp_calibration_map: "{}",
+  terminal_url_template: "ssh://{ip}"
 });
 
 async function loadRuntimeSettings() {
@@ -29,6 +30,7 @@ async function loadRuntimeSettings() {
       ...runtimeForm.value,
       ...(res.data || {})
     };
+    runtimeForm.value.terminal_url_template = localStorage.getItem("np_terminal_url_template") || runtimeForm.value.terminal_url_template || "ssh://{ip}";
     hydrateCalibrationRows(runtimeForm.value.snmp_calibration_map);
   } catch (err) {
     ElMessage.error(getApiError(err, "加载运行参数失败"));
@@ -72,6 +74,7 @@ async function saveRuntimeSettings() {
     syncCalibrationMap();
     const raw = String(runtimeForm.value.snmp_calibration_map || "{}").trim();
     JSON.parse(raw || "{}");
+    localStorage.setItem("np_terminal_url_template", runtimeForm.value.terminal_url_template || "ssh://{ip}");
     await api.updateRuntimeSettings(runtimeForm.value);
     ElMessage.success("运行参数已保存，采集参数将自动生效");
     await loadRuntimeSettings();
@@ -162,6 +165,9 @@ onMounted(async () => {
             </el-form-item>
             <el-form-item label="告警 Webhook（可空）" class="md:col-span-2">
               <el-input v-model="runtimeForm.alert_webhook_url" placeholder="https://example.com/webhook" />
+            </el-form-item>
+            <el-form-item label="终端跳转模板（全局）" class="md:col-span-2">
+              <el-input v-model="runtimeForm.terminal_url_template" placeholder="ssh://{ip} 或 http://webssh.local/?host={ip}" />
             </el-form-item>
             <el-form-item label="SNMP 校准映射(JSON)" class="md:col-span-2">
               <el-input

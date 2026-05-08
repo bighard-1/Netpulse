@@ -286,12 +286,16 @@ watch(
           <el-table :data="filteredPorts" class="np-borderless-table">
             <el-table-column v-if="showPortID" prop="id" label="ID" width="90" />
             <el-table-column v-if="showPortIndex" prop="index" label="索引" width="100" />
-            <el-table-column prop="name" label="端口名称" min-width="220" />
-            <el-table-column prop="remark" label="备注" min-width="220" />
-            <el-table-column label="操作" width="140">
+            <el-table-column label="端口名称" min-width="220">
               <template #default="{ row }">
-                <el-button type="primary" link :icon="View" @click="openPort(row)" />
-                <el-button type="warning" link :icon="Edit" @click="openRemark(row)" />
+                <el-button link type="primary" @click="openPort(row)">{{ row.name }}</el-button>
+              </template>
+            </el-table-column>
+            <el-table-column prop="remark" label="备注" min-width="220" />
+            <el-table-column label="操作" width="220">
+              <template #default="{ row }">
+                <el-button type="primary" link :icon="View" @click="openPort(row)">查看流量</el-button>
+                <el-button type="warning" link :icon="Edit" @click="openRemark(row)">自定义名称/备注</el-button>
               </template>
             </el-table-column>
           </el-table>

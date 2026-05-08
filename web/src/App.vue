@@ -20,6 +20,14 @@ const loginForm = ref({ username: "", password: "" });
 const usersVisible = ref(false);
 const users = ref([]);
 const addUserForm = ref({ username: "", password: "", role: "user" });
+const editUserVisible = ref(false);
+const editUserForm = ref({ id: null, username: "", password: "", role: "user" });
+const permVisible = ref(false);
+const permUser = ref(null);
+const permValues = ref([]);
+const permissionCatalog = [
+  "device.read", "device.write", "metrics.read", "logs.read"
+];
 
 const quickSearchVisible = ref(false);
 const quickSearchKeyword = ref("");
@@ -38,7 +46,7 @@ const menuItems = [
 ];
 
 const activeMenu = computed(() => {
-  if (route.path.startsWith("/assets")) return "/assets";
+  if (route.path.startsWith("/assets") || route.path.startsWith("/device/") || route.path.startsWith("/port/")) return "/assets";
   if (route.path.startsWith("/alerts")) return "/alerts";
   if (route.path.startsWith("/settings")) return "/settings";
   return "/dashboard";
@@ -92,6 +100,60 @@ async function createUser() {
     users.value = res.data || [];
   } catch (err) {
     ElMessage.error(getApiError(err, "创建用户失败"));
+  }
+}
+
+function openEditUser(row) {
+  editUserForm.value = { id: row.id, username: row.username || "", password: "", role: row.role || "user" };
+  editUserVisible.value = true;
+}
+
+async function saveEditUser() {
+  try {
+    await api.updateUser(editUserForm.value.id, {
+      username: editUserForm.value.username,
+      password: editUserForm.value.password,
+      role: editUserForm.value.role
+    });
+    ElMessage.success("用户已更新");
+    editUserVisible.value = false;
+    const res = await api.listUsers();
+    users.value = res.data || [];
+  } catch (err) {
+    ElMessage.error(getApiError(err, "更新用户失败"));
+  }
+}
+
+async function deleteUser(row) {
+  try {
+    await api.deleteUser(row.id);
+    ElMessage.success("用户已删除");
+    const res = await api.listUsers();
+    users.value = res.data || [];
+  } catch (err) {
+    ElMessage.error(getApiError(err, "删除用户失败"));
+  }
+}
+
+async function openPerms(row) {
+  try {
+    permUser.value = row;
+    const res = await api.getUserPermissions(row.id);
+    permValues.value = res.data?.permissions || [];
+    permVisible.value = true;
+  } catch (err) {
+    ElMessage.error(getApiError(err, "加载权限失败"));
+  }
+}
+
+async function savePerms() {
+  try {
+    if (!permUser.value?.id) return;
+    await api.setUserPermissions(permUser.value.id, permValues.value);
+    ElMessage.success("权限已更新");
+    permVisible.value = false;
+  } catch (err) {
+    ElMessage.error(getApiError(err, "保存权限失败"));
   }
 }
 
@@ -223,7 +285,41 @@ onBeforeUnmount(() => {
         <el-table-column prop="id" label="ID" width="80" />
         <el-table-column prop="username" label="用户名" />
         <el-table-column prop="role" label="角色" width="120" />
+        <el-table-column label="操作" width="260">
+          <template #default="{ row }">
+            <el-button type="primary" text @click="openEditUser(row)">编辑</el-button>
+            <el-button type="warning" text @click="openPerms(row)">权限</el-button>
+            <el-button type="danger" text @click="deleteUser(row)">删除</el-button>
+          </template>
+        </el-table-column>
       </el-table>
+    </el-dialog>
+
+    <el-dialog v-model="editUserVisible" title="编辑用户" width="480">
+      <el-form label-position="top">
+        <el-form-item label="用户名"><el-input v-model="editUserForm.username" /></el-form-item>
+        <el-form-item label="新密码（可空）"><el-input v-model="editUserForm.password" show-password /></el-form-item>
+        <el-form-item label="角色">
+          <el-select v-model="editUserForm.role" class="w-full">
+            <el-option value="user" label="普通用户" />
+            <el-option value="admin" label="管理员" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editUserVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveEditUser">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="permVisible" :title="`权限配置 - ${permUser?.username || ''}`" width="520">
+      <el-checkbox-group v-model="permValues" class="grid grid-cols-2 gap-2">
+        <el-checkbox v-for="p in permissionCatalog" :key="p" :label="p">{{ p }}</el-checkbox>
+      </el-checkbox-group>
+      <template #footer>
+        <el-button @click="permVisible = false">取消</el-button>
+        <el-button type="primary" @click="savePerms">保存</el-button>
+      </template>
     </el-dialog>
   </div>
 </template>

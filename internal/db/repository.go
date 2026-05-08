@@ -1905,16 +1905,22 @@ func (r *Repository) GetDeviceHistory(
 	useAgg := end.Sub(start) > 7*24*time.Hour
 	interval = strings.TrimSpace(strings.ToLower(interval))
 	q := `
-		SELECT ts, COALESCE(cpu_usage, 0), COALESCE(memory_usage, 0)
+		SELECT ts,
+		       AVG(COALESCE(cpu_usage, 0)) AS cpu_usage,
+		       AVG(COALESCE(memory_usage, 0)) AS memory_usage
 		FROM metrics
 		WHERE device_id = $1 AND ts >= $2 AND ts <= $3
+		GROUP BY ts
 		ORDER BY ts;
 	`
 	if useAgg {
 		q = `
-			SELECT bucket AS ts, COALESCE(avg_cpu_usage, 0), COALESCE(avg_memory_usage, 0)
+			SELECT bucket AS ts,
+			       AVG(COALESCE(avg_cpu_usage, 0)) AS avg_cpu_usage,
+			       AVG(COALESCE(avg_memory_usage, 0)) AS avg_memory_usage
 			FROM metrics_1m
 			WHERE device_id = $1 AND bucket >= $2 AND bucket <= $3
+			GROUP BY bucket
 			ORDER BY bucket;
 		`
 	}

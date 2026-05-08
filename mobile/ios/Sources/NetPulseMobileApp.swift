@@ -133,10 +133,6 @@ final class AppVM: ObservableObject {
             let r = try JSONDecoder().decode(LoginResponse.self, from: data)
             token = r.token
             KeychainStore.shared.set("netpulse_jwt", value: r.token)
-            if remember {
-                UserDefaults.standard.set(u, forKey: "u")
-                UserDefaults.standard.set(p, forKey: "p")
-            }
             await refreshDevices()
         } catch {
             err = "登录失败，请检查账号密码与地址"
@@ -148,9 +144,13 @@ final class AppVM: ObservableObject {
         var e: NSError?
         guard ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &e) else { return }
         if (try? await ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "用于快速登录 NetPulse")) == true {
-            let u = UserDefaults.standard.string(forKey: "u") ?? ""
-            let p = UserDefaults.standard.string(forKey: "p") ?? ""
-            if !u.isEmpty && !p.isEmpty { await login(u: u, p: p, remember: true) }
+            // Biometric auth now only unlocks existing secure token session.
+            token = KeychainStore.shared.get("netpulse_jwt") ?? ""
+            if token.isEmpty {
+                err = "请先使用用户名密码完成首次登录"
+                return
+            }
+            await refreshDevices()
         }
     }
 
@@ -240,6 +240,25 @@ final class AppVM: ObservableObject {
             await refreshDevices()
         } catch {
             err = "更新设备备注失败"
+        }
+    }
+
+    func updateDeviceProfile(deviceID: Int64, name: String, brand: String, remark: String, maintenanceMode: Bool) async {
+        do {
+            let url = URL(string: "\(baseURL)/devices/\(deviceID)")!
+            var req = authorizedRequest(url)
+            req.httpMethod = "PUT"
+            req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONSerialization.data(withJSONObject: [
+                "name": name,
+                "brand": brand,
+                "remark": remark,
+                "maintenance_mode": maintenanceMode
+            ])
+            _ = try await dataWithAuth(req)
+            await refreshDevices()
+        } catch {
+            err = "更新资产失败"
         }
     }
 
@@ -365,10 +384,16 @@ struct MainTabView: View {
 
     var body: some View {
         TabView {
-            HomeView()
+            DashboardView()
                 .environmentObject(vm)
                 .tabItem {
-                    Label("Assets", systemImage: "rectangle.grid.1x2")
+                    Label("仪表盘", systemImage: "chart.bar.xaxis")
+                }
+
+            AssetCenterView()
+                .environmentObject(vm)
+                .tabItem {
+                    Label("资产管理", systemImage: "rectangle.grid.1x2")
                 }
 
             NavigationStack {
@@ -386,7 +411,7 @@ struct MainTabView: View {
                 .background(NpColor.bg)
             }
             .tabItem {
-                Label("Me", systemImage: "person.crop.circle")
+                Label("我的", systemImage: "person.crop.circle")
             }
         }
         .tint(NpColor.indigo)
@@ -402,7 +427,7 @@ struct LoginView: View {
     var body: some View {
         VStack(spacing: UiSpec.sectionGap) {
             Text("NetPulse").font(.title.bold())
-            Text("Modern SaaS Mobile").foregroundStyle(.white.opacity(0.7))
+            Text("移动端只读工作台").foregroundStyle(.white.opacity(0.7))
             TextField("用户名", text: $u).textFieldStyle(.roundedBorder)
             SecureField("密码", text: $p).textFieldStyle(.roundedBorder)
             TextField("服务器 API 地址", text: $base).textFieldStyle(.roundedBorder)
@@ -426,10 +451,8 @@ struct LoginView: View {
     }
 }
 
-struct HomeView: View {
+struct DashboardView: View {
     @EnvironmentObject var vm: AppVM
-    @State private var editingDevice: DeviceStatus?
-    @State private var editingRemark = ""
     @State private var quickPeekDevice: DeviceStatus?
 
     private var onlineCount: Int { vm.devices.filter { $0.status == "online" }.count }
@@ -442,32 +465,28 @@ struct HomeView: View {
                 VStack(spacing: UiSpec.sectionGap) {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
-                            StatCard(title: "Total", value: "\(vm.devices.count)", gradient: [.slate1, .slate2])
-                            StatCard(title: "Online", value: "\(onlineCount)", gradient: [.teal1, .teal2], pulse: true)
-                            StatCard(title: "Offline", value: "\(offlineCount)", gradient: [.red1, .red2])
-                            StatCard(title: "Critical", value: "\(criticalCount)", gradient: [.indigo1, .indigo2])
+                            StatCard(title: "总数", value: "\(vm.devices.count)", gradient: [.slate1, .slate2])
+                            StatCard(title: "在线", value: "\(onlineCount)", gradient: [.teal1, .teal2], pulse: true)
+                            StatCard(title: "离线", value: "\(offlineCount)", gradient: [.red1, .red2])
+                            StatCard(title: "告警", value: "\(criticalCount)", gradient: [.indigo1, .indigo2])
                         }
                         .padding(.horizontal, UiSpec.pagePadding)
                     }
 
                     VStack(spacing: 8) {
                         ForEach(vm.devices) { d in
-                            Button { quickPeekDevice = d } label: { DeviceRow(device: d) }
-                            .buttonStyle(.plain)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                Button("Edit Remark") {
-                                    editingDevice = d
-                                    editingRemark = d.remark
+                            NavigationLink(value: d.id) { DeviceRow(device: d) }
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    Button("快速预览") { quickPeekDevice = d }
                                 }
-                                .tint(NpColor.indigo)
-                            }
                         }
                     }
                     .padding(.horizontal, UiSpec.pagePadding)
 
                     NpCard {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Recent Events").font(.headline)
+                            Text("系统实时事件流").font(.headline)
                             if vm.recentEvents.isEmpty {
                                 Text("暂无关键事件").foregroundStyle(.white.opacity(0.7))
                             } else {
@@ -485,7 +504,7 @@ struct HomeView: View {
                 .padding(.vertical, 8)
             }
             .background(NpColor.bg)
-            .navigationTitle("Assets").toolbarColorScheme(.dark, for: .navigationBar)
+            .navigationTitle("仪表盘").toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("刷新") { Task { await vm.refreshDevices() } }
@@ -501,27 +520,51 @@ struct HomeView: View {
                     .environmentObject(vm)
                     .presentationDetents([.medium, .large])
             }
-            .sheet(item: $editingDevice) { device in
-                NavigationStack {
-                    Form {
-                        Section("设备") { Text(device.ip) }
-                        Section("备注") { TextField("请输入备注", text: $editingRemark) }
-                    }
-                    .navigationTitle("编辑备注")
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("取消") { editingDevice = nil }
+        }
+    }
+}
+
+struct AssetCenterView: View {
+    @EnvironmentObject var vm: AppVM
+    @State private var quickPeekDevice: DeviceStatus?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: UiSpec.sectionGap) {
+                    NpCard {
+                        HStack {
+                            Text("资产管理").font(.headline)
+                            Spacer()
+                            Button("刷新") { Task { await vm.refreshDevices() } }
                         }
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("保存") {
-                                Task {
-                                    await vm.updateDeviceRemark(deviceID: device.id, remark: editingRemark.trimmingCharacters(in: .whitespacesAndNewlines))
-                                    editingDevice = nil
+                    }
+                    .padding(.horizontal, UiSpec.pagePadding)
+
+                    VStack(spacing: 8) {
+                        ForEach(vm.devices) { d in
+                            NavigationLink(value: d.id) { DeviceRow(device: d) }
+                                .buttonStyle(.plain)
+                                .contextMenu {
+                                    Button("快速预览") { quickPeekDevice = d }
                                 }
-                            }
                         }
                     }
+                    .padding(.horizontal, UiSpec.pagePadding)
                 }
+                .padding(.vertical, 8)
+            }
+            .background(NpColor.bg)
+            .navigationTitle("资产管理")
+            .navigationDestination(for: Int64.self) { id in
+                DeviceDetailView(deviceID: id).environmentObject(vm)
+            }
+            .task { await vm.refreshDevices() }
+            .refreshable { await vm.refreshDevices() }
+            .sheet(item: $quickPeekDevice) { d in
+                DeviceQuickPeekSheet(device: d)
+                    .environmentObject(vm)
+                    .presentationDetents([.medium, .large])
             }
         }
     }
@@ -531,8 +574,6 @@ struct DeviceDetailView: View {
     @EnvironmentObject var vm: AppVM
     let deviceID: Int64
     @State private var keyword = ""
-    @State private var editingPort: NetInterface?
-    @State private var editingRemark = ""
     @State private var dateEnd = Date()
     @State private var dateStart = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
 
@@ -597,17 +638,11 @@ struct DeviceDetailView: View {
                             }
                         }
                         .buttonStyle(.plain)
-                        .contextMenu {
-                            Button("编辑端口备注") {
-                                editingPort = p
-                                editingRemark = p.remark
-                            }
-                        }
                     }
                 }
 
                 NpCard {
-                    Text("Recent Events").font(.headline)
+                    Text("设备日志").font(.headline)
                     ForEach(vm.logs.prefix(5)) { log in
                         Text("[\(log.level)] \(log.message)")
                             .font(.footnote)
@@ -618,7 +653,7 @@ struct DeviceDetailView: View {
             .padding(UiSpec.pagePadding)
         }
         .background(NpColor.bg)
-        .navigationTitle("Device Detail")
+        .navigationTitle("设备详情")
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(for: Int64.self) { portID in
             PortDetailView(deviceID: deviceID, portID: portID).environmentObject(vm)
@@ -632,26 +667,6 @@ struct DeviceDetailView: View {
         .refreshable {
             await vm.fetchDeviceDetail(deviceID: deviceID)
             await vm.fetchDeviceHistory(deviceID: deviceID, start: dateStart, end: dateEnd)
-        }
-        .sheet(item: $editingPort) { port in
-            NavigationStack {
-                Form {
-                    Section("端口") { Text(port.name) }
-                    Section("备注") { TextField("请输入备注", text: $editingRemark) }
-                }
-                .navigationTitle("编辑端口备注")
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("取消") { editingPort = nil } }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("保存") {
-                            Task {
-                                await vm.updateInterfaceRemark(interfaceID: port.id, remark: editingRemark.trimmingCharacters(in: .whitespacesAndNewlines), deviceID: deviceID, start: dateStart, end: dateEnd)
-                                editingPort = nil
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -699,7 +714,7 @@ struct PortDetailView: View {
             }
         }
         .background(NpColor.bg)
-        .navigationTitle("Port Detail")
+        .navigationTitle("端口详情")
         .navigationBarTitleDisplayMode(.inline)
         .task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
     }
@@ -910,7 +925,7 @@ struct DeviceQuickPeekSheet: View {
                 }.padding(UiSpec.pagePadding)
             }
             .background(NpColor.bg)
-            .navigationTitle("Quick Peek")
+            .navigationTitle("快速预览")
             .task {
                 await vm.fetchDeviceDetail(deviceID: device.id)
                 await vm.fetchDeviceHistory(deviceID: device.id, start: start, end: end)

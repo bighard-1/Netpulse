@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -619,6 +620,10 @@ func (h *Handler) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "username and password required")
 		return
 	}
+	if err := validatePasswordPolicy(req.Password); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if req.Role != "admin" && req.Role != "user" {
 		req.Role = "user"
 	}
@@ -669,6 +674,10 @@ func (h *Handler) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	var hashPtr *string
 	if req.Password != "" {
+		if err := validatePasswordPolicy(req.Password); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "hash error")
@@ -808,6 +817,10 @@ func (h *Handler) requirePermission(permission string) func(http.Handler) http.H
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			u := currentUser(r.Context())
+			if u.Client == "mobile" && isWritePermission(permission) {
+				writeError(w, http.StatusForbidden, "mobile client is read-only")
+				return
+			}
 			ok, err := h.repo.HasPermission(r.Context(), u.ID, u.Role, permission)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "permission check failed")
@@ -820,6 +833,24 @@ func (h *Handler) requirePermission(permission string) func(http.Handler) http.H
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func isWritePermission(permission string) bool {
+	p := strings.ToLower(strings.TrimSpace(permission))
+	return strings.HasSuffix(p, ".write")
+}
+
+func validatePasswordPolicy(password string) error {
+	if len(password) < 10 {
+		return fmt.Errorf("password must be at least 10 characters")
+	}
+	hasUpper := regexp.MustCompile(`[A-Z]`).MatchString(password)
+	hasLower := regexp.MustCompile(`[a-z]`).MatchString(password)
+	hasDigit := regexp.MustCompile(`[0-9]`).MatchString(password)
+	if !(hasUpper && hasLower && hasDigit) {
+		return fmt.Errorf("password must include uppercase, lowercase and number")
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
