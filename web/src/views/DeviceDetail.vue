@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
-import { Edit, View } from "@element-plus/icons-vue";
+import { Edit } from "@element-plus/icons-vue";
 import { api, getApiError } from "../services/api";
 
 const props = defineProps({ id: { type: [String, Number], required: true } });
@@ -15,8 +15,8 @@ const recentLogs = ref([]);
 const logLimit = ref(10);
 const device = ref(null);
 const portKeyword = ref("");
-const remarkDialogVisible = ref(false);
-const interfaceEditForm = ref({ id: null, name: "", remark: "" });
+const deviceEditVisible = ref(false);
+const deviceEditForm = ref({ id: null, name: "", brand: "", remark: "", maintenance_mode: false });
 const showPortID = ref(false);
 const showPortIndex = ref(false);
 const diagnoseVisible = ref(false);
@@ -24,6 +24,7 @@ const diagnoseLoading = ref(false);
 const diagnoseReport = ref(null);
 const capability = ref(null);
 const cpuMemRef = ref(null);
+const terminalType = ref("ssh");
 let cpuMemChart = null;
 
 const filteredPorts = computed(() => {
@@ -125,27 +126,59 @@ function openPort(port) {
     query: {
       deviceId: String(device.value.id),
       deviceIp: device.value.ip,
-      portName: port.name
+      portName: port.name,
+      portRemark: port.remark || ""
     }
   });
 }
 
-function openRemark(port) {
-  interfaceEditForm.value = { id: port.id, name: port.name, remark: port.remark || "" };
-  remarkDialogVisible.value = true;
+function buildTerminalUrl() {
+  const ip = String(device.value?.ip || "").trim();
+  if (!ip) return "";
+  const schemeTpl = {
+    ssh: "ssh://{ip}",
+    termius: "termius://host/{ip}",
+    securecrt: "ssh2://{ip}",
+    custom: localStorage.getItem("np_terminal_url_template") || "ssh://{ip}"
+  };
+  const tpl = schemeTpl[terminalType.value] || schemeTpl.custom;
+  return String(tpl).replaceAll("{ip}", ip);
 }
 
-async function saveRemark() {
+function openTerminal() {
+  const url = buildTerminalUrl();
+  if (!url) {
+    ElMessage.warning("缺少设备IP，无法打开终端");
+    return;
+  }
+  window.open(url, "_blank", "noopener");
+}
+
+function openDeviceEdit() {
+  if (!device.value) return;
+  deviceEditForm.value = {
+    id: device.value.id,
+    name: device.value.name || "",
+    brand: device.value.brand || "",
+    remark: device.value.remark || "",
+    maintenance_mode: Boolean(device.value.maintenance_mode)
+  };
+  deviceEditVisible.value = true;
+}
+
+async function saveDeviceEdit() {
   try {
-    await api.updateInterfaceProfile(interfaceEditForm.value.id, {
-      name: interfaceEditForm.value.name || "",
-      remark: interfaceEditForm.value.remark || ""
+    await api.updateDevice(deviceEditForm.value.id, {
+      name: deviceEditForm.value.name || "",
+      brand: deviceEditForm.value.brand || "",
+      remark: deviceEditForm.value.remark || "",
+      maintenance_mode: Boolean(deviceEditForm.value.maintenance_mode)
     });
-    ElMessage.success("端口信息已更新");
-    remarkDialogVisible.value = false;
+    ElMessage.success("设备信息已更新");
+    deviceEditVisible.value = false;
     await loadDevice();
   } catch (err) {
-    ElMessage.error(getApiError(err, "保存端口信息失败"));
+    ElMessage.error(getApiError(err, "保存设备信息失败"));
   }
 }
 
@@ -210,13 +243,64 @@ watch(
     </el-breadcrumb>
 
     <el-card>
+      <template #header>
+        <div class="flex items-center justify-between">
+          <span class="text-base font-semibold">设备基础信息</span>
+          <div class="flex items-center gap-2">
+            <el-select v-model="terminalType" class="w-[180px]">
+              <el-option label="系统默认 SSH" value="ssh" />
+              <el-option label="Termius" value="termius" />
+              <el-option label="SecureCRT" value="securecrt" />
+              <el-option label="自定义模板" value="custom" />
+            </el-select>
+            <el-button type="primary" plain @click="openTerminal">连接设备终端</el-button>
+            <el-button type="primary" plain :icon="Edit" @click="openDeviceEdit">编辑设备名称/备注</el-button>
+          </div>
+        </div>
+      </template>
       <div v-if="device" class="grid grid-cols-1 gap-3 md:grid-cols-4">
         <div><div class="text-xs text-slate-500">设备 ID</div><div class="font-semibold">{{ device.id }}</div></div>
+        <div><div class="text-xs text-slate-500">名称</div><div class="font-semibold">{{ device.name || '-' }}</div></div>
         <div><div class="text-xs text-slate-500">IP</div><div class="font-semibold">{{ device.ip }}</div></div>
         <div><div class="text-xs text-slate-500">品牌</div><div class="font-semibold">{{ device.brand }}</div></div>
         <div><div class="text-xs text-slate-500">备注</div><div class="font-semibold">{{ device.remark || '-' }}</div></div>
       </div>
       <el-empty v-else description="设备不存在" />
+    </el-card>
+
+    <el-card>
+      <template #header>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="text-base font-semibold">端口列表</span>
+          <div class="flex items-center gap-2">
+            <el-input v-model="portKeyword" placeholder="按 id/index/名称/备注搜索" clearable class="w-[320px]" />
+            <el-checkbox v-model="showPortID">显示ID</el-checkbox>
+            <el-checkbox v-model="showPortIndex">显示索引</el-checkbox>
+          </div>
+        </div>
+      </template>
+
+      <el-skeleton :loading="loading" animated :rows="8">
+        <template #default>
+          <el-table :data="filteredPorts" class="np-borderless-table">
+            <el-table-column v-if="showPortID" prop="id" label="ID" width="90" />
+            <el-table-column v-if="showPortIndex" prop="index" label="索引" width="100" />
+            <el-table-column label="端口名称" min-width="220">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openPort(row)">{{ row.name }}</el-button>
+              </template>
+            </el-table-column>
+            <el-table-column prop="remark" label="备注" min-width="220" />
+          </el-table>
+        </template>
+      </el-skeleton>
+    </el-card>
+
+    <el-card>
+      <template #header>
+        <span class="text-base font-semibold">CPU / 内存实时利用率（24h）</span>
+      </template>
+      <div ref="cpuMemRef" class="h-[180px] w-full" v-loading="chartLoading"></div>
     </el-card>
 
     <el-card>
@@ -262,55 +346,15 @@ watch(
       </el-table>
     </el-card>
 
-    <el-card>
-      <template #header>
-        <span class="text-base font-semibold">CPU / 内存实时利用率（24h）</span>
-      </template>
-      <div ref="cpuMemRef" class="h-[180px] w-full" v-loading="chartLoading"></div>
-    </el-card>
-
-    <el-card>
-      <template #header>
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <span class="text-base font-semibold">端口列表</span>
-          <div class="flex items-center gap-2">
-            <el-input v-model="portKeyword" placeholder="按 id/index/名称/备注搜索" clearable class="w-[320px]" />
-            <el-checkbox v-model="showPortID">显示ID</el-checkbox>
-            <el-checkbox v-model="showPortIndex">显示索引</el-checkbox>
-          </div>
-        </div>
-      </template>
-
-      <el-skeleton :loading="loading" animated :rows="8">
-        <template #default>
-          <el-table :data="filteredPorts" class="np-borderless-table">
-            <el-table-column v-if="showPortID" prop="id" label="ID" width="90" />
-            <el-table-column v-if="showPortIndex" prop="index" label="索引" width="100" />
-            <el-table-column label="端口名称" min-width="220">
-              <template #default="{ row }">
-                <el-button link type="primary" @click="openPort(row)">{{ row.name }}</el-button>
-              </template>
-            </el-table-column>
-            <el-table-column prop="remark" label="备注" min-width="220" />
-            <el-table-column label="操作" width="220">
-              <template #default="{ row }">
-                <el-button type="primary" link :icon="View" @click="openPort(row)">查看流量</el-button>
-                <el-button type="warning" link :icon="Edit" @click="openRemark(row)">自定义名称/备注</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-        </template>
-      </el-skeleton>
-    </el-card>
-
-    <el-dialog v-model="remarkDialogVisible" title="编辑端口信息" width="520">
+    <el-dialog v-model="deviceEditVisible" title="编辑设备信息" width="520">
       <el-form label-position="top">
-        <el-form-item label="端口名称（同资产内不可重复）"><el-input v-model="interfaceEditForm.name" /></el-form-item>
-        <el-form-item label="备注"><el-input v-model="interfaceEditForm.remark" type="textarea" :rows="4" /></el-form-item>
+        <el-form-item label="设备名称"><el-input v-model="deviceEditForm.name" /></el-form-item>
+        <el-form-item label="品牌"><el-input v-model="deviceEditForm.brand" /></el-form-item>
+        <el-form-item label="备注"><el-input v-model="deviceEditForm.remark" type="textarea" :rows="4" /></el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="remarkDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="saveRemark">保存</el-button>
+        <el-button @click="deviceEditVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveDeviceEdit">保存</el-button>
       </template>
     </el-dialog>
 

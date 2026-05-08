@@ -187,7 +187,12 @@ function openPortTraffic(port) {
   if (!drawerDevice.value?.id) return;
   router.push({
     path: `/port/${port.id}`,
-    query: { deviceId: String(drawerDevice.value.id), deviceIp: drawerDevice.value.ip, portName: port.name }
+    query: {
+      deviceId: String(drawerDevice.value.id),
+      deviceIp: drawerDevice.value.ip,
+      portName: port.name,
+      portRemark: port.remark || ""
+    }
   });
 }
 

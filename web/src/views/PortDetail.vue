@@ -11,11 +11,16 @@ const route = useRoute();
 
 const loading = ref(false);
 const customRange = ref([]);
+const customRangeDraft = ref([]);
 const chartTodayRef = ref(null);
 const chart7dRef = ref(null);
 const chart30dRef = ref(null);
 const chartCustomRef = ref(null);
 const portMeta = ref({ id: props.id, name: route.query.portName || `端口-${props.id}` });
+const portEdit = ref({ name: route.query.portName || "", remark: route.query.portRemark || "" });
+const savingPort = ref(false);
+const terminalType = ref("ssh");
+const customChartAnchorRef = ref(null);
 let charts = { today: null, d7: null, d30: null, custom: null };
 
 function startOfDay(d = new Date()) {
@@ -224,6 +229,21 @@ async function loadCustomChart() {
   }
 }
 
+function confirmCustomRange() {
+  if (!customRangeDraft.value || customRangeDraft.value.length !== 2) {
+    ElMessage.warning("请先选择开始与结束时间");
+    return;
+  }
+  customRange.value = [...customRangeDraft.value];
+  loadCustomChart().then(() => {
+    customChartAnchorRef.value?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+
+function cancelCustomRange() {
+  customRangeDraft.value = [...(customRange.value || [])];
+}
+
 function resizeCharts() {
   charts.today?.resize();
   charts.d7?.resize();
@@ -234,7 +254,13 @@ function resizeCharts() {
 function buildTerminalUrl() {
   const ip = String(route.query.deviceIp || "").trim();
   if (!ip) return "";
-  const tpl = localStorage.getItem("np_terminal_url_template") || "ssh://{ip}";
+  const schemeTpl = {
+    ssh: "ssh://{ip}",
+    termius: "termius://host/{ip}",
+    securecrt: "ssh2://{ip}",
+    custom: localStorage.getItem("np_terminal_url_template") || "ssh://{ip}"
+  };
+  const tpl = schemeTpl[terminalType.value] || schemeTpl.custom;
   return String(tpl).replaceAll("{ip}", ip);
 }
 
@@ -245,6 +271,34 @@ function openTerminal() {
     return;
   }
   window.open(url, "_blank", "noopener");
+}
+
+async function savePortProfile() {
+  savingPort.value = true;
+  try {
+    await api.updateInterfaceProfile(props.id, {
+      name: portEdit.value.name || "",
+      remark: portEdit.value.remark || ""
+    });
+    portMeta.value.name = portEdit.value.name || portMeta.value.name;
+    ElMessage.success("端口名称/备注已保存");
+  } catch (err) {
+    ElMessage.error(getApiError(err, "保存端口信息失败"));
+  } finally {
+    savingPort.value = false;
+  }
+}
+
+async function copyTerminalTarget() {
+  const ip = String(route.query.deviceIp || "").trim();
+  if (!ip) return ElMessage.warning("缺少设备IP");
+  const cmd = `ssh ${ip}`;
+  try {
+    await navigator.clipboard.writeText(cmd);
+    ElMessage.success("已复制连接命令");
+  } catch {
+    ElMessage.warning("复制失败，请手动复制");
+  }
 }
 
 onMounted(async () => {
@@ -258,6 +312,7 @@ onMounted(async () => {
   applyChart(charts.d7, "近7天流量", []);
   applyChart(charts.d30, "近30天流量", []);
   applyChart(charts.custom, "自定义时间段流量", []);
+  customRangeDraft.value = [...(customRange.value || [])];
   await loadAllCharts();
   window.addEventListener("resize", resizeCharts);
 });
@@ -285,29 +340,41 @@ onBeforeUnmount(() => {
           <div class="text-xs text-slate-500">端口</div>
           <div class="text-lg font-semibold">{{ portMeta.name }}</div>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2">
+          <el-input v-model="portEdit.name" placeholder="自定义端口名称" class="w-[200px]" />
+          <el-input v-model="portEdit.remark" placeholder="端口备注" class="w-[220px]" />
+          <el-button type="warning" plain @click="savePortProfile" :loading="savingPort">保存名称/备注</el-button>
           <el-date-picker
-            v-model="customRange"
+            v-model="customRangeDraft"
             type="datetimerange"
             unlink-panels
             range-separator="至"
             start-placeholder="开始时间"
             end-placeholder="结束时间"
             :shortcuts="pickerShortcuts"
-            @change="loadCustomChart"
           />
+          <el-button type="primary" @click="confirmCustomRange" :loading="loading">确定</el-button>
+          <el-button @click="cancelCustomRange">取消</el-button>
           <el-button @click="loadAllCharts" :loading="loading">{{ zhCN.portDetail.refresh }}</el-button>
         </div>
       </div>
       <div class="mt-3 flex flex-wrap items-center gap-2">
-        <span class="text-xs text-slate-500">终端跳转模板请在“系统设置”中统一配置</span>
+        <span class="text-xs text-slate-500">终端跳转模板</span>
+        <el-select v-model="terminalType" class="w-[180px]">
+          <el-option label="系统默认 SSH" value="ssh" />
+          <el-option label="Termius" value="termius" />
+          <el-option label="SecureCRT" value="securecrt" />
+          <el-option label="自定义模板" value="custom" />
+        </el-select>
         <el-button type="primary" @click="openTerminal">快速进入设备终端</el-button>
+        <el-button @click="copyTerminalTarget">复制 SSH 命令</el-button>
       </div>
     </el-card>
 
     <el-card><div ref="chartTodayRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
     <el-card><div ref="chart7dRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
     <el-card><div ref="chart30dRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
+    <div ref="customChartAnchorRef"></div>
     <el-card><div ref="chartCustomRef" class="h-[300px] w-full" v-loading="loading"></div></el-card>
   </div>
 </template>
