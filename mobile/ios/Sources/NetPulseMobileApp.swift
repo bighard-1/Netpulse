@@ -40,6 +40,8 @@ struct NetInterface: Codable, Identifiable {
     let index: Int
     let name: String
     let remark: String
+    let custom_name: String?
+    let oper_status: Int?
 }
 
 struct DeviceLog: Codable, Identifiable {
@@ -773,6 +775,7 @@ struct LoginView: View {
 struct DashboardView: View {
     @EnvironmentObject var vm: AppVM
     @State private var quickPeekDevice: DeviceStatus?
+    @State private var keyword = ""
 
     private var onlineCount: Int { vm.devices.filter { $0.status == "online" }.count }
     private var offlineCount: Int { vm.devices.filter { $0.status != "online" }.count }
@@ -783,6 +786,14 @@ struct DashboardView: View {
         if offlineCount > 0 { out.append("排查离线/未知资产：\(offlineCount) 台") }
         if !vm.recentEvents.isEmpty { out.append("检查最新事件并确认是否需要处置") }
         return out
+    }
+    private var filteredDevices: [DeviceStatus] {
+        let k = keyword.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if k.isEmpty { return vm.devices }
+        return vm.devices.filter { d in
+            let ports = d.interfaces.map { "\($0.custom_name ?? "") \($0.name) \($0.remark)" }.joined(separator: " ")
+            return "\(d.name) \(d.ip) \(d.brand) \(d.remark) \(ports)".lowercased().contains(k)
+        }
     }
 
     var body: some View {
@@ -819,6 +830,16 @@ struct DashboardView: View {
                         .padding(.horizontal, UiSpec.pagePadding)
                     }
                     NpCard {
+                        TextField("全局搜索（设备/IP/备注/端口）", text: $keyword)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(Color.white.opacity(0.08))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, UiSpec.pagePadding)
+
+                    NpCard {
                         Text("性能观测").font(.headline)
                         Text(vm.perfSummary).font(.footnote).foregroundStyle(.white.opacity(0.82))
                         if !vm.lastSnapshotAt.isEmpty {
@@ -827,12 +848,12 @@ struct DashboardView: View {
                     }
                     .padding(.horizontal, UiSpec.pagePadding)
 
-                    if vm.devices.isEmpty {
+                    if filteredDevices.isEmpty {
                         EmptyStateCard(title: "暂无资产", desc: "请先在 Web 端添加资产后再查看")
                             .padding(.horizontal, UiSpec.pagePadding)
                     } else {
                         VStack(spacing: 8) {
-                            ForEach(vm.devices) { d in
+                            ForEach(filteredDevices) { d in
                                 NavigationLink(value: DeviceNavTarget(id: d.id)) { DeviceRow(device: d) }
                                     .buttonStyle(.plain)
                                     .contextMenu {
@@ -937,19 +958,12 @@ struct AssetCenterView: View {
 struct DeviceDetailView: View {
     @EnvironmentObject var vm: AppVM
     let deviceID: Int64
-    @State private var keyword = ""
-    @State private var keywordHistory: [String] = []
     @State private var showLogs = false
     @State private var dateEnd = Date()
     @State private var dateStart = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
     @State private var visiblePortCount = 80
 
-    private var filteredPorts: [NetInterface] {
-        let list = vm.deviceDetail?.interfaces ?? []
-        let key = keyword.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if key.isEmpty { return list }
-        return list.filter { portSearchBlob($0).contains(key) }
-    }
+    private var filteredPorts: [NetInterface] { vm.deviceDetail?.interfaces ?? [] }
     private var visiblePorts: [NetInterface] { Array(filteredPorts.prefix(visiblePortCount)) }
     private var cpuValues: [Double] { vm.cpu.map { $0.cpu_usage ?? 0 } }
     private var memValues: [Double] { vm.mem.map { $0.mem_usage ?? 0 } }
@@ -991,37 +1005,6 @@ struct DeviceDetailView: View {
                     memSeries: usageSeries.filter { $0.kind == .mem }
                 )
 
-                NpCard {
-                    VStack(spacing: 8) {
-                        HStack {
-                            TextField("搜索端口（名称/备注/拼音）", text: $keyword)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 10)
-                                .background(Color.white.opacity(0.08))
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
-                                .foregroundStyle(.white)
-                            Button("搜索") {
-                                let k = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
-                                if !k.isEmpty { keywordHistory = ([k] + keywordHistory).removingDuplicates().prefix(6).map { $0 } }
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                        if !keywordHistory.isEmpty {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 6) {
-                                    ForEach(keywordHistory, id: \.self) { kw in
-                                        Button(kw) { keyword = kw }.buttonStyle(.bordered)
-                                    }
-                                    Button("清空") {
-                                        keyword = ""
-                                        visiblePortCount = 80
-                                    }.buttonStyle(.bordered)
-                                }
-                            }
-                        }
-                    }
-                }
-
                 if vm.detailLoading && (vm.deviceDetail?.interfaces.isEmpty ?? true) {
                     ForEach(0..<3, id: \.self) { _ in ShimmerRect(height: 80) }
                 } else if filteredPorts.isEmpty {
@@ -1031,7 +1014,11 @@ struct DeviceDetailView: View {
                         NavigationLink(value: PortNavTarget(id: p.id, deviceID: deviceID)) {
                             NpCard {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(p.name)
+                                    let nm = (p.custom_name?.isEmpty == false ? p.custom_name! : p.name)
+                                    HStack {
+                                        PortStatusDot(operStatus: p.oper_status)
+                                        Text(nm)
+                                    }
                                     Text("索引:\(p.index) · \(p.remark.isEmpty ? "-" : p.remark)")
                                         .font(.footnote)
                                         .foregroundStyle(.white.opacity(0.7))
@@ -1135,14 +1122,14 @@ struct PortDetailView: View {
                 if showInSeries, let inV = p.traffic_in_bps {
                     LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("入方向", inV))
                         .foregroundStyle(by: .value("Series", "IN"))
-                        .interpolationMethod(.catmullRom)
-                        .lineStyle(StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
+                        .interpolationMethod(.linear)
+                        .lineStyle(StrokeStyle(lineWidth: 2.1, lineCap: .round, lineJoin: .round, dash: [8, 4]))
                 }
                 if showOutSeries, let outV = p.traffic_out_bps {
                     LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("出方向", outV))
                         .foregroundStyle(by: .value("Series", "OUT"))
-                        .interpolationMethod(.catmullRom)
-                        .lineStyle(StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
+                        .interpolationMethod(.linear)
+                        .lineStyle(StrokeStyle(lineWidth: 2.1, lineCap: .round, lineJoin: .round))
                 }
             }
             if let idx = selectedTrafficIndex, idx >= 0, idx < trafficForRender.count {
@@ -1536,12 +1523,14 @@ struct CpuMemPanel: View {
                         ForEach(cpuSeries) { p in
                             LineMark(x: .value("时间", p.ts), y: .value("CPU", p.value))
                                 .foregroundStyle(Color.orange)
+                                .lineStyle(StrokeStyle(lineWidth: 2.0, dash: [8, 4]))
                         }
                     }
                     if showMEM {
                         ForEach(memSeries) { p in
                             LineMark(x: .value("时间", p.ts), y: .value("内存", p.value))
                                 .foregroundStyle(Color.cyan)
+                                .lineStyle(StrokeStyle(lineWidth: 2.2))
                         }
                     }
                 }
@@ -1620,6 +1609,20 @@ struct PulseDot: View {
                     scale = 1.8
                 }
             }
+    }
+}
+
+struct PortStatusDot: View {
+    let operStatus: Int?
+    var body: some View {
+        let c: Color = {
+            switch operStatus {
+            case 1: return NpColor.success
+            case 2: return NpColor.danger
+            default: return NpColor.warning
+            }
+        }()
+        return Circle().fill(c).frame(width: 9, height: 9)
     }
 }
 

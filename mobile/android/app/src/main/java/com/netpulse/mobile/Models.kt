@@ -25,7 +25,9 @@ data class NetInterface(
     @SerialName("device_id") val deviceId: Long? = null,
     @SerialName("index") val index: Int,
     val name: String,
-    val remark: String
+    val remark: String,
+    @SerialName("custom_name") val customName: String? = null,
+    @SerialName("oper_status") val operStatus: Int? = null
 )
 
 @Serializable

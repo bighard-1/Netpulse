@@ -273,6 +273,14 @@ fun HomeScreen(
     val offline = devices.count { it.status == "offline" || it.status == "unknown" }
     val healthScore = (online.toFloat() / (total.coerceAtLeast(1)).toFloat() * 100f).toInt()
     val ctx = LocalContext.current
+    var keyword by remember { mutableStateOf("") }
+    val filteredDevices = remember(devices, keyword) {
+        val k = keyword.trim().lowercase()
+        if (k.isBlank()) devices else devices.filter { d ->
+            val ports = d.interfaces.joinToString(" ") { "${it.customName ?: ""} ${it.name} ${it.remark}" }
+            "${d.name} ${d.ip} ${d.brand} ${d.remark} $ports".lowercase().contains(k)
+        }
+    }
     val todoItems = buildList {
         if (devices.isEmpty()) add("添加首台资产（请在 Web 端资产中心操作）")
         if (offline > 0) add("排查离线/未知资产：$offline 台")
@@ -301,13 +309,19 @@ fun HomeScreen(
             }
         }
 
+        OutlinedTextField(
+            value = keyword,
+            onValueChange = { keyword = it },
+            label = { Text("全局搜索（设备/IP/备注/端口）") },
+            modifier = Modifier.fillMaxWidth()
+        )
         if (loading) {
             repeat(3) { SkeletonCard() }
-        } else if (devices.isEmpty()) {
+        } else if (filteredDevices.isEmpty()) {
             EmptyStateCard(title = "暂无资产", desc = "请先在 Web 端添加资产后再查看")
         } else {
             LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(devices, key = { it.id }) { d ->
+                items(filteredDevices, key = { it.id }) { d ->
                     ElevatedCard(
                         modifier = Modifier.fillMaxWidth().combinedClickable(
                             onClick = { onOpen(d.id) },
@@ -378,8 +392,6 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
     val historyLoading by vm.historyLoading.collectAsStateWithLifecycle()
     val queryProgress by vm.queryProgress.collectAsStateWithLifecycle()
     val perfSummary by vm.perfSummary.collectAsStateWithLifecycle()
-    var keyword by remember { mutableStateOf("") }
-    var keywordHistory by remember { mutableStateOf(listOf<String>()) }
     var showLogs by remember { mutableStateOf(false) }
     var start by remember { mutableStateOf(OffsetDateTime.now().minusDays(1)) }
     var end by remember { mutableStateOf(OffsetDateTime.now()) }
@@ -397,10 +409,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
             .distinctUntilChanged()
             .collectLatest { (idx, off) -> vm.saveDetailScroll(deviceId, idx, off) }
     }
-    val ports = device?.interfaces.orEmpty().filter {
-        val k = keyword.lowercase().trim()
-        if (k.isBlank()) true else portSearchBlob(it).contains(k)
-    }
+    val ports = device?.interfaces.orEmpty()
     val refreshState = rememberPullRefreshState(
         refreshing = detailLoading || historyLoading,
         onRefresh = { vm.loadDeviceDetail(deviceId, start, end) }
@@ -454,36 +463,6 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                         }
                     }
                 }
-                item {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            keyword,
-                            { keyword = it },
-                            label = { Text("搜索端口（名称/备注/拼音）") },
-                            trailingIcon = {
-                                TextButton(onClick = {
-                                    val k = keyword.trim()
-                                    if (k.isNotBlank()) keywordHistory = (listOf(k) + keywordHistory).distinct().take(6)
-                                }) { Text("搜索") }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        if (keywordHistory.isNotEmpty()) {
-                            Row(
-                                Modifier.horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                keywordHistory.forEach { kw ->
-                                    AssistChip(onClick = { keyword = kw }, label = { Text(kw) })
-                                }
-                                TextButton(onClick = {
-                                    keyword = ""
-                                    visiblePortCount = 80
-                                }) { Text("清空") }
-                            }
-                        }
-                    }
-                }
                 if (detailLoading) {
                     items(3) { SkeletonCard() }
                 } else {
@@ -497,7 +476,12 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                             colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))
                         ) {
                             Column(Modifier.padding(Np.cardPadding)) {
-                                Text(itf.name, fontWeight = FontWeight.SemiBold)
+                                val nm = itf.customName?.takeIf { it.isNotBlank() } ?: itf.name
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    PortStatusDot(itf.operStatus)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(nm, fontWeight = FontWeight.SemiBold)
+                                }
                                 Text("索引: ${itf.index} · 备注: ${itf.remark.ifBlank { "-" }}")
                             }
                         }
@@ -746,7 +730,8 @@ fun MpTrafficChart(
             setDrawValues(false)
             setDrawFilled(false)
             lineWidth = 2f
-            mode = LineDataSet.Mode.CUBIC_BEZIER
+            enableDashedLine(12f, 6f, 0f)
+            mode = LineDataSet.Mode.LINEAR
         }
         val outSet = LineDataSet(outEntries, "出方向").apply {
             color = android.graphics.Color.parseColor("#22C55E")
@@ -754,7 +739,7 @@ fun MpTrafficChart(
             setDrawValues(false)
             setDrawFilled(false)
             lineWidth = 2f
-            mode = LineDataSet.Mode.CUBIC_BEZIER
+            mode = LineDataSet.Mode.LINEAR
         }
         chart.data = LineData(inSet, outSet)
         if (points.size > 96) {
@@ -887,7 +872,8 @@ fun MpCpuMemChart(cpu: List<Double>, mem: List<Double>, modifier: Modifier = Mod
             setDrawValues(false)
             setDrawFilled(false)
             lineWidth = 2f
-            mode = LineDataSet.Mode.CUBIC_BEZIER
+            enableDashedLine(8f, 5f, 0f)
+            mode = LineDataSet.Mode.LINEAR
         }
         val memSet = LineDataSet(outEntries, "内存").apply {
             color = android.graphics.Color.parseColor("#06B6D4")
@@ -895,7 +881,7 @@ fun MpCpuMemChart(cpu: List<Double>, mem: List<Double>, modifier: Modifier = Mod
             setDrawValues(false)
             setDrawFilled(false)
             lineWidth = 2f
-            mode = LineDataSet.Mode.CUBIC_BEZIER
+            mode = LineDataSet.Mode.LINEAR
         }
         chart.data = LineData(cpuSet, memSet)
         chart.invalidate()
@@ -1034,6 +1020,16 @@ private fun statusText(status: String): String = when (status.lowercase()) {
     "online", "up" -> "在线"
     "offline", "down" -> "离线"
     else -> "未知"
+}
+
+@Composable
+private fun PortStatusDot(operStatus: Int?) {
+    val c = when (operStatus) {
+        1 -> Np.Success
+        2 -> Np.Danger
+        else -> Np.Warning
+    }
+    Box(Modifier.size(9.dp).clip(CircleShape).background(c))
 }
 
 private fun portSearchBlob(itf: NetInterface): String {
