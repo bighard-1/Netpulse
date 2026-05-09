@@ -54,11 +54,15 @@ CREATE TABLE IF NOT EXISTS interfaces (
     "index" INTEGER NOT NULL,
     name VARCHAR(128) NOT NULL,
     custom_name VARCHAR(128),
+    speed_mbps INTEGER NOT NULL DEFAULT 0,
+    oper_status SMALLINT,
     remark TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (device_id, "index")
 );
 ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS custom_name VARCHAR(128);
+ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS speed_mbps INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS oper_status SMALLINT;
 
 CREATE TABLE IF NOT EXISTS metrics (
     ts TIMESTAMPTZ NOT NULL,
@@ -69,6 +73,7 @@ CREATE TABLE IF NOT EXISTS metrics (
     storage_usage NUMERIC(5,2),
     storage_total NUMERIC(20,2),
     storage_free NUMERIC(20,2),
+    uptime_sec BIGINT,
     traffic_in_bps BIGINT,
     traffic_out_bps BIGINT
 );
@@ -76,6 +81,7 @@ CREATE TABLE IF NOT EXISTS metrics (
 ALTER TABLE metrics ADD COLUMN IF NOT EXISTS storage_usage NUMERIC(5,2);
 ALTER TABLE metrics ADD COLUMN IF NOT EXISTS storage_total NUMERIC(20,2);
 ALTER TABLE metrics ADD COLUMN IF NOT EXISTS storage_free NUMERIC(20,2);
+ALTER TABLE metrics ADD COLUMN IF NOT EXISTS uptime_sec BIGINT;
 
 DO $$
 BEGIN
@@ -666,6 +672,8 @@ type Device struct {
 	StorageFree     float64   `json:"storage_free,omitempty"`
 	Remark          string    `json:"remark"`
 	CreatedAt       time.Time `json:"created_at"`
+	Uptime          string    `json:"uptime,omitempty"`
+	UptimeSec       int64     `json:"uptime_sec,omitempty"`
 }
 
 type Interface struct {
@@ -675,6 +683,8 @@ type Interface struct {
 	Name     string `json:"name"`
 	RawName  string `json:"raw_name,omitempty"`
 	Remark   string `json:"remark"`
+	SpeedMbps int   `json:"speed_mbps,omitempty"`
+	OperStatus int  `json:"oper_status,omitempty"`
 	TrafficInBps  int64 `json:"traffic_in_bps,omitempty"`
 	TrafficOutBps int64 `json:"traffic_out_bps,omitempty"`
 }
@@ -687,6 +697,9 @@ type InterfaceMetric struct {
 	StorageUsage  float64
 	StorageTotal  float64
 	StorageFree   float64
+	UptimeSec     int64
+	SpeedMbps     int
+	OperStatus    int
 	TrafficInBps  int64
 	TrafficOutBps int64
 }
@@ -923,6 +936,18 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 	`
 	if _, err := r.db.ExecContext(ctx, mig3); err != nil {
 		return fmt.Errorf("apply migration v3 failed: %w", err)
+	}
+	// v4: interface speed/status and metrics uptime support.
+	const mig4 = `
+		ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS speed_mbps INTEGER NOT NULL DEFAULT 0;
+		ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS oper_status SMALLINT;
+		ALTER TABLE metrics ADD COLUMN IF NOT EXISTS uptime_sec BIGINT;
+		INSERT INTO schema_migrations(version, description)
+		VALUES (4, 'add interfaces.speed_mbps/interfaces.oper_status and metrics.uptime_sec')
+		ON CONFLICT (version) DO NOTHING;
+	`
+	if _, err := r.db.ExecContext(ctx, mig4); err != nil {
+		return fmt.Errorf("apply migration v4 failed: %w", err)
 	}
 	return nil
 }
@@ -1164,7 +1189,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 		       COALESCE(d.v3_username,''), COALESCE(d.v3_auth_protocol,''), COALESCE(d.v3_auth_password,''),
 		       COALESCE(d.v3_priv_protocol,''), COALESCE(d.v3_priv_password,''), COALESCE(d.v3_security_level,''),
 		       COALESCE(d.maintenance_mode, FALSE),
-		       COALESCE(d.remark, ''), d.created_at, lm.last_ts, COALESCE(dl.message, '')
+		       COALESCE(d.remark, ''), d.created_at, lm.last_ts, COALESCE(dl.message, ''), COALESCE(lm2.uptime_sec, 0)
 		FROM devices d
 		LEFT JOIN (
 			SELECT device_id, MAX(ts) AS last_ts
@@ -1178,6 +1203,13 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 			ORDER BY created_at DESC
 			LIMIT 1
 		) dl ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT uptime_sec
+			FROM metrics
+			WHERE device_id = d.id
+			ORDER BY ts DESC
+			LIMIT 1
+		) lm2 ON TRUE
 		WHERE d.id = $1;
 	`
 	var ds DeviceStatus
@@ -1185,7 +1217,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 		&ds.ID, &ds.IP, &ds.Name, &ds.TemplateID, &ds.Brand, &ds.Community, &ds.SNMPVersion, &ds.SNMPPort,
 		&ds.V3Username, &ds.V3AuthProto, &ds.V3AuthPass, &ds.V3PrivProto, &ds.V3PrivPass, &ds.V3SecLevel,
 		&ds.MaintenanceMode,
-		&ds.Remark, &ds.CreatedAt, &ds.LastMetricAt, &ds.StatusReason,
+		&ds.Remark, &ds.CreatedAt, &ds.LastMetricAt, &ds.StatusReason, &ds.UptimeSec,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -1204,6 +1236,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 			ds.Status = "offline"
 		}
 	}
+	ds.Uptime = formatUptime(ds.UptimeSec)
 
 	const iq = `
 		WITH latest_metrics AS (
@@ -1217,6 +1250,8 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 		       COALESCE(NULLIF(i.custom_name,''), i.name) AS display_name,
 		       i.name AS raw_name,
 		       COALESCE(i.remark, ''),
+		       COALESCE(i.speed_mbps, 0),
+		       COALESCE(i.oper_status, 0),
 		       COALESCE(m.traffic_in_bps, 0),
 		       COALESCE(m.traffic_out_bps, 0)
 		FROM interfaces i
@@ -1231,7 +1266,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 	defer rows.Close()
 	for rows.Next() {
 		var itf Interface
-		if err := rows.Scan(&itf.ID, &itf.DeviceID, &itf.Index, &itf.Name, &itf.RawName, &itf.Remark, &itf.TrafficInBps, &itf.TrafficOutBps); err != nil {
+		if err := rows.Scan(&itf.ID, &itf.DeviceID, &itf.Index, &itf.Name, &itf.RawName, &itf.Remark, &itf.SpeedMbps, &itf.OperStatus, &itf.TrafficInBps, &itf.TrafficOutBps); err != nil {
 			return nil, fmt.Errorf("scan interface by device id: %w", err)
 		}
 		ds.Interfaces = append(ds.Interfaces, itf)
@@ -1725,7 +1760,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		       COALESCE(d.v3_priv_protocol,''), COALESCE(d.v3_priv_password,''), COALESCE(d.v3_security_level,''),
 		       COALESCE(d.maintenance_mode,FALSE),
 		       COALESCE(d.remark, ''), d.created_at, lm.last_ts, COALESCE(dl.message, ''),
-		       COALESCE(lm2.storage_usage, 0), COALESCE(lm2.storage_total, 0), COALESCE(lm2.storage_free, 0)
+		       COALESCE(lm2.storage_usage, 0), COALESCE(lm2.storage_total, 0), COALESCE(lm2.storage_free, 0), COALESCE(lm2.uptime_sec, 0)
 		FROM devices d
 		LEFT JOIN (
 			SELECT device_id, MAX(ts) AS last_ts
@@ -1733,7 +1768,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 			GROUP BY device_id
 		) lm ON lm.device_id = d.id
 		LEFT JOIN LATERAL (
-			SELECT storage_usage, storage_total, storage_free
+			SELECT storage_usage, storage_total, storage_free, uptime_sec
 			FROM metrics
 			WHERE device_id = d.id
 			ORDER BY ts DESC
@@ -1763,7 +1798,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 			&ds.V3Username, &ds.V3AuthProto, &ds.V3AuthPass, &ds.V3PrivProto, &ds.V3PrivPass, &ds.V3SecLevel,
 			&ds.MaintenanceMode,
 			&ds.Remark, &ds.CreatedAt, &ds.LastMetricAt, &ds.StatusReason,
-			&ds.StorageUsage, &ds.StorageTotal, &ds.StorageFree,
+			&ds.StorageUsage, &ds.StorageTotal, &ds.StorageFree, &ds.UptimeSec,
 		); err != nil {
 			return nil, fmt.Errorf("scan device status: %w", err)
 		}
@@ -1779,6 +1814,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 				ds.Status = "offline"
 			}
 		}
+		ds.Uptime = formatUptime(ds.UptimeSec)
 		out = append(out, ds)
 	}
 	if err := rows.Err(); err != nil {
@@ -1801,6 +1837,8 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		       COALESCE(NULLIF(i.custom_name,''), i.name) AS display_name,
 		       i.name AS raw_name,
 		       COALESCE(i.remark, ''),
+		       COALESCE(i.speed_mbps, 0),
+		       COALESCE(i.oper_status, 0),
 		       COALESCE(m.traffic_in_bps, 0),
 		       COALESCE(m.traffic_out_bps, 0)
 		FROM interfaces i
@@ -1816,7 +1854,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 	byDevice := make(map[int64][]Interface)
 	for iRows.Next() {
 		var itf Interface
-		if err := iRows.Scan(&itf.ID, &itf.DeviceID, &itf.Index, &itf.Name, &itf.RawName, &itf.Remark, &itf.TrafficInBps, &itf.TrafficOutBps); err != nil {
+		if err := iRows.Scan(&itf.ID, &itf.DeviceID, &itf.Index, &itf.Name, &itf.RawName, &itf.Remark, &itf.SpeedMbps, &itf.OperStatus, &itf.TrafficInBps, &itf.TrafficOutBps); err != nil {
 			return nil, fmt.Errorf("scan interface: %w", err)
 		}
 		byDevice[itf.DeviceID] = append(byDevice[itf.DeviceID], itf)
@@ -1911,19 +1949,27 @@ func (r *Repository) SaveMetrics(
 	const q = `
 		WITH upsert_if AS (
 			INSERT INTO interfaces (device_id, "index", name, remark)
-			VALUES ($2, $3, $11, '')
+			VALUES ($2, $3, $4, '')
 			ON CONFLICT (device_id, "index")
 			DO UPDATE SET
 				name = CASE
 					WHEN EXCLUDED.name <> '' THEN EXCLUDED.name
 					ELSE interfaces.name
+				END,
+				speed_mbps = CASE
+					WHEN $13 > 0 THEN $13
+					ELSE interfaces.speed_mbps
+				END,
+				oper_status = CASE
+					WHEN $14 BETWEEN 1 AND 7 THEN $14
+					ELSE interfaces.oper_status
 				END
 			RETURNING id
 		)
 		INSERT INTO metrics (
-			ts, device_id, interface_id, cpu_usage, memory_usage, storage_usage, storage_total, storage_free, traffic_in_bps, traffic_out_bps
+			ts, device_id, interface_id, cpu_usage, memory_usage, storage_usage, storage_total, storage_free, uptime_sec, traffic_in_bps, traffic_out_bps
 		)
-		VALUES ($1, $2, (SELECT id FROM upsert_if LIMIT 1), $4, $5, $6, $7, $8, $9, $10);
+		VALUES ($1, $2, (SELECT id FROM upsert_if LIMIT 1), $5, $6, $7, $8, $9, $10, $11, $12);
 	`
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1940,7 +1986,7 @@ func (r *Repository) SaveMetrics(
 		outBps := clampTrafficBps(m.TrafficOutBps)
 
 		if _, err := tx.ExecContext(
-			ctx, q, ts, deviceID, m.IfIndex, cpu, mem, clampPercent(m.StorageUsage), clampNonNegative(m.StorageTotal), clampNonNegative(m.StorageFree), inBps, outBps, m.IfName,
+			ctx, q, ts, deviceID, m.IfIndex, m.IfName, cpu, mem, clampPercent(m.StorageUsage), clampNonNegative(m.StorageTotal), clampNonNegative(m.StorageFree), m.UptimeSec, inBps, outBps, m.SpeedMbps, m.OperStatus,
 		); err != nil {
 			return fmt.Errorf("insert metric ifIndex=%d: %w", m.IfIndex, err)
 		}
@@ -1984,6 +2030,19 @@ func clampNonNegative(v float64) float64 {
 		return 0
 	}
 	return v
+}
+
+func formatUptime(sec int64) string {
+	if sec <= 0 {
+		return ""
+	}
+	d := sec / 86400
+	h := (sec % 86400) / 3600
+	m := (sec % 3600) / 60
+	if d > 0 {
+		return fmt.Sprintf("%d天 %02d:%02d", d, h, m)
+	}
+	return fmt.Sprintf("%02d:%02d", h, m)
 }
 
 func (r *Repository) UpdateDeviceRemark(ctx context.Context, id int64, remark string) error {
@@ -2183,10 +2242,11 @@ func (r *Repository) GetRecentEvents(ctx context.Context, limit int) ([]RecentEv
 }
 
 func (r *Repository) GetDeviceHistory(
-	ctx context.Context, deviceID int64, start, end time.Time, interval string,
+	ctx context.Context, deviceID int64, start, end time.Time, interval string, maxPoints int,
 ) ([]DeviceHistoryPoint, error) {
 	useAgg := end.Sub(start) > 7*24*time.Hour
 	interval = strings.TrimSpace(strings.ToLower(interval))
+	bucketInterval := resolveHistoryBucketInterval(end.Sub(start), interval, maxPoints, useAgg)
 	q := `
 		SELECT ts,
 		       AVG(COALESCE(cpu_usage, 0)) AS cpu_usage,
@@ -2207,11 +2267,7 @@ func (r *Repository) GetDeviceHistory(
 			ORDER BY bucket;
 		`
 	}
-	if interval == "5m" || interval == "1h" {
-		b := "5 minutes"
-		if interval == "1h" {
-			b = "1 hour"
-		}
+	if bucketInterval != "" {
 		q = fmt.Sprintf(`
 			SELECT time_bucket('%s', bucket) AS ts,
 			       AVG(COALESCE(avg_cpu_usage, 0)) AS cpu_usage,
@@ -2220,7 +2276,18 @@ func (r *Repository) GetDeviceHistory(
 			WHERE device_id = $1 AND bucket >= $2 AND bucket <= $3
 			GROUP BY 1
 			ORDER BY 1;
-		`, b)
+		`, bucketInterval)
+		if !useAgg {
+			q = fmt.Sprintf(`
+				SELECT time_bucket('%s', ts) AS ts,
+				       AVG(COALESCE(cpu_usage, 0)) AS cpu_usage,
+				       AVG(COALESCE(memory_usage, 0)) AS memory_usage
+				FROM metrics
+				WHERE device_id = $1 AND ts >= $2 AND ts <= $3
+				GROUP BY 1
+				ORDER BY 1;
+			`, bucketInterval)
+		}
 	}
 
 	rows, err := r.db.QueryContext(ctx, q, deviceID, start, end)
@@ -2240,14 +2307,15 @@ func (r *Repository) GetDeviceHistory(
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate device history: %w", err)
 	}
-	return decimateDeviceHistory(out, end.Sub(start)), nil
+	return decimateDeviceHistory(out, end.Sub(start), maxPoints), nil
 }
 
 func (r *Repository) GetInterfaceHistory(
-	ctx context.Context, interfaceID int64, start, end time.Time, interval string,
+	ctx context.Context, interfaceID int64, start, end time.Time, interval string, maxPoints int,
 ) ([]InterfaceHistoryPoint, error) {
 	useAgg := end.Sub(start) > 7*24*time.Hour
 	interval = strings.TrimSpace(strings.ToLower(interval))
+	bucketInterval := resolveHistoryBucketInterval(end.Sub(start), interval, maxPoints, useAgg)
 	q := `
 		SELECT ts, COALESCE(traffic_in_bps, 0), COALESCE(traffic_out_bps, 0)
 		FROM metrics
@@ -2262,11 +2330,7 @@ func (r *Repository) GetInterfaceHistory(
 			ORDER BY bucket;
 		`
 	}
-	if interval == "5m" || interval == "1h" {
-		b := "5 minutes"
-		if interval == "1h" {
-			b = "1 hour"
-		}
+	if bucketInterval != "" {
 		q = fmt.Sprintf(`
 			SELECT time_bucket('%s', bucket) AS ts,
 			       AVG(COALESCE(avg_traffic_in_bps, 0)) AS traffic_in_bps,
@@ -2275,7 +2339,18 @@ func (r *Repository) GetInterfaceHistory(
 			WHERE interface_id = $1 AND bucket >= $2 AND bucket <= $3
 			GROUP BY 1
 			ORDER BY 1;
-		`, b)
+		`, bucketInterval)
+		if !useAgg {
+			q = fmt.Sprintf(`
+				SELECT time_bucket('%s', ts) AS ts,
+				       AVG(COALESCE(traffic_in_bps, 0)) AS traffic_in_bps,
+				       AVG(COALESCE(traffic_out_bps, 0)) AS traffic_out_bps
+				FROM metrics
+				WHERE interface_id = $1 AND ts >= $2 AND ts <= $3
+				GROUP BY 1
+				ORDER BY 1;
+			`, bucketInterval)
+		}
 	}
 
 	rows, err := r.db.QueryContext(ctx, q, interfaceID, start, end)
@@ -2295,13 +2370,14 @@ func (r *Repository) GetInterfaceHistory(
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate interface history: %w", err)
 	}
-	return decimateInterfaceHistory(out, end.Sub(start)), nil
+	return decimateInterfaceHistory(out, end.Sub(start), maxPoints), nil
 }
 
 func (r *Repository) GetDeviceStorageHistory(
-	ctx context.Context, deviceID int64, start, end time.Time, interval string,
+	ctx context.Context, deviceID int64, start, end time.Time, interval string, maxPoints int,
 ) ([]DeviceStorageHistoryPoint, error) {
 	interval = strings.TrimSpace(strings.ToLower(interval))
+	bucketInterval := resolveHistoryBucketInterval(end.Sub(start), interval, maxPoints, false)
 	q := `
 		SELECT ts,
 		       COALESCE(storage_usage, 0) AS storage_usage,
@@ -2311,11 +2387,7 @@ func (r *Repository) GetDeviceStorageHistory(
 		WHERE device_id = $1 AND ts >= $2 AND ts <= $3
 		ORDER BY ts;
 	`
-	if interval == "5m" || interval == "1h" {
-		b := "5 minutes"
-		if interval == "1h" {
-			b = "1 hour"
-		}
+	if bucketInterval != "" {
 		q = fmt.Sprintf(`
 			SELECT time_bucket('%s', ts) AS ts,
 			       AVG(COALESCE(storage_usage, 0)) AS storage_usage,
@@ -2325,7 +2397,7 @@ func (r *Repository) GetDeviceStorageHistory(
 			WHERE device_id = $1 AND ts >= $2 AND ts <= $3
 			GROUP BY 1
 			ORDER BY 1;
-		`, b)
+		`, bucketInterval)
 	}
 	rows, err := r.db.QueryContext(ctx, q, deviceID, start, end)
 	if err != nil {
@@ -2343,14 +2415,18 @@ func (r *Repository) GetDeviceStorageHistory(
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate device storage history: %w", err)
 	}
-	if len(out) <= 4000 {
+	target := 2500
+	if maxPoints > 0 {
+		target = maxPoints
+	}
+	if len(out) <= target {
 		return out, nil
 	}
-	step := int(math.Ceil(float64(len(out)) / 2500))
+	step := int(math.Ceil(float64(len(out)) / float64(target)))
 	if step < 1 {
 		step = 1
 	}
-	cut := make([]DeviceStorageHistoryPoint, 0, 2500)
+	cut := make([]DeviceStorageHistoryPoint, 0, target)
 	for i := 0; i < len(out); i += step {
 		cut = append(cut, out[i])
 	}
@@ -2360,15 +2436,21 @@ func (r *Repository) GetDeviceStorageHistory(
 	return cut, nil
 }
 
-func decimateDeviceHistory(in []DeviceHistoryPoint, span time.Duration) []DeviceHistoryPoint {
+func decimateDeviceHistory(in []DeviceHistoryPoint, span time.Duration, maxPointsOverride int) []DeviceHistoryPoint {
 	if len(in) <= 0 {
 		return in
 	}
 	maxPoints := 4000
+	if maxPointsOverride > 0 {
+		maxPoints = maxPointsOverride
+	}
 	if span > 180*24*time.Hour {
 		maxPoints = 1800
 	} else if span > 30*24*time.Hour {
 		maxPoints = 2500
+	}
+	if maxPointsOverride > 0 {
+		maxPoints = maxPointsOverride
 	}
 	if len(in) <= maxPoints {
 		return in
@@ -2387,15 +2469,21 @@ func decimateDeviceHistory(in []DeviceHistoryPoint, span time.Duration) []Device
 	return out
 }
 
-func decimateInterfaceHistory(in []InterfaceHistoryPoint, span time.Duration) []InterfaceHistoryPoint {
+func decimateInterfaceHistory(in []InterfaceHistoryPoint, span time.Duration, maxPointsOverride int) []InterfaceHistoryPoint {
 	if len(in) <= 0 {
 		return in
 	}
 	maxPoints := 4000
+	if maxPointsOverride > 0 {
+		maxPoints = maxPointsOverride
+	}
 	if span > 180*24*time.Hour {
 		maxPoints = 1800
 	} else if span > 30*24*time.Hour {
 		maxPoints = 2500
+	}
+	if maxPointsOverride > 0 {
+		maxPoints = maxPointsOverride
 	}
 	if len(in) <= maxPoints {
 		return in
@@ -2414,21 +2502,81 @@ func decimateInterfaceHistory(in []InterfaceHistoryPoint, span time.Duration) []
 	return out
 }
 
+func resolveHistoryBucketInterval(span time.Duration, requested string, maxPoints int, useAgg bool) string {
+	switch requested {
+	case "1m":
+		return "1 minute"
+	case "5m":
+		return "5 minutes"
+	case "1h":
+		return "1 hour"
+	}
+	if maxPoints <= 0 || span <= 0 {
+		return ""
+	}
+	sec := int(math.Ceil(span.Seconds() / float64(maxPoints)))
+	if sec < 1 {
+		sec = 1
+	}
+	// metrics_1m has 1-minute base granularity.
+	if useAgg && sec < 60 {
+		sec = 60
+	}
+	switch {
+	case sec >= 3600:
+		h := int(math.Ceil(float64(sec) / 3600.0))
+		return fmt.Sprintf("%d hours", h)
+	case sec >= 60:
+		m := int(math.Ceil(float64(sec) / 60.0))
+		return fmt.Sprintf("%d minutes", m)
+	default:
+		return fmt.Sprintf("%d seconds", sec)
+	}
+}
+
 func (r *Repository) GetDeviceLogs(ctx context.Context, deviceID int64) ([]DeviceLog, error) {
-	const q = `
+	return r.GetDeviceLogsFiltered(ctx, deviceID, "", "all", 100)
+}
+
+func (r *Repository) GetDeviceLogsFiltered(ctx context.Context, deviceID int64, level, source string, limit int) ([]DeviceLog, error) {
+	level = strings.ToUpper(strings.TrimSpace(level))
+	source = strings.ToLower(strings.TrimSpace(source))
+	if source == "" {
+		source = "all"
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	var where []string
+	args := []any{deviceID}
+	where = append(where, "device_id = $1")
+	argN := 2
+	if level != "" && level != "ALL" {
+		where = append(where, fmt.Sprintf("level = $%d", argN))
+		args = append(args, level)
+		argN++
+	}
+	switch source {
+	case "device":
+		where = append(where, "(message LIKE '[SYSLOG] %' OR message LIKE '[TRAP] %')")
+	case "system":
+		where = append(where, "(message NOT LIKE '[SYSLOG] %' AND message NOT LIKE '[TRAP] %')")
+	}
+	args = append(args, limit)
+	q := fmt.Sprintf(`
 		SELECT id, device_id, level, message, created_at
 		FROM device_logs
-		WHERE device_id = $1
+		WHERE %s
 		ORDER BY created_at DESC
-		LIMIT 100;
-	`
-	rows, err := r.db.QueryContext(ctx, q, deviceID)
+		LIMIT $%d;
+	`, strings.Join(where, " AND "), argN)
+	rows, err := r.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get device logs: %w", err)
 	}
 	defer rows.Close()
 
-	out := make([]DeviceLog, 0, 100)
+	out := make([]DeviceLog, 0, limit)
 	for rows.Next() {
 		var l DeviceLog
 		if err := rows.Scan(&l.ID, &l.DeviceID, &l.Level, &l.Message, &l.CreatedAt); err != nil {
@@ -2438,6 +2586,51 @@ func (r *Repository) GetDeviceLogs(ctx context.Context, deviceID int64) ([]Devic
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate device logs: %w", err)
+	}
+	return out, nil
+}
+
+func (r *Repository) GetInterfaceTopBySpeedClass(ctx context.Context, speedMin, speedMax int, limit int) ([]Interface, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 5
+	}
+	const q = `
+		WITH latest_metrics AS (
+			SELECT DISTINCT ON (interface_id)
+			       interface_id, traffic_in_bps, traffic_out_bps
+			FROM metrics
+			WHERE interface_id IS NOT NULL
+			ORDER BY interface_id, ts DESC
+		)
+		SELECT i.id, i.device_id, i."index",
+		       COALESCE(NULLIF(i.custom_name,''), i.name) AS display_name,
+		       i.name AS raw_name,
+		       COALESCE(i.remark, ''),
+		       COALESCE(i.speed_mbps, 0),
+		       COALESCE(i.oper_status, 0),
+		       COALESCE(m.traffic_in_bps, 0),
+		       COALESCE(m.traffic_out_bps, 0)
+		FROM interfaces i
+		LEFT JOIN latest_metrics m ON m.interface_id = i.id
+		WHERE i.speed_mbps >= $1 AND ($2 = 0 OR i.speed_mbps < $2)
+		ORDER BY (COALESCE(m.traffic_in_bps, 0) + COALESCE(m.traffic_out_bps, 0)) DESC
+		LIMIT $3;
+	`
+	rows, err := r.db.QueryContext(ctx, q, speedMin, speedMax, limit)
+	if err != nil {
+		return nil, fmt.Errorf("get interface top by speed class: %w", err)
+	}
+	defer rows.Close()
+	out := make([]Interface, 0, limit)
+	for rows.Next() {
+		var it Interface
+		if err := rows.Scan(&it.ID, &it.DeviceID, &it.Index, &it.Name, &it.RawName, &it.Remark, &it.SpeedMbps, &it.OperStatus, &it.TrafficInBps, &it.TrafficOutBps); err != nil {
+			return nil, fmt.Errorf("scan interface top by speed class: %w", err)
+		}
+		out = append(out, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate interface top by speed class: %w", err)
 	}
 	return out, nil
 }

@@ -66,6 +66,9 @@ const trafficHotspots = computed(() => {
   points.sort((a, b) => b.bps - a.bps);
   return points.slice(0, 3);
 });
+const top100M = computed(() => rankedPortsBySpeed(95, 1000));
+const top1G = computed(() => rankedPortsBySpeed(1000, 10000));
+const top10G = computed(() => rankedPortsBySpeed(10000, 0));
 
 const storageRiskCount = computed(() => {
   return devices.value.filter((d) => {
@@ -87,6 +90,37 @@ const filteredDevices = computed(() => {
       .join(" ");
     return [d.ip, d.name, d.brand, d.remark, d.location, d.site, ports, d.status].join(" ").toLowerCase().includes(kw);
   });
+});
+const filteredPorts = computed(() => {
+  const kw = globalKeyword.value.trim().toLowerCase();
+  if (!kw) return [];
+  const out = [];
+  for (const d of devices.value) {
+    for (const p of d.interfaces || []) {
+      const text = [
+        p.name || "",
+        p.raw_name || "",
+        p.remark || "",
+        p.index || "",
+        p.id || "",
+        d.name || "",
+        d.ip || "",
+        d.brand || ""
+      ].join(" ").toLowerCase();
+      if (!text.includes(kw)) continue;
+      out.push({
+        portId: p.id,
+        portName: p.name || `ifIndex-${p.index}`,
+        portIndex: p.index,
+        deviceId: d.id,
+        deviceName: d.name || d.ip,
+        deviceIP: d.ip,
+        remark: p.remark || "",
+        speedMbps: Number(p.speed_mbps || 0)
+      });
+    }
+  }
+  return out.slice(0, 80);
 });
 const showOnboarding = computed(() => devices.value.length === 0);
 
@@ -177,6 +211,38 @@ function openDeviceDetail(row) {
   if (!row?.id) return;
   router.push(`/device/${row.id}`);
 }
+function openPortDetail(row) {
+  if (!row?.portId) return;
+  router.push({
+    path: `/port/${row.portId}`,
+    query: {
+      deviceId: String(row.deviceId),
+      deviceIp: row.deviceIP,
+      portName: row.portName,
+      portRemark: row.remark || ""
+    }
+  });
+}
+function rankedPortsBySpeed(min, max) {
+  const points = [];
+  for (const d of devices.value) {
+    for (const p of d.interfaces || []) {
+      const speed = Number(p.speed_mbps || 0);
+      if (speed < min) continue;
+      if (max > 0 && speed >= max) continue;
+      const heat = Number(p.traffic_in_bps || 0) + Number(p.traffic_out_bps || 0);
+      if (heat <= 0) continue;
+      points.push({
+        deviceName: d.name || d.ip,
+        interfaceName: p.name || `ifIndex-${p.index}`,
+        interfaceId: p.id,
+        bps: heat
+      });
+    }
+  }
+  points.sort((a, b) => b.bps - a.bps);
+  return points.slice(0, 5);
+}
 
 function openEventDetail(event) {
   if (!event) return;
@@ -264,9 +330,13 @@ function onVisibilityChange() {
       </div>
     </el-card>
 
-    <section ref="healthRef" class="grid grid-cols-1 gap-5 2xl:grid-cols-[3fr,2fr]">
+    <section ref="healthRef" class="grid grid-cols-1 gap-5">
       <HealthTrendArea :trend="healthTrend" />
-      <div ref="hotspotRef"><TrafficTopBar :hotspots="trafficHotspots" /></div>
+      <div ref="hotspotRef" class="grid grid-cols-1 gap-5 xl:grid-cols-3">
+        <TrafficTopBar title="百兆口 Top N（100M）" :hotspots="top100M" />
+        <TrafficTopBar title="千兆口 Top N（1G）" :hotspots="top1G" />
+        <TrafficTopBar title="万兆口 Top N（10G）" :hotspots="top10G" />
+      </div>
     </section>
 
     <section class="grid grid-cols-1 gap-5 2xl:grid-cols-[2fr,1fr]">
@@ -319,6 +389,24 @@ function onVisibilityChange() {
                 <template #default="{ row }">{{ row.uptime || "-" }}</template>
               </el-table-column>
               <el-table-column prop="remark" label="备注" min-width="220" />
+            </el-table>
+            <el-divider v-if="filteredPorts.length">端口命中结果（可直接点击进入）</el-divider>
+            <el-table v-if="filteredPorts.length" :data="filteredPorts" class="np-borderless-table" size="small">
+              <el-table-column label="端口" min-width="200">
+                <template #default="{ row }">
+                  <el-button link type="primary" @click="openPortDetail(row)">{{ row.portName }}</el-button>
+                </template>
+              </el-table-column>
+              <el-table-column label="所属设备" min-width="180">
+                <template #default="{ row }">
+                  <el-button link type="primary" @click="openDeviceDetail({ id: row.deviceId })">{{ row.deviceName }}</el-button>
+                </template>
+              </el-table-column>
+              <el-table-column prop="deviceIP" label="设备IP" min-width="150" />
+              <el-table-column label="端口速率" width="120">
+                <template #default="{ row }">{{ row.speedMbps > 0 ? `${row.speedMbps} Mbps` : "-" }}</template>
+              </el-table-column>
+              <el-table-column prop="remark" label="端口备注" min-width="220" />
             </el-table>
           </template>
         </el-skeleton>

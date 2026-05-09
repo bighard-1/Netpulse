@@ -527,6 +527,18 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 	startStr := r.URL.Query().Get("start")
 	endStr := r.URL.Query().Get("end")
 	interval := strings.TrimSpace(r.URL.Query().Get("interval"))
+	maxPoints := 0
+	if mp := strings.TrimSpace(r.URL.Query().Get("max_points")); mp != "" {
+		v, err := strconv.Atoi(mp)
+		if err != nil || v <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid max_points")
+			return
+		}
+		if v > 10000 {
+			v = 10000
+		}
+		maxPoints = v
+	}
 
 	if metricType == "" || idStr == "" || startStr == "" || endStr == "" {
 		writeError(w, http.StatusBadRequest, "type, id, start, end are required")
@@ -556,7 +568,7 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 
 	switch metricType {
 	case "cpu", "mem":
-		items, err := h.repo.GetDeviceHistory(r.Context(), id, start, end, interval)
+		items, err := h.repo.GetDeviceHistory(r.Context(), id, start, end, interval, maxPoints)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -567,10 +579,11 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			"start":    start,
 			"end":      end,
 			"interval": interval,
-			"data":     items,
+			"maxPoints": maxPoints,
+			"data":      items,
 		})
 	case "traffic":
-		items, err := h.repo.GetInterfaceHistory(r.Context(), id, start, end, interval)
+		items, err := h.repo.GetInterfaceHistory(r.Context(), id, start, end, interval, maxPoints)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -581,10 +594,11 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			"start":    start,
 			"end":      end,
 			"interval": interval,
-			"data":     items,
+			"maxPoints": maxPoints,
+			"data":      items,
 		})
 	case "storage":
-		items, err := h.repo.GetDeviceStorageHistory(r.Context(), id, start, end, interval)
+		items, err := h.repo.GetDeviceStorageHistory(r.Context(), id, start, end, interval, maxPoints)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -595,7 +609,8 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			"start":    start,
 			"end":      end,
 			"interval": interval,
-			"data":     items,
+			"maxPoints": maxPoints,
+			"data":      items,
 		})
 	default:
 		writeError(w, http.StatusBadRequest, "type must be one of: cpu, mem, traffic, storage")
@@ -608,7 +623,15 @@ func (h *Handler) handleDeviceLogs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid device id")
 		return
 	}
-	items, err := h.repo.GetDeviceLogs(r.Context(), id)
+	level := strings.TrimSpace(r.URL.Query().Get("level"))
+	source := strings.TrimSpace(r.URL.Query().Get("source"))
+	limit := 100
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, e := strconv.Atoi(raw); e == nil && n > 0 {
+			limit = n
+		}
+	}
+	items, err := h.repo.GetDeviceLogsFiltered(r.Context(), id, level, source, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

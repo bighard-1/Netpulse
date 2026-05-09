@@ -4,6 +4,7 @@ import { formatBps } from "../../utils/format";
 import { npAxisLabel, npAxisLine, npChartGrid, npSplitLine, npTooltip } from "../../utils/chartTheme";
 
 const props = defineProps({
+  title: { type: String, default: "Top N 端口流量排行" },
   hotspots: { type: Array, default: () => [] }
 });
 
@@ -76,7 +77,7 @@ watch(() => props.hotspots, render, { deep: true });
 <template>
   <el-card>
     <template #header>
-      <span class="text-lg font-semibold">Top N 端口流量排行</span>
+      <span class="text-lg font-semibold">{{ props.title }}</span>
     </template>
     <el-empty v-if="!(props.hotspots || []).length" description="暂无端口流量数据（等待采样入库）" :image-size="72" />
     <div v-else ref="chartRef" class="h-[260px] w-full"></div>

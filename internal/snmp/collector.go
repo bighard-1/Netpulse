@@ -23,6 +23,8 @@ const (
 	OIDIfInOctets     = ".1.3.6.1.2.1.2.2.1.10"
 	OIDIfOutOctets    = ".1.3.6.1.2.1.2.2.1.16"
 	OIDIfOperStatus   = ".1.3.6.1.2.1.2.2.1.8"
+	OIDIfSpeed        = ".1.3.6.1.2.1.2.2.1.5"
+	OIDIfHighSpeed    = ".1.3.6.1.2.1.31.1.1.1.15"
 	OIDHrStorageType  = ".1.3.6.1.2.1.25.2.3.1.2"
 	OIDHrStorageAlloc = ".1.3.6.1.2.1.25.2.3.1.4"
 	OIDHrStorageSize  = ".1.3.6.1.2.1.25.2.3.1.5"
@@ -40,6 +42,7 @@ type InterfaceCounters struct {
 	InOctets  uint64
 	OutOctets uint64
 	OperUp    bool
+	SpeedMbps int
 }
 
 type PollResult struct {
@@ -48,6 +51,7 @@ type PollResult struct {
 	StorageUsage float64
 	StorageTotal float64
 	StorageFree  float64
+	UptimeSec    int64
 	Interfaces   []InterfaceCounters
 	PolledAt     time.Time
 }
@@ -201,6 +205,7 @@ func (c *Collector) PollDevice(ip string, opt PollOptions) (PollResult, error) {
 		return PollResult{}, err
 	}
 	statusMap, _ := c.fetchIfOperStatus(client)
+	speedMap, _ := c.fetchIfSpeedMbps(client)
 
 	merged := make([]InterfaceCounters, 0, len(ifNames))
 	for idx, name := range ifNames {
@@ -210,10 +215,12 @@ func (c *Collector) PollDevice(ip string, opt PollOptions) (PollResult, error) {
 			InOctets:  inMap[idx],
 			OutOctets: outMap[idx],
 			OperUp:    statusMap[idx],
+			SpeedMbps: speedMap[idx],
 		})
 	}
 
 	stUsage, stTotal, stFree := c.fetchStorageSummary(client)
+	uptimeSec := c.fetchSysUptimeSec(client)
 
 	return PollResult{
 		CPUUsage:     cpuUsage,
@@ -221,9 +228,62 @@ func (c *Collector) PollDevice(ip string, opt PollOptions) (PollResult, error) {
 		StorageUsage: stUsage,
 		StorageTotal: stTotal,
 		StorageFree:  stFree,
+		UptimeSec:    uptimeSec,
 		Interfaces:   merged,
 		PolledAt:     time.Now(),
 	}, nil
+}
+
+func (c *Collector) fetchSysUptimeSec(client *gosnmp.GoSNMP) int64 {
+	pdus, err := client.Get([]string{".1.3.6.1.2.1.1.3.0"})
+	if err != nil || len(pdus.Variables) == 0 {
+		return 0
+	}
+	ticks := toUint64(pdus.Variables[0].Value)
+	if ticks == 0 {
+		return 0
+	}
+	return int64(ticks / 100)
+}
+
+func (c *Collector) fetchIfSpeedMbps(client *gosnmp.GoSNMP) (map[int]int, error) {
+	out := map[int]int{}
+	high, err := client.BulkWalkAll(OIDIfHighSpeed)
+	if err == nil {
+		for _, p := range high {
+			idx, e := oidIndex(p.Name)
+			if e != nil {
+				continue
+			}
+			v := int(toUint64(p.Value))
+			if v > 0 {
+				out[idx] = v
+			}
+		}
+	}
+	if len(out) > 0 {
+		return out, nil
+	}
+	legacy, err := client.BulkWalkAll(OIDIfSpeed)
+	if err != nil {
+		return out, err
+	}
+	for _, p := range legacy {
+		idx, e := oidIndex(p.Name)
+		if e != nil {
+			continue
+		}
+		bps := toUint64(p.Value)
+		if bps == 0 {
+			continue
+		}
+		mbps := int(bps / 1_000_000)
+		if mbps <= 0 {
+			mbps = 1
+		}
+		out[idx] = mbps
+	}
+	return out, nil
 }
 
 func (c *Collector) fetchStorageSummary(client *gosnmp.GoSNMP) (float64, float64, float64) {

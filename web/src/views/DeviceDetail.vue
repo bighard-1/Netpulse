@@ -15,6 +15,8 @@ const chartLoading = ref(false);
 const logsLoading = ref(false);
 const recentLogs = ref([]);
 const logLimit = ref(10);
+const logLevel = ref("ALL");
+const logSource = ref("device");
 const device = ref(null);
 const portKeyword = ref("");
 const deviceEditVisible = ref(false);
@@ -105,7 +107,12 @@ async function loadLogs() {
   if (!props.id) return;
   logsLoading.value = true;
   try {
-    const res = await api.getDeviceLogs(props.id);
+    const level = logLevel.value === "ALL" ? "" : logLevel.value;
+    const res = await api.getDeviceLogs(props.id, {
+      level,
+      source: logSource.value,
+      limit: 100
+    });
     recentLogs.value = res.data || [];
   } finally {
     logsLoading.value = false;
@@ -482,6 +489,17 @@ watch(
             <div class="flex w-full items-center justify-between pr-3">
               <span>设备日志（默认展示10条）</span>
               <div class="flex items-center gap-2" @click.stop>
+                <el-select v-model="logSource" class="w-[150px]" @change="loadLogs">
+                  <el-option value="device" label="设备原生日志" />
+                  <el-option value="all" label="全部日志" />
+                  <el-option value="system" label="系统轮询日志" />
+                </el-select>
+                <el-select v-model="logLevel" class="w-[130px]" @change="loadLogs">
+                  <el-option value="ALL" label="全部级别" />
+                  <el-option value="ERROR" label="ERROR" />
+                  <el-option value="WARNING" label="WARNING" />
+                  <el-option value="INFO" label="INFO" />
+                </el-select>
                 <el-select v-model="logLimit" class="w-[140px]">
                   <el-option :value="10" label="10条" />
                   <el-option :value="20" label="20条" />

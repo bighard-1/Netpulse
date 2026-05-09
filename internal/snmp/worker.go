@@ -242,6 +242,9 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 			StorageUsage:  result.StorageUsage,
 			StorageTotal:  result.StorageTotal,
 			StorageFree:   result.StorageFree,
+			UptimeSec:     result.UptimeSec,
+			SpeedMbps:     itf.SpeedMbps,
+			OperStatus:    boolToOperStatus(itf.OperUp),
 			TrafficInBps:  inBps,
 			TrafficOutBps: outBps,
 		})
@@ -307,6 +310,13 @@ func loadCalibrationMap(raw string) map[string]float64 {
 		out[strings.TrimSpace(k)] = out[k]
 	}
 	return out
+}
+
+func boolToOperStatus(v bool) int {
+	if v {
+		return 1
+	}
+	return 2
 }
 
 func (w *Worker) calibrationFactor(d db.Device) float64 {

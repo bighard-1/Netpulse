@@ -68,6 +68,24 @@ struct PortNavTarget: Hashable {
     let deviceID: Int64
 }
 
+struct MetricLinePoint: Identifiable {
+    let id: String
+    let ts: Date
+    let value: Double
+}
+
+enum UsageKind {
+    case cpu
+    case mem
+}
+
+struct UsageLinePoint: Identifiable {
+    let id: String
+    let ts: Date
+    let value: Double
+    let kind: UsageKind
+}
+
 struct DeviceHistoryPoint: Codable, Identifiable {
     var id: String { timestamp }
     let timestamp: String
@@ -263,13 +281,13 @@ final class AppVM: ObservableObject {
         do {
             let s = ISO8601DateFormatter().string(from: start)
             let e = ISO8601DateFormatter().string(from: end)
-            async let c = fetchHistory(type: "cpu", id: deviceID, start: s, end: e) as [DeviceHistoryPoint]
-            async let m = fetchHistory(type: "mem", id: deviceID, start: s, end: e) as [DeviceHistoryPoint]
+            async let c = fetchHistory(type: "cpu", id: deviceID, start: s, end: e, maxPoints: 420) as [DeviceHistoryPoint]
+            async let m = fetchHistory(type: "mem", id: deviceID, start: s, end: e, maxPoints: 420) as [DeviceHistoryPoint]
             let cpuPoints = try await c
             let memPoints = try await m
             guard requestID == historyRequestSeq, activeDeviceID == deviceID else { return }
-            cpu = cpuPoints
-            mem = memPoints
+            cpu = cpuPoints.sorted { $0.timestamp < $1.timestamp }
+            mem = memPoints.sorted { $0.timestamp < $1.timestamp }
             deviceError = ""
             // 日志单独异步加载，避免拖慢详情页首屏图表渲染。
             Task {
@@ -304,9 +322,9 @@ final class AppVM: ObservableObject {
         do {
             let s = ISO8601DateFormatter().string(from: start)
             let e = ISO8601DateFormatter().string(from: end)
-            let points: [InterfaceHistoryPoint] = try await fetchHistory(type: "traffic", id: portID, start: s, end: e)
+            let points: [InterfaceHistoryPoint] = try await fetchHistory(type: "traffic", id: portID, start: s, end: e, maxPoints: 700)
             guard requestID == portRequestSeq, activePortID == portID else { return }
-            traffic = points
+            traffic = points.sorted { $0.timestamp < $1.timestamp }
             portError = ""
         } catch {
             guard requestID == portRequestSeq else { return }
@@ -416,7 +434,7 @@ final class AppVM: ObservableObject {
         return try JSONDecoder().decode([RecentEvent].self, from: d)
     }
 
-    private func fetchHistory<T: Codable>(type: String, id: Int64, start: String, end: String) async throws -> [T] {
+    private func fetchHistory<T: Codable>(type: String, id: Int64, start: String, end: String, maxPoints: Int) async throws -> [T] {
         var comp = URLComponents(string: "\(baseURL)/metrics/history")!
         let interval = historyInterval(start: start, end: end)
         comp.queryItems = [
@@ -424,7 +442,8 @@ final class AppVM: ObservableObject {
             URLQueryItem(name: "id", value: "\(id)"),
             URLQueryItem(name: "start", value: start),
             URLQueryItem(name: "end", value: end),
-            URLQueryItem(name: "interval", value: interval)
+            URLQueryItem(name: "interval", value: interval),
+            URLQueryItem(name: "max_points", value: "\(maxPoints)")
         ]
         let req = authorizedRequest(comp.url!)
         let d = try await dataWithAuth(req)
@@ -732,6 +751,7 @@ struct DeviceDetailView: View {
     @State private var showLogs = false
     @State private var dateEnd = Date()
     @State private var dateStart = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
+    @State private var visiblePortCount = 80
 
     private var filteredPorts: [NetInterface] {
         let list = vm.deviceDetail?.interfaces ?? []
@@ -739,8 +759,16 @@ struct DeviceDetailView: View {
         if key.isEmpty { return list }
         return list.filter { "\($0.id) \($0.index) \($0.name) \($0.remark)".lowercased().contains(key) }
     }
+    private var visiblePorts: [NetInterface] { Array(filteredPorts.prefix(visiblePortCount)) }
     private var cpuValues: [Double] { vm.cpu.map { $0.cpu_usage ?? 0 } }
     private var memValues: [Double] { vm.mem.map { $0.mem_usage ?? 0 } }
+    private var cpuForRender: [DeviceHistoryPoint] { decimateDeviceHistory(vm.cpu, maxPoints: 420) }
+    private var memForRender: [DeviceHistoryPoint] { decimateDeviceHistory(vm.mem, maxPoints: 420) }
+    private var usageSeries: [UsageLinePoint] {
+        let c = cpuForRender.map { UsageLinePoint(id: "c-\($0.timestamp)", ts: parseRFC3339($0.timestamp), value: $0.cpu_usage ?? 0, kind: .cpu) }
+        let m = memForRender.map { UsageLinePoint(id: "m-\($0.timestamp)", ts: parseRFC3339($0.timestamp), value: $0.mem_usage ?? 0, kind: .mem) }
+        return (c + m).sorted { $0.ts < $1.ts }
+    }
     private var cpuCurrent: Double { cpuValues.last ?? 0 }
     private var memCurrent: Double { memValues.last ?? 0 }
     private var cpuPeak: Double { cpuValues.max() ?? 0 }
@@ -762,59 +790,15 @@ struct DeviceDetailView: View {
                     }
                 }
 
-                NpCard {
-                    Text("CPU / 内存").font(.headline.weight(.semibold))
-                    Text("CPU 当前 \(cpuCurrent, specifier: "%.1f")% / 峰值 \(cpuPeak, specifier: "%.1f")%")
-                        .font(.caption).foregroundStyle(.white.opacity(0.72))
-                    Text("内存 当前 \(memCurrent, specifier: "%.1f")% / 峰值 \(memPeak, specifier: "%.1f")%")
-                        .font(.caption).foregroundStyle(.white.opacity(0.72))
-                    HStack(spacing: 14) {
-                        Label("CPU", systemImage: "circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(Color.orange)
-                        Label("内存", systemImage: "circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(Color.cyan)
-                    }
-                    if vm.historyLoading {
-                        ShimmerRect(height: 240)
-                    } else if vm.cpu.isEmpty && vm.mem.isEmpty {
-                        EmptyStateCard(title: "暂无性能数据", desc: "等待下一轮采集后自动显示")
-                    } else {
-                        Chart {
-                            ForEach(vm.cpu) { p in
-                                LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("CPU", p.cpu_usage ?? 0))
-                                    .foregroundStyle(Color.orange)
-                            }
-                            ForEach(vm.mem) { p in
-                                LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("内存", p.mem_usage ?? 0))
-                                    .foregroundStyle(Color.cyan)
-                            }
-                        }
-                        .chartYAxis {
-                            AxisMarks(position: .leading, values: [0, 25, 50, 75, 100]) { _ in
-                                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
-                                    .foregroundStyle(.white.opacity(0.10))
-                                AxisTick().foregroundStyle(.white.opacity(0.35))
-                                AxisValueLabel().foregroundStyle(.white.opacity(0.70))
-                            }
-                        }
-                        .chartXAxis {
-                            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.35))
-                                    .foregroundStyle(.white.opacity(0.05))
-                                AxisTick().foregroundStyle(.white.opacity(0.4))
-                                AxisValueLabel().foregroundStyle(.white.opacity(0.65))
-                            }
-                        }
-                        .chartPlotStyle { plotArea in
-                            plotArea
-                                .background(Color(red: 21/255, green: 30/255, blue: 45/255))
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
-                        }
-                        .frame(height: 260)
-                    }
-                }
+                CpuMemPanel(
+                    historyLoading: vm.historyLoading,
+                    cpuCurrent: cpuCurrent,
+                    cpuPeak: cpuPeak,
+                    memCurrent: memCurrent,
+                    memPeak: memPeak,
+                    cpuSeries: usageSeries.filter { $0.kind == .cpu },
+                    memSeries: usageSeries.filter { $0.kind == .mem }
+                )
 
                 NpCard {
                     TextField("搜索端口", text: $keyword)
@@ -830,7 +814,7 @@ struct DeviceDetailView: View {
                 } else if filteredPorts.isEmpty {
                     EmptyStateCard(title: "无匹配端口", desc: "请调整关键字后再试")
                 } else {
-                    ForEach(filteredPorts) { p in
+                    ForEach(visiblePorts) { p in
                         NavigationLink(value: PortNavTarget(id: p.id, deviceID: deviceID)) {
                             NpCard {
                                 VStack(alignment: .leading, spacing: 4) {
@@ -842,6 +826,12 @@ struct DeviceDetailView: View {
                             }
                         }
                         .buttonStyle(.plain)
+                    }
+                    if visiblePortCount < filteredPorts.count {
+                        Button("加载更多端口（\(filteredPorts.count - visiblePortCount)）") {
+                            visiblePortCount += 80
+                        }
+                        .buttonStyle(.bordered)
                     }
                 }
 
@@ -871,6 +861,7 @@ struct DeviceDetailView: View {
             PortDetailView(deviceID: target.deviceID, portID: target.id).environmentObject(vm)
         }
         .task {
+            visiblePortCount = 80
             dateEnd = Date()
             dateStart = Calendar.current.date(byAdding: .day, value: -1, to: dateEnd) ?? dateEnd
             async let detailTask: Void = vm.fetchDeviceDetail(deviceID: deviceID)
@@ -878,6 +869,7 @@ struct DeviceDetailView: View {
             _ = await (detailTask, historyTask)
         }
         .refreshable {
+            visiblePortCount = 80
             async let detailTask: Void = vm.fetchDeviceDetail(deviceID: deviceID)
             async let historyTask: Void = vm.fetchDeviceHistory(deviceID: deviceID, start: dateStart, end: dateEnd)
             _ = await (detailTask, historyTask)
@@ -897,7 +889,7 @@ struct PortDetailView: View {
         Calendar.current.date(byAdding: .year, value: -3, to: Date()) ?? .distantPast
     }
     private var trafficForRender: [InterfaceHistoryPoint] {
-        decimateTraffic(vm.traffic, maxPoints: 900)
+        decimateTraffic(vm.traffic, maxPoints: 700)
     }
 
     var body: some View {
@@ -972,16 +964,27 @@ struct PortDetailView: View {
                     ForEach(trafficForRender) { p in
                         LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("入方向", p.traffic_in_bps ?? 0))
                             .foregroundStyle(NpColor.indigo)
+                            .interpolationMethod(.catmullRom)
+                            .lineStyle(StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round))
                         LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("出方向", p.traffic_out_bps ?? 0))
                             .foregroundStyle(NpColor.success)
+                            .interpolationMethod(.catmullRom)
+                            .lineStyle(StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round))
                     }
                 }
+                .transaction { $0.animation = nil }
                 .chartYAxis {
-                    AxisMarks(position: .leading) { _ in
+                    AxisMarks(position: .leading) { value in
                         AxisGridLine(stroke: StrokeStyle(lineWidth: 0.6, dash: [3, 4]))
                             .foregroundStyle(.white.opacity(0.14))
                         AxisTick().foregroundStyle(.white.opacity(0.45))
-                        AxisValueLabel().foregroundStyle(.white.opacity(0.7))
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) {
+                                Text(formatBps(v)).foregroundStyle(.white.opacity(0.70))
+                            } else if let v = value.as(Int.self) {
+                                Text(formatBps(Double(v))).foregroundStyle(.white.opacity(0.70))
+                            }
+                        }
                     }
                 }
                 .chartXAxis {
@@ -1036,6 +1039,34 @@ func decimateTraffic(_ src: [InterfaceHistoryPoint], maxPoints: Int) -> [Interfa
     return out
 }
 
+func decimateDeviceHistory(_ src: [DeviceHistoryPoint], maxPoints: Int) -> [DeviceHistoryPoint] {
+    guard src.count > maxPoints, maxPoints > 0 else { return src }
+    let bucket = Double(src.count) / Double(maxPoints)
+    var out: [DeviceHistoryPoint] = []
+    out.reserveCapacity(maxPoints)
+    var idx = 0.0
+    while idx < Double(src.count) {
+        let from = Int(idx)
+        let to = min(src.count, Int(idx + bucket))
+        guard from < to else { break }
+        let slice = src[from..<to]
+        let cpuAvg = slice.compactMap { $0.cpu_usage }.reduce(0, +) / Double(max(1, slice.compactMap { $0.cpu_usage }.count))
+        let memAvg = slice.compactMap { $0.mem_usage }.reduce(0, +) / Double(max(1, slice.compactMap { $0.mem_usage }.count))
+        let ts = slice.last?.timestamp ?? src[from].timestamp
+        out.append(DeviceHistoryPoint(timestamp: ts, cpu_usage: cpuAvg, mem_usage: memAvg))
+        idx += bucket
+    }
+    return out
+}
+
+func formatBps(_ value: Double) -> String {
+    let absV = abs(value)
+    if absV >= 1_000_000_000 { return String(format: "%.1fGbps", value / 1_000_000_000) }
+    if absV >= 1_000_000 { return String(format: "%.1fMbps", value / 1_000_000) }
+    if absV >= 1_000 { return String(format: "%.1fKbps", value / 1_000) }
+    return String(format: "%.0fbps", value)
+}
+
 struct NpCard<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
@@ -1045,6 +1076,70 @@ struct NpCard<Content: View>: View {
             .background(NpColor.card)
             .clipShape(RoundedRectangle(cornerRadius: UiSpec.cardRadius))
             .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 2)
+    }
+}
+
+struct CpuMemPanel: View {
+    let historyLoading: Bool
+    let cpuCurrent: Double
+    let cpuPeak: Double
+    let memCurrent: Double
+    let memPeak: Double
+    let cpuSeries: [UsageLinePoint]
+    let memSeries: [UsageLinePoint]
+
+    var body: some View {
+        NpCard {
+            Text("CPU / 内存").font(.headline.weight(.semibold))
+            Text("CPU 当前 \(cpuCurrent, specifier: "%.1f")% / 峰值 \(cpuPeak, specifier: "%.1f")%")
+                .font(.caption).foregroundStyle(.white.opacity(0.72))
+            Text("内存 当前 \(memCurrent, specifier: "%.1f")% / 峰值 \(memPeak, specifier: "%.1f")%")
+                .font(.caption).foregroundStyle(.white.opacity(0.72))
+            HStack(spacing: 14) {
+                Label("CPU(%)", systemImage: "circle.fill").font(.caption).foregroundStyle(Color.orange)
+                Label("内存(%)", systemImage: "circle.fill").font(.caption).foregroundStyle(Color.cyan)
+            }
+            if historyLoading {
+                ShimmerRect(height: 240)
+            } else if cpuSeries.isEmpty && memSeries.isEmpty {
+                EmptyStateCard(title: "暂无性能数据", desc: "等待下一轮采集后自动显示")
+            } else {
+                Chart {
+                    ForEach(cpuSeries) { p in
+                        LineMark(x: .value("时间", p.ts), y: .value("CPU", p.value))
+                            .foregroundStyle(Color.orange)
+                    }
+                    ForEach(memSeries) { p in
+                        LineMark(x: .value("时间", p.ts), y: .value("内存", p.value))
+                            .foregroundStyle(Color.cyan)
+                    }
+                }
+                .transaction { $0.animation = nil }
+                .chartYScale(domain: 0...100)
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: [0, 25, 50, 75, 100]) { value in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(.white.opacity(0.10))
+                        AxisTick().foregroundStyle(.white.opacity(0.35))
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) {
+                                Text("\(Int(v))%").foregroundStyle(.white.opacity(0.70))
+                            }
+                        }
+                    }
+                }
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.35)).foregroundStyle(.white.opacity(0.05))
+                        AxisTick().foregroundStyle(.white.opacity(0.4))
+                        AxisValueLabel().foregroundStyle(.white.opacity(0.65))
+                    }
+                }
+                .chartPlotStyle { plotArea in
+                    plotArea.background(Color(red: 21/255, green: 30/255, blue: 45/255)).clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .frame(height: 260)
+            }
+        }
     }
 }
 

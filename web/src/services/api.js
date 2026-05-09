@@ -111,8 +111,8 @@ export const api = {
   getDeviceCapabilities(id) {
     return http.get(`/devices/${id}/capabilities`);
   },
-  getDeviceLogs(id) {
-    return http.get(`/devices/${id}/logs`);
+  getDeviceLogs(id, params = {}) {
+    return http.get(`/devices/${id}/logs`, { params });
   },
   diagnoseDevice(id) {
     return http.get(`/devices/${id}/diagnose`);
