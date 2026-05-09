@@ -7,6 +7,18 @@ const http = axios.create({
   baseURL: API_BASE,
   timeout: 20000
 });
+const SLOW_LOG_KEY = "np_slow_api_logs";
+
+function appendSlowApiLog(item) {
+  try {
+    const prev = JSON.parse(localStorage.getItem(SLOW_LOG_KEY) || "[]");
+    const next = [item, ...prev].slice(0, 120);
+    localStorage.setItem(SLOW_LOG_KEY, JSON.stringify(next));
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("np-slow-api-log", { detail: item }));
+    }
+  } catch {}
+}
 
 function normalizeToken(raw) {
   if (!raw) return "";
@@ -23,14 +35,40 @@ function normalizeToken(raw) {
 }
 
 http.interceptors.request.use((config) => {
+  config.metadata = { start: Date.now() };
   const token = normalizeToken(localStorage.getItem("netpulse_token"));
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
 http.interceptors.response.use(
-  (resp) => resp,
+  (resp) => {
+    const cost = Date.now() - (resp?.config?.metadata?.start || Date.now());
+    if (cost > 1200) {
+      // Lightweight client-side perf telemetry for slow API calls.
+      console.warn(`[netpulse][slow-api] ${resp?.config?.method?.toUpperCase()} ${resp?.config?.url} ${cost}ms`);
+      appendSlowApiLog({
+        ts: new Date().toISOString(),
+        method: resp?.config?.method?.toUpperCase() || "GET",
+        url: resp?.config?.url || "",
+        ms: cost,
+        ok: true
+      });
+    }
+    return resp;
+  },
   (err) => {
+    const cost = Date.now() - (err?.config?.metadata?.start || Date.now());
+    if (cost > 1200) {
+      console.warn(`[netpulse][slow-api] ${err?.config?.method?.toUpperCase()} ${err?.config?.url} ${cost}ms (error)`);
+      appendSlowApiLog({
+        ts: new Date().toISOString(),
+        method: err?.config?.method?.toUpperCase() || "GET",
+        url: err?.config?.url || "",
+        ms: cost,
+        ok: false
+      });
+    }
     const status = err?.response?.status;
     const msg = String(err?.response?.data?.error || "").toLowerCase();
     if (
@@ -75,8 +113,8 @@ export const api = {
   listDevices() {
     return http.get("/devices");
   },
-  globalSearch(q) {
-    return http.get("/search", { params: { q } });
+  globalSearch(q, options = {}) {
+    return http.get("/search", { params: { q }, ...options });
   },
   async getDeviceById(id) {
     const res = await http.get(`/devices/${id}`);

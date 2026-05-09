@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import { api } from "../services/api";
 import { useFeedback } from "../composables/useFeedback";
 
@@ -32,6 +32,21 @@ const opsDetailVisible = ref(false);
 const opsDetailTitle = ref("");
 const opsDetailRows = ref([]);
 const opsDetailType = ref("events");
+const slowApiLogs = ref([]);
+
+function loadSlowApiLogs() {
+  try {
+    slowApiLogs.value = JSON.parse(localStorage.getItem("np_slow_api_logs") || "[]").slice(0, 30);
+  } catch {
+    slowApiLogs.value = [];
+  }
+}
+
+function clearSlowApiLogs() {
+  localStorage.removeItem("np_slow_api_logs");
+  slowApiLogs.value = [];
+  fb.success("已清空慢请求记录");
+}
 
 const templateForm = ref({
   name: "",
@@ -351,7 +366,13 @@ async function removeAlertRule(row) {
 }
 
 onMounted(async () => {
+  loadSlowApiLogs();
+  window.addEventListener("np-slow-api-log", loadSlowApiLogs);
   await Promise.all([loadRuntimeSettings(), loadDrillReports(), loadTemplates(), loadAlertRules(), loadOpsSummary()]);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("np-slow-api-log", loadSlowApiLogs);
 });
 </script>
 
@@ -417,6 +438,23 @@ onMounted(async () => {
           </el-form>
           <div class="flex justify-end">
             <el-button type="primary" :loading="savingSettings" @click="saveRuntimeSettings">保存参数</el-button>
+          </div>
+          <div class="mt-4 rounded-lg border border-slate-200 p-3">
+            <div class="mb-2 flex items-center justify-between">
+              <span class="font-semibold">前端慢请求观测（>1200ms）</span>
+              <el-button size="small" @click="clearSlowApiLogs">清空</el-button>
+            </div>
+            <el-table :data="slowApiLogs" size="small" max-height="260" class="np-borderless-table">
+              <el-table-column prop="ts" label="时间" min-width="180" />
+              <el-table-column prop="method" label="方法" width="90" />
+              <el-table-column prop="url" label="路径" min-width="220" />
+              <el-table-column prop="ms" label="耗时(ms)" width="110" />
+              <el-table-column label="结果" width="90">
+                <template #default="{ row }">
+                  <el-tag size="small" :type="row.ok ? 'success' : 'danger'">{{ row.ok ? "成功" : "失败" }}</el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
           </div>
         </template>
       </el-skeleton>

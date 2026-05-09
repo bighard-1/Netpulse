@@ -134,6 +134,8 @@ function baseOption(title, unitInfo) {
     },
     yAxis: {
       type: "value",
+      min: 0,
+      max: 100,
       splitNumber: 6,
       axisLabel: { ...npAxisLabel, formatter: (val) => `${(val / unitInfo.div).toFixed(2)}` },
       axisLine: npAxisLine,
@@ -145,8 +147,11 @@ function baseOption(title, unitInfo) {
         type: "line",
         showSymbol: false,
         smooth: true,
+        connectNulls: false,
         sampling: "average",
         progressive: 5000,
+        lineStyle: { color: "#6366F1", width: 2 },
+        itemStyle: { color: "#6366F1" },
         data: [],
         markLine: trafficThresholdBps.value > 0 ? {
           symbol: "none",
@@ -160,8 +165,11 @@ function baseOption(title, unitInfo) {
         type: "line",
         showSymbol: false,
         smooth: true,
+        connectNulls: false,
         sampling: "average",
         progressive: 5000,
+        lineStyle: { color: "#22C55E", width: 2 },
+        itemStyle: { color: "#22C55E" },
         data: [],
         markLine: trafficThresholdBps.value > 0 ? {
           symbol: "none",
@@ -191,9 +199,28 @@ function toSeriesData(data) {
 function decimatePoints(points, maxPoints = 2200) {
   const arr = points || [];
   if (arr.length <= maxPoints) return arr;
-  const step = Math.ceil(arr.length / maxPoints);
+  const bucket = Math.max(1, Math.floor(arr.length / Math.max(1, Math.floor(maxPoints / 2))));
   const out = [];
-  for (let i = 0; i < arr.length; i += step) out.push(arr[i]);
+  for (let i = 0; i < arr.length; i += bucket) {
+    const slice = arr.slice(i, Math.min(arr.length, i + bucket));
+    if (!slice.length) continue;
+    const valid = slice.filter((x) => x[1] != null);
+    if (!valid.length) {
+      out.push(slice[Math.floor(slice.length / 2)]);
+      continue;
+    }
+    let peak = valid[0];
+    let sum = 0;
+    for (const p of valid) {
+      const v = Number(p[1]);
+      if (Math.abs(v) > Math.abs(Number(peak[1]))) peak = p;
+      sum += v;
+    }
+    const mean = sum / valid.length;
+    const meanPoint = [valid[Math.floor(valid.length / 2)][0], mean];
+    if (Number(peak[0]) <= Number(meanPoint[0])) out.push(peak, meanPoint);
+    else out.push(meanPoint, peak);
+  }
   if (arr.length > 0 && out[out.length - 1] !== arr[arr.length - 1]) out.push(arr[arr.length - 1]);
   return out;
 }
@@ -218,6 +245,7 @@ function applyChart(chart, title, data) {
   const maxVal = Math.max(1, ...(nonNil.length ? nonNil : [1]));
   const unitInfo = pickUnit(maxVal);
   const opt = baseOption(title, unitInfo);
+  opt.yAxis.max = maxVal * 1.1;
   opt.tooltip.confine = true;
   opt.tooltip.transitionDuration = 0;
   opt.series[0].large = true;

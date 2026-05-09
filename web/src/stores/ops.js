@@ -28,7 +28,8 @@ export const useOpsStore = defineStore("ops", {
     loadingAlerts: false,
     globalSearchResults: [],
     isDrawerOpen: false,
-    activeDeviceId: null
+    activeDeviceId: null,
+    searchReqSeq: 0
   }),
   actions: {
     async refreshRealtimeAlerts(limit = 20) {
@@ -65,7 +66,10 @@ export const useOpsStore = defineStore("ops", {
         this.globalSearchResults = [];
         return [];
       }
+      this.searchReqSeq += 1;
+      const reqId = this.searchReqSeq;
       const res = await api.globalSearch(kw);
+      if (reqId !== this.searchReqSeq) return this.globalSearchResults;
       this.globalSearchResults = res.data || [];
       return this.globalSearchResults;
     },

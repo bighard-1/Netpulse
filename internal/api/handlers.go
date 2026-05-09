@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"regexp"
@@ -48,6 +49,7 @@ func (h *Handler) Router() http.Handler {
 
 	r.Group(func(pr chi.Router) {
 		pr.Use(h.authMiddleware)
+		pr.Use(h.slowRequestMiddleware(1200 * time.Millisecond))
 		pr.With(h.requirePermission("device.read")).Get("/api/devices", h.handleListDevices)
 		pr.With(h.requirePermission("device.read")).Get("/api/search", h.handleGlobalSearch)
 		pr.Get("/api/devices/{id}", h.handleGetDevice)
@@ -96,6 +98,19 @@ func (h *Handler) Router() http.Handler {
 	})
 
 	return r
+}
+
+func (h *Handler) slowRequestMiddleware(threshold time.Duration) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			next.ServeHTTP(w, r)
+			cost := time.Since(start)
+			if cost >= threshold {
+				log.Printf("[slow-api] method=%s path=%s cost_ms=%d ip=%s", r.Method, r.URL.Path, cost.Milliseconds(), clientIP(r))
+			}
+		})
+	}
 }
 
 func (h *Handler) rateLimit(key string, limit int, window time.Duration, next http.HandlerFunc) http.HandlerFunc {

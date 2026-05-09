@@ -23,6 +23,8 @@ const deviceEditVisible = ref(false);
 const deviceEditForm = ref({ id: null, name: "", brand: "", remark: "", maintenance_mode: false });
 const showPortID = ref(false);
 const showPortIndex = ref(false);
+const portPage = ref(1);
+const portPageSize = ref(50);
 const showAdvanced = ref(["logs"]);
 const diagnoseVisible = ref(false);
 const diagnoseLoading = ref(false);
@@ -48,6 +50,10 @@ const filteredPorts = computed(() => {
   const key = portKeyword.value.trim().toLowerCase();
   if (!key) return list;
   return list.filter((p) => [String(p.id), String(p.index), p.name || "", p.remark || ""].join(" ").toLowerCase().includes(key));
+});
+const pagedPorts = computed(() => {
+  const start = (portPage.value - 1) * portPageSize.value;
+  return filteredPorts.value.slice(start, start + portPageSize.value);
 });
 const logsDisplay = computed(() => recentLogs.value.slice(0, logLimit.value));
 const perfKpi = computed(() => {
@@ -354,6 +360,9 @@ watch(
     await loadDevice();
   }
 );
+watch([portKeyword, () => device.value?.id], () => {
+  portPage.value = 1;
+});
 </script>
 
 <template>
@@ -411,7 +420,7 @@ watch(
 
       <el-skeleton :loading="loading" animated :rows="8">
         <template #default>
-          <el-table :data="filteredPorts" class="np-borderless-table">
+          <el-table :data="pagedPorts" class="np-borderless-table">
             <el-table-column label="状态" width="90">
               <template #default="{ row }">
                 <span class="inline-block align-middle" :class="interfaceStatusClass(row)" />
@@ -426,6 +435,16 @@ watch(
             </el-table-column>
             <el-table-column prop="remark" label="备注" min-width="220" />
           </el-table>
+          <div class="mt-3 flex justify-end">
+            <el-pagination
+              v-model:current-page="portPage"
+              v-model:page-size="portPageSize"
+              :total="filteredPorts.length"
+              :page-sizes="[20, 50, 100, 200]"
+              layout="total, sizes, prev, pager, next"
+              background
+            />
+          </div>
           <el-empty v-if="!filteredPorts.length" description="无匹配端口，请调整搜索条件" :image-size="72" />
         </template>
       </el-skeleton>

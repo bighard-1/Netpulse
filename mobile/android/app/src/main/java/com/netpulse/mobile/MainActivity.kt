@@ -21,6 +21,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -37,6 +38,9 @@ import androidx.compose.material3.*
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.*
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -70,6 +74,7 @@ import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Date
+import java.text.Normalizer
 import kotlin.math.absoluteValue
 
 private object Np {
@@ -369,20 +374,35 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
     val cpu by vm.cpu.collectAsStateWithLifecycle()
     val mem by vm.mem.collectAsStateWithLifecycle()
     val logs by vm.logs.collectAsStateWithLifecycle()
-    val loading by vm.loading.collectAsStateWithLifecycle()
+    val detailLoading by vm.detailLoading.collectAsStateWithLifecycle()
+    val historyLoading by vm.historyLoading.collectAsStateWithLifecycle()
+    val queryProgress by vm.queryProgress.collectAsStateWithLifecycle()
+    val perfSummary by vm.perfSummary.collectAsStateWithLifecycle()
     var keyword by remember { mutableStateOf("") }
+    var keywordHistory by remember { mutableStateOf(listOf<String>()) }
     var showLogs by remember { mutableStateOf(false) }
     var start by remember { mutableStateOf(OffsetDateTime.now().minusDays(1)) }
     var end by remember { mutableStateOf(OffsetDateTime.now()) }
+    var visiblePortCount by remember { mutableStateOf(80) }
     val ctx = LocalContext.current
+    val initialAnchor = remember(deviceId) { vm.getDetailScroll(deviceId) }
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = initialAnchor.first,
+        initialFirstVisibleItemScrollOffset = initialAnchor.second
+    )
 
     LaunchedEffect(deviceId) { vm.loadDeviceDetail(deviceId, start, end) }
+    LaunchedEffect(deviceId, listState) {
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .distinctUntilChanged()
+            .collectLatest { (idx, off) -> vm.saveDetailScroll(deviceId, idx, off) }
+    }
     val ports = device?.interfaces.orEmpty().filter {
         val k = keyword.lowercase().trim()
-        if (k.isBlank()) true else "${it.id} ${it.index} ${it.name} ${it.remark}".lowercase().contains(k)
+        if (k.isBlank()) true else portSearchBlob(it).contains(k)
     }
     val refreshState = rememberPullRefreshState(
-        refreshing = loading,
+        refreshing = detailLoading || historyLoading,
         onRefresh = { vm.loadDeviceDetail(deviceId, start, end) }
     )
     val cpuVals = cpu.map { it.cpuUsage ?: 0.0 }
@@ -399,7 +419,11 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
         )
     }) { p ->
         Box(Modifier.padding(p).fillMaxSize().pullRefresh(refreshState)) {
-            LazyColumn(Modifier.fillMaxSize().padding(Np.screenPadding), verticalArrangement = Arrangement.spacedBy(Np.sectionGap)) {
+            LazyColumn(
+                Modifier.fillMaxSize().padding(Np.screenPadding),
+                state = listState,
+                verticalArrangement = Arrangement.spacedBy(Np.sectionGap)
+            ) {
                 item {
                     ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))) {
                         Column(Modifier.padding(Np.cardPadding)) {
@@ -412,6 +436,8 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                                 Text("${device?.brand ?: "-"} · ${device?.remark ?: "-"}")
                                 AssistChip(onClick = {}, label = { Text("只读模式") })
                             }
+                            Text("任务状态：$queryProgress", style = MaterialTheme.typography.bodySmall, color = Color(0xFF94A3B8))
+                            Text(perfSummary, style = MaterialTheme.typography.bodySmall, color = Color(0xFF94A3B8))
                         }
                     }
                 }
@@ -423,16 +449,45 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                             Text("CPU 当前 ${"%.1f".format(cpuCurrent)}% / 峰值 ${"%.1f".format(cpuPeak)}%", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                             Text("内存 当前 ${"%.1f".format(memCurrent)}% / 峰值 ${"%.1f".format(memPeak)}%", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                             Spacer(Modifier.height(8.dp))
-                            if (loading) SkeletonBox(Modifier.fillMaxWidth().height(220.dp))
+                            if (historyLoading) SkeletonBox(Modifier.fillMaxWidth().height(220.dp))
                             else MiniLineChart(cpuVals, memVals)
                         }
                     }
                 }
-                item { OutlinedTextField(keyword, { keyword = it }, label = { Text("搜索端口") }, modifier = Modifier.fillMaxWidth()) }
-                if (loading) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            keyword,
+                            { keyword = it },
+                            label = { Text("搜索端口（名称/备注/拼音）") },
+                            trailingIcon = {
+                                TextButton(onClick = {
+                                    val k = keyword.trim()
+                                    if (k.isNotBlank()) keywordHistory = (listOf(k) + keywordHistory).distinct().take(6)
+                                }) { Text("搜索") }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (keywordHistory.isNotEmpty()) {
+                            Row(
+                                Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                keywordHistory.forEach { kw ->
+                                    AssistChip(onClick = { keyword = kw }, label = { Text(kw) })
+                                }
+                                TextButton(onClick = {
+                                    keyword = ""
+                                    visiblePortCount = 80
+                                }) { Text("清空") }
+                            }
+                        }
+                    }
+                }
+                if (detailLoading) {
                     items(3) { SkeletonCard() }
                 } else {
-                    items(ports, key = { it.id }) { itf ->
+                    items(ports.take(visiblePortCount), key = { it.id }) { itf ->
                         ElevatedCard(
                             modifier = Modifier.fillMaxWidth().combinedClickable(
                                 onClick = { onOpenPort(itf.id) },
@@ -449,6 +504,15 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                     }
                     if (ports.isEmpty()) {
                         item { EmptyStateCard(title = "无匹配端口", desc = "请调整关键字后再试") }
+                    } else if (ports.size > visiblePortCount) {
+                        item {
+                            OutlinedButton(
+                                onClick = { visiblePortCount = (visiblePortCount + 80).coerceAtMost(ports.size) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("加载更多端口（${visiblePortCount}/${ports.size}）")
+                            }
+                        }
                     }
                 }
                 item {
@@ -474,7 +538,7 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
                     }
                 }
             }
-            PullRefreshIndicator(loading, refreshState, Modifier.align(Alignment.TopCenter))
+            PullRefreshIndicator(detailLoading || historyLoading, refreshState, Modifier.align(Alignment.TopCenter))
         }
     }
 
@@ -484,22 +548,25 @@ fun DeviceDetailScreen(deviceId: Long, vm: MainViewModel, onBack: () -> Unit, on
 @Composable
 fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
     val traffic by vm.traffic.collectAsStateWithLifecycle()
-    val loading by vm.loading.collectAsStateWithLifecycle()
+    val loading by vm.portLoading.collectAsStateWithLifecycle()
+    val queryProgress by vm.queryProgress.collectAsStateWithLifecycle()
+    val perfSummary by vm.perfSummary.collectAsStateWithLifecycle()
     var start by remember { mutableStateOf(OffsetDateTime.now().minusDays(1)) }
     var end by remember { mutableStateOf(OffsetDateTime.now()) }
     var showCustomRange by remember { mutableStateOf(false) }
+    var detailed3y by remember { mutableStateOf(false) }
     var showDebug by remember { mutableStateOf(false) }
     var debugTapCount by remember { mutableStateOf(0) }
     var chartRef by remember { mutableStateOf<LineChart?>(null) }
     val ctx = LocalContext.current
 
-    LaunchedEffect(portId) { vm.loadPortTraffic(portId, start, end) }
+    LaunchedEffect(portId) { vm.loadPortTraffic(portId, start, end, forceDetailed = false) }
 
     Scaffold(topBar = {
         TopAppBar(
             title = { Text("端口流量") },
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null) } },
-            actions = { TextButton(onClick = { vm.loadPortTraffic(portId, start, end) }) { Text("刷新") } }
+            actions = { TextButton(onClick = { vm.loadPortTraffic(portId, start, end, forceDetailed = detailed3y) }) { Text("刷新") } }
         )
     }) { p ->
         Column(Modifier.padding(p).fillMaxSize().padding(Np.screenPadding), verticalArrangement = Arrangement.spacedBy(Np.sectionGap)) {
@@ -519,25 +586,37 @@ fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                         OutlinedButton(onClick = {
+                            detailed3y = false
                             end = OffsetDateTime.now()
                             start = end.minusDays(1)
-                            vm.loadPortTraffic(portId, start, end)
+                            vm.loadPortTraffic(portId, start, end, forceDetailed = false)
                         }) { Text("当日") }
                         OutlinedButton(onClick = {
+                            detailed3y = false
                             end = OffsetDateTime.now()
                             start = end.minusDays(7)
-                            vm.loadPortTraffic(portId, start, end)
+                            vm.loadPortTraffic(portId, start, end, forceDetailed = false)
                         }) { Text("近7天") }
                         OutlinedButton(onClick = {
+                            detailed3y = false
                             end = OffsetDateTime.now()
                             start = end.minusDays(30)
-                            vm.loadPortTraffic(portId, start, end)
+                            vm.loadPortTraffic(portId, start, end, forceDetailed = false)
                         }) { Text("近30天") }
                         OutlinedButton(onClick = {
+                            detailed3y = false
                             end = OffsetDateTime.now()
                             start = end.minusDays(365 * 3L)
-                            vm.loadPortTraffic(portId, start, end)
+                            vm.loadPortTraffic(portId, start, end, forceDetailed = false)
                         }) { Text("近3年") }
+                    }
+                    Text("查询状态：$queryProgress", style = MaterialTheme.typography.bodySmall, color = Color(0xFF94A3B8))
+                    Text(perfSummary, style = MaterialTheme.typography.bodySmall, color = Color(0xFF94A3B8))
+                    if (start.isBefore(end.minusDays(700)) && !detailed3y) {
+                        OutlinedButton(onClick = {
+                            detailed3y = true
+                            vm.loadPortTraffic(portId, start, end, forceDetailed = true)
+                        }, modifier = Modifier.fillMaxWidth()) { Text("3年视图：加载更多精度") }
                     }
                     TextButton(onClick = { showCustomRange = !showCustomRange }) {
                         Text(if (showCustomRange) "收起自定义时间" else "展开自定义时间")
@@ -547,7 +626,7 @@ fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
                             Text("开始: ${start}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                             Text("结束: ${end}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                             Text("提示: 当前版本请先用预设范围快速查询；自定义精确选择将在下轮补充日期时间选择器。", style = MaterialTheme.typography.bodySmall, color = Np.Warning)
-                            Button(onClick = { vm.loadPortTraffic(portId, start, end) }, modifier = Modifier.fillMaxWidth()) {
+                            Button(onClick = { vm.loadPortTraffic(portId, start, end, forceDetailed = detailed3y) }, modifier = Modifier.fillMaxWidth()) {
                                 Text("按当前范围查询")
                             }
                         }
@@ -576,6 +655,9 @@ fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("导出图片并保存到相册")
+                    }
+                    OutlinedButton(onClick = { vm.cancelPortTrafficLoading() }, modifier = Modifier.fillMaxWidth()) {
+                        Text("取消当前查询")
                     }
                 }
             }
@@ -611,10 +693,16 @@ fun MpTrafficChart(
             setPinchZoom(true)
             isDragEnabled = true
             setScaleEnabled(true)
+            isAutoScaleMinMaxEnabled = false
+            setViewPortOffsets(72f, 28f, 28f, 60f)
             setVisibleXRangeMaximum(96f)
             axisRight.isEnabled = false
+            axisLeft.axisMinimum = 0f
+            axisLeft.axisMaximum = 100f
             axisLeft.textColor = android.graphics.Color.parseColor("#CBD5E1")
             axisLeft.gridColor = android.graphics.Color.parseColor("#233043")
+            axisLeft.setDrawAxisLine(true)
+            axisLeft.axisLineColor = android.graphics.Color.parseColor("#334155")
             axisLeft.valueFormatter = object : ValueFormatter() {
                 override fun getFormattedValue(value: Float): String = formatBps(value.toDouble())
             }
@@ -629,8 +717,14 @@ fun MpTrafficChart(
                     return parseTs(points[i].timestamp).format(formatter)
                 }
             }
+            xAxis.setAvoidFirstLastClipping(true)
             legend.textColor = android.graphics.Color.parseColor("#E2E8F0")
             legend.form = com.github.mikephil.charting.components.Legend.LegendForm.LINE
+            legend.verticalAlignment = com.github.mikephil.charting.components.Legend.LegendVerticalAlignment.TOP
+            legend.horizontalAlignment = com.github.mikephil.charting.components.Legend.LegendHorizontalAlignment.LEFT
+            legend.orientation = com.github.mikephil.charting.components.Legend.LegendOrientation.HORIZONTAL
+            legend.setDrawInside(false)
+            legend.isWordWrapEnabled = true
             legend.isEnabled = true
             marker = TrafficMarkerView(ctx, points)
             onChartReady(this)
@@ -640,6 +734,9 @@ fun MpTrafficChart(
             chart.clear()
             return@AndroidView
         }
+        val yMax = maxTrafficOf(points).coerceAtLeast(1.0) * 1.1
+        chart.axisLeft.axisMinimum = 0f
+        chart.axisLeft.axisMaximum = yMax.toFloat()
         val inEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficInBps ?: Double.NaN).toFloat()) }
         val outEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficOutBps ?: Double.NaN).toFloat()) }
 
@@ -682,21 +779,63 @@ class TrafficMarkerView(context: Context, private val points: List<InterfaceHist
 
 fun decimateTraffic(src: List<InterfaceHistoryPoint>, maxPoints: Int): List<InterfaceHistoryPoint> {
     if (src.size <= maxPoints) return src
-    val bucket = src.size.toDouble() / maxPoints
-    val out = ArrayList<InterfaceHistoryPoint>(maxPoints)
+    val bucket = maxOf(1, src.size / maxOf(1, maxPoints / 2))
+    val out = ArrayList<InterfaceHistoryPoint>(maxPoints + 2)
     var i = 0.0
     while (i < src.size) {
         val from = i.toInt()
         val to = (i + bucket).toInt().coerceAtMost(src.size)
         val slice = src.subList(from, to)
+        if (slice.isEmpty()) break
         val inVals = slice.mapNotNull { it.trafficInBps }
         val outVals = slice.mapNotNull { it.trafficOutBps }
-        val inAvg = if (inVals.isEmpty()) null else inVals.average()
-        val outAvg = if (outVals.isEmpty()) null else outVals.average()
-        out += InterfaceHistoryPoint(timestamp = slice[slice.size / 2].timestamp, trafficInBps = inAvg, trafficOutBps = outAvg)
+        if (inVals.isEmpty() && outVals.isEmpty()) {
+            out += InterfaceHistoryPoint(timestamp = slice[slice.size / 2].timestamp, trafficInBps = null, trafficOutBps = null)
+            i += bucket
+            continue
+        }
+
+        var peakIdx = -1
+        var peakVal = Double.NEGATIVE_INFINITY
+        for (idx in slice.indices) {
+            val p = slice[idx]
+            val inAbs = kotlin.math.abs(p.trafficInBps ?: Double.NaN)
+            val outAbs = kotlin.math.abs(p.trafficOutBps ?: Double.NaN)
+            val local = maxOf(inAbs, outAbs)
+            if (local.isFinite() && local > peakVal) {
+                peakVal = local
+                peakIdx = idx
+            }
+        }
+        val meanPoint = InterfaceHistoryPoint(
+            timestamp = slice[slice.size / 2].timestamp,
+            trafficInBps = if (inVals.isEmpty()) null else inVals.average(),
+            trafficOutBps = if (outVals.isEmpty()) null else outVals.average()
+        )
+        if (peakIdx >= 0) {
+            val peakPoint = slice[peakIdx]
+            if (peakIdx <= slice.size / 2) {
+                out += peakPoint
+                out += meanPoint
+            } else {
+                out += meanPoint
+                out += peakPoint
+            }
+        } else {
+            out += meanPoint
+        }
         i += bucket
     }
     return out
+}
+
+private fun maxTrafficOf(points: List<InterfaceHistoryPoint>): Double {
+    var m = 0.0
+    for (p in points) {
+        p.trafficInBps?.let { if (it > m) m = it }
+        p.trafficOutBps?.let { if (it > m) m = it }
+    }
+    return m
 }
 
 fun parseTs(ts: String): OffsetDateTime = try { OffsetDateTime.parse(ts) } catch (_: Exception) { OffsetDateTime.now() }
@@ -718,10 +857,14 @@ fun MpCpuMemChart(cpu: List<Double>, mem: List<Double>, modifier: Modifier = Mod
             setPinchZoom(true)
             isDragEnabled = true
             setScaleEnabled(true)
+            isAutoScaleMinMaxEnabled = false
+            setViewPortOffsets(72f, 28f, 28f, 44f)
             axisRight.isEnabled = false
             axisLeft.axisMinimum = 0f
             axisLeft.axisMaximum = 100f
             axisLeft.textColor = android.graphics.Color.parseColor("#CBD5E1")
+            axisLeft.setDrawAxisLine(true)
+            axisLeft.axisLineColor = android.graphics.Color.parseColor("#334155")
             axisLeft.valueFormatter = object : ValueFormatter() {
                 override fun getFormattedValue(value: Float): String = "${value.toInt()}%"
             }
@@ -729,6 +872,10 @@ fun MpCpuMemChart(cpu: List<Double>, mem: List<Double>, modifier: Modifier = Mod
             xAxis.setDrawLabels(false)
             xAxis.setDrawGridLines(false)
             legend.textColor = android.graphics.Color.parseColor("#E2E8F0")
+            legend.verticalAlignment = com.github.mikephil.charting.components.Legend.LegendVerticalAlignment.TOP
+            legend.horizontalAlignment = com.github.mikephil.charting.components.Legend.LegendHorizontalAlignment.LEFT
+            legend.orientation = com.github.mikephil.charting.components.Legend.LegendOrientation.HORIZONTAL
+            legend.setDrawInside(false)
             legend.isEnabled = true
         }
     }, update = { chart ->
@@ -738,6 +885,7 @@ fun MpCpuMemChart(cpu: List<Double>, mem: List<Double>, modifier: Modifier = Mod
             color = android.graphics.Color.parseColor("#F59E0B")
             setDrawCircles(false)
             setDrawValues(false)
+            setDrawFilled(false)
             lineWidth = 2f
             mode = LineDataSet.Mode.CUBIC_BEZIER
         }
@@ -745,6 +893,7 @@ fun MpCpuMemChart(cpu: List<Double>, mem: List<Double>, modifier: Modifier = Mod
             color = android.graphics.Color.parseColor("#06B6D4")
             setDrawCircles(false)
             setDrawValues(false)
+            setDrawFilled(false)
             lineWidth = 2f
             mode = LineDataSet.Mode.CUBIC_BEZIER
         }
@@ -885,6 +1034,26 @@ private fun statusText(status: String): String = when (status.lowercase()) {
     "online", "up" -> "在线"
     "offline", "down" -> "离线"
     else -> "未知"
+}
+
+private fun portSearchBlob(itf: NetInterface): String {
+    val raw = "${itf.id} ${itf.index} ${itf.name} ${itf.remark}".lowercase()
+    val pinyin = toAscii(raw)
+    val initials = pinyin
+        .split(Regex("[^a-z0-9]+"))
+        .filter { it.isNotBlank() }
+        .joinToString("") { it.first().toString() }
+    return "$raw $pinyin $initials"
+}
+
+private fun toAscii(src: String): String {
+    return try {
+        Normalizer.normalize(src, Normalizer.Form.NFD)
+            .replace(Regex("\\p{M}+"), "")
+            .lowercase()
+    } catch (_: Exception) {
+        src.lowercase()
+    }
 }
 
 

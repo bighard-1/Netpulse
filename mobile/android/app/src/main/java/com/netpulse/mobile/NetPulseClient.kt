@@ -9,6 +9,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.TimeUnit
 
 class ApiException(val code: Int, override val message: String) : RuntimeException(message)
 
@@ -19,13 +20,22 @@ class NetPulseClient(
     private val json: Json = Json { ignoreUnknownKeys = true }
 
     private val http: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(20, TimeUnit.SECONDS)
         .addInterceptor(Interceptor { chain ->
             val req = chain.request()
+            val start = System.nanoTime()
             val token = tokenProvider()
             val withAuth = if (token.isNotBlank()) {
                 req.newBuilder().header("Authorization", "Bearer $token").build()
             } else req
-            chain.proceed(withAuth)
+            val resp = chain.proceed(withAuth)
+            val costMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
+            if (costMs > 1200) {
+                android.util.Log.w("NetPulseClient", "slow-api ${withAuth.method} ${withAuth.url.encodedPath} ${costMs}ms")
+            }
+            resp
         })
         .build()
 
@@ -93,11 +103,12 @@ class NetPulseClient(
         }
     }
 
-    fun fetchTrafficHistory(interfaceID: Long, start: String, end: String, interval: String? = null): List<InterfaceHistoryPoint> {
+    fun fetchTrafficHistory(interfaceID: Long, start: String, end: String, interval: String? = null, maxPoints: Int? = null): List<InterfaceHistoryPoint> {
         val s = URLEncoder.encode(start, StandardCharsets.UTF_8)
         val e = URLEncoder.encode(end, StandardCharsets.UTF_8)
         val iv = interval?.takeIf { it.isNotBlank() }?.let { "&interval=${URLEncoder.encode(it, StandardCharsets.UTF_8)}" } ?: ""
-        val req = reqBuilder("/metrics/history?type=traffic&id=$interfaceID&start=$s&end=$e$iv").get().build()
+        val mp = maxPoints?.takeIf { it > 0 }?.let { "&max_points=$it" } ?: ""
+        val req = reqBuilder("/metrics/history?type=traffic&id=$interfaceID&start=$s&end=$e$iv$mp").get().build()
         http.newCall(req).execute().use { resp ->
             ensureOk(resp.code, "获取端口流量失败")
             return json.decodeFromString<HistoryResponse<InterfaceHistoryPoint>>(resp.body!!.string()).data

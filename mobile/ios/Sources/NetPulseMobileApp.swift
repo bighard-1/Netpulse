@@ -126,6 +126,9 @@ final class AppVM: ObservableObject {
     @Published var detailLoading = false
     @Published var historyLoading = false
     @Published var portLoading = false
+    @Published var queryProgress = "空闲"
+    @Published var perfSummary = "P95: -"
+    @Published var lastSnapshotAt = ""
     @Published var err = ""
     @Published var loginError = ""
     @Published var dashboardError = ""
@@ -135,12 +138,68 @@ final class AppVM: ObservableObject {
     private var detailRequestSeq: Int = 0
     private var historyRequestSeq: Int = 0
     private var portRequestSeq: Int = 0
+    private var logsTask: Task<Void, Never>?
     private var activeDeviceID: Int64?
     private var activePortID: Int64?
+    private var deviceCache: [Int64: (ts: Date, data: DeviceStatus)] = [:]
+    private var deviceCacheOrder: [Int64] = []
+    private var portCache: [String: (ts: Date, data: [InterfaceHistoryPoint])] = [:]
+    private var portCacheOrder: [String] = []
+    private let deviceCacheMax = 80
+    private let portCacheMax = 120
+    private let cacheTTL: TimeInterval = 45
+    private var apiCostMs: [Int] = []
+    private var networkWeakUntil: Date?
 
     var baseURL: String {
         get { UserDefaults.standard.string(forKey: "baseURL") ?? "http://119.40.55.18:18080/api" }
         set { UserDefaults.standard.set(newValue, forKey: "baseURL") }
+    }
+
+    private func historyMaxPoints(from start: Date, to end: Date) -> Int {
+        let sec = max(0, end.timeIntervalSince(start))
+        switch sec {
+        case let v where v > 3600 * 24 * 365 * 2:
+            return 900
+        case let v where v > 3600 * 24 * 180:
+            return 1200
+        case let v where v > 3600 * 24 * 30:
+            return 1800
+        default:
+            return 2600
+        }
+    }
+
+    private func putDeviceCache(_ id: Int64, data: DeviceStatus) {
+        deviceCache[id] = (Date(), data)
+        deviceCacheOrder.removeAll { $0 == id }
+        deviceCacheOrder.append(id)
+        while deviceCacheOrder.count > deviceCacheMax {
+            let expired = deviceCacheOrder.removeFirst()
+            deviceCache.removeValue(forKey: expired)
+        }
+    }
+
+    private func touchDeviceCache(_ id: Int64) {
+        guard deviceCache[id] != nil else { return }
+        deviceCacheOrder.removeAll { $0 == id }
+        deviceCacheOrder.append(id)
+    }
+
+    private func putPortCache(_ key: String, data: [InterfaceHistoryPoint]) {
+        portCache[key] = (Date(), data)
+        portCacheOrder.removeAll { $0 == key }
+        portCacheOrder.append(key)
+        while portCacheOrder.count > portCacheMax {
+            let expired = portCacheOrder.removeFirst()
+            portCache.removeValue(forKey: expired)
+        }
+    }
+
+    private func touchPortCache(_ key: String) {
+        guard portCache[key] != nil else { return }
+        portCacheOrder.removeAll { $0 == key }
+        portCacheOrder.append(key)
     }
 
     private func authorizedRequest(_ url: URL) -> URLRequest {
@@ -150,7 +209,15 @@ final class AppVM: ObservableObject {
     }
 
     private func dataWithAuth(_ req: URLRequest) async throws -> Data {
+        let started = Date()
         let (data, resp) = try await URLSession.shared.data(for: req)
+        let cost = Date().timeIntervalSince(started)
+        recordApiCost(Int(cost * 1000))
+        if cost > 1.2 {
+            let method = req.httpMethod ?? "GET"
+            let path = req.url?.path ?? "-"
+            print("[netpulse][slow-api] \(method) \(path) \(Int(cost * 1000))ms")
+        }
         if let http = resp as? HTTPURLResponse, http.statusCode == 401 {
             await MainActor.run {
                 let msg = "登录已过期，请重新登录"
@@ -161,6 +228,21 @@ final class AppVM: ObservableObject {
             throw NSError(domain: "auth", code: 401)
         }
         return data
+    }
+
+    private func friendlyError(_ error: Error, fallback: String) -> String {
+        let ns = error as NSError
+        if ns.domain == "auth" || ns.code == 401 { return "登录已过期，请重新登录" }
+        if ns.code == 403 { return "权限不足，无法访问该数据" }
+        if ns.code == 404 { return "目标不存在或已删除" }
+        if ns.domain == NSURLErrorDomain {
+            switch ns.code {
+            case NSURLErrorTimedOut: return "网络超时，请稍后重试"
+            case NSURLErrorNotConnectedToInternet, NSURLErrorNetworkConnectionLost: return "网络异常，请检查连接"
+            default: break
+            }
+        }
+        return "\(fallback)：\(ns.localizedDescription)"
     }
 
     func login(u: String, p: String, remember: Bool = true) async {
@@ -212,6 +294,7 @@ final class AppVM: ObservableObject {
     }
 
     func logout() {
+        logsTask?.cancel()
         token = ""
         devices = []
         recentEvents = []
@@ -228,12 +311,22 @@ final class AppVM: ObservableObject {
 
     func refreshDevices() async {
         guard !token.isEmpty else { return }
+        if let weakUntil = networkWeakUntil, weakUntil > Date() {
+            let fallback = restoreSnapshot()
+            if !fallback.isEmpty {
+                devices = fallback
+                dashboardError = "弱网模式：展示最近快照，自动降频刷新中"
+                return
+            }
+        }
         loading = true
         defer { loading = false }
         do {
             let req = authorizedRequest(URL(string: "\(baseURL)/devices")!)
             let d = try await dataWithAuth(req)
             devices = try JSONDecoder().decode([DeviceStatus].self, from: d)
+            persistSnapshot(devices)
+            networkWeakUntil = nil
             do {
                 recentEvents = try await fetchRecentEvents().prefix(5).map { $0 }
             } catch {
@@ -241,9 +334,19 @@ final class AppVM: ObservableObject {
             }
             dashboardError = ""
         } catch {
-            let m = "加载设备失败：\((error as NSError).localizedDescription)"
-            err = m
-            dashboardError = m
+            let fallback = restoreSnapshot()
+            if !fallback.isEmpty {
+                devices = fallback
+                let ts = lastSnapshotAt.isEmpty ? "未知时间" : lastSnapshotAt
+                let m = "弱网/离线：已展示最近快照（\(ts)）"
+                err = m
+                dashboardError = m
+                networkWeakUntil = Date().addingTimeInterval(45)
+            } else {
+                let m = friendlyError(error, fallback: "加载设备失败")
+                err = m
+                dashboardError = m
+            }
         }
     }
 
@@ -252,6 +355,11 @@ final class AppVM: ObservableObject {
         let requestID = detailRequestSeq
         activeDeviceID = deviceID
         detailLoading = true
+        queryProgress = "加载中 1/3：设备基础信息"
+        if let cached = deviceCache[deviceID], Date().timeIntervalSince(cached.ts) <= cacheTTL {
+            touchDeviceCache(deviceID)
+            deviceDetail = cached.data
+        }
         defer {
             if requestID == detailRequestSeq { detailLoading = false }
         }
@@ -259,80 +367,118 @@ final class AppVM: ObservableObject {
         do {
             let req = authorizedRequest(URL(string: "\(baseURL)/devices/\(deviceID)")!)
             let d = try await dataWithAuth(req)
+            if Task.isCancelled { return }
             guard requestID == detailRequestSeq, activeDeviceID == deviceID else { return }
-            deviceDetail = try JSONDecoder().decode(DeviceStatus.self, from: d)
+            let decoded = try JSONDecoder().decode(DeviceStatus.self, from: d)
+            deviceDetail = decoded
+            putDeviceCache(deviceID, data: decoded)
             deviceError = ""
+            queryProgress = "完成"
         } catch {
             guard requestID == detailRequestSeq else { return }
-            let m = "加载设备详情失败：\((error as NSError).localizedDescription)"
+            if (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled { return }
+            let m = friendlyError(error, fallback: "加载设备详情失败")
             err = m
             deviceError = m
+            queryProgress = "失败"
         }
     }
 
     func fetchDeviceHistory(deviceID: Int64, start: Date, end: Date) async {
+        logsTask?.cancel()
         historyRequestSeq += 1
         let requestID = historyRequestSeq
         activeDeviceID = deviceID
         historyLoading = true
+        queryProgress = "加载中 2/3：性能曲线"
         defer {
             if requestID == historyRequestSeq { historyLoading = false }
         }
         do {
             let s = ISO8601DateFormatter().string(from: start)
             let e = ISO8601DateFormatter().string(from: end)
-            async let c = fetchHistory(type: "cpu", id: deviceID, start: s, end: e, maxPoints: 420) as [DeviceHistoryPoint]
-            async let m = fetchHistory(type: "mem", id: deviceID, start: s, end: e, maxPoints: 420) as [DeviceHistoryPoint]
+            let maxPoints = historyMaxPoints(from: start, to: end)
+            async let c = fetchHistory(type: "cpu", id: deviceID, start: s, end: e, maxPoints: maxPoints) as [DeviceHistoryPoint]
+            async let m = fetchHistory(type: "mem", id: deviceID, start: s, end: e, maxPoints: maxPoints) as [DeviceHistoryPoint]
             let cpuPoints = try await c
             let memPoints = try await m
+            if Task.isCancelled { return }
             guard requestID == historyRequestSeq, activeDeviceID == deviceID else { return }
             cpu = cpuPoints.sorted { $0.timestamp < $1.timestamp }
             mem = memPoints.sorted { $0.timestamp < $1.timestamp }
             deviceError = ""
             // 日志单独异步加载，避免拖慢详情页首屏图表渲染。
-            Task {
+            logsTask = Task {
+                await MainActor.run { self.queryProgress = "加载中 3/3：设备日志" }
                 do {
                     let loadedLogs = try await fetchLogs(deviceID: deviceID)
+                    if Task.isCancelled { return }
                     guard requestID == self.historyRequestSeq, self.activeDeviceID == deviceID else { return }
                     self.logs = loadedLogs
+                    self.queryProgress = "完成"
                 } catch {
+                    if Task.isCancelled { return }
                     guard requestID == self.historyRequestSeq else { return }
                     self.logs = []
                 }
             }
         } catch {
             guard requestID == historyRequestSeq else { return }
+            if (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled { return }
             cpu = []
             mem = []
             logs = []
-            let m = "加载性能数据失败：\((error as NSError).localizedDescription)"
+            let m = friendlyError(error, fallback: "加载性能数据失败")
             err = m
             deviceError = m
+            queryProgress = "失败"
         }
     }
 
-    func fetchPortHistory(portID: Int64, start: Date, end: Date) async {
+    func fetchPortHistory(portID: Int64, start: Date, end: Date, forceDetailed: Bool = false) async {
         portRequestSeq += 1
         let requestID = portRequestSeq
         activePortID = portID
         portLoading = true
+        queryProgress = "加载中 1/2：请求流量数据"
         defer {
             if requestID == portRequestSeq { portLoading = false }
         }
         do {
             let s = ISO8601DateFormatter().string(from: start)
             let e = ISO8601DateFormatter().string(from: end)
-            let points: [InterfaceHistoryPoint] = try await fetchHistory(type: "traffic", id: portID, start: s, end: e, maxPoints: 700)
+            let tier = trafficTier(start: start, end: end, forceDetailed: forceDetailed)
+            let cacheKey = "\(portID)|\(s)|\(e)|\(tier.interval)|\(tier.maxPoints)"
+            if let cached = portCache[cacheKey], Date().timeIntervalSince(cached.ts) <= cacheTTL {
+                touchPortCache(cacheKey)
+                traffic = cached.data
+                portError = ""
+                queryProgress = "命中缓存 1/1"
+                return
+            }
+            let points: [InterfaceHistoryPoint] = try await fetchHistory(type: "traffic", id: portID, start: s, end: e, maxPoints: tier.maxPoints, interval: tier.interval)
+            if Task.isCancelled { return }
             guard requestID == portRequestSeq, activePortID == portID else { return }
-            traffic = points.sorted { $0.timestamp < $1.timestamp }
+            let sorted = points.sorted { $0.timestamp < $1.timestamp }
+            traffic = sorted
+            putPortCache(cacheKey, data: sorted)
             portError = ""
+            queryProgress = "完成"
         } catch {
             guard requestID == portRequestSeq else { return }
+            if (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled { return }
             traffic = []
-            let m = "加载端口流量失败：\((error as NSError).localizedDescription)"
+            let m = friendlyError(error, fallback: "加载端口流量失败")
             err = m
             portError = m
+            queryProgress = "失败"
         }
+    }
+
+    func cancelPortQuery() {
+        portRequestSeq += 1
+        portLoading = false
+        queryProgress = "已取消"
     }
 
     func updateInterfaceRemark(interfaceID: Int64, remark: String, deviceID: Int64, start: Date, end: Date) async {
@@ -434,20 +580,56 @@ final class AppVM: ObservableObject {
         return try JSONDecoder().decode([RecentEvent].self, from: d)
     }
 
-    private func fetchHistory<T: Codable>(type: String, id: Int64, start: String, end: String, maxPoints: Int) async throws -> [T] {
+    private func fetchHistory<T: Codable>(type: String, id: Int64, start: String, end: String, maxPoints: Int, interval: String? = nil) async throws -> [T] {
         var comp = URLComponents(string: "\(baseURL)/metrics/history")!
-        let interval = historyInterval(start: start, end: end)
-        comp.queryItems = [
+        var queryItems = [
             URLQueryItem(name: "type", value: type),
             URLQueryItem(name: "id", value: "\(id)"),
             URLQueryItem(name: "start", value: start),
             URLQueryItem(name: "end", value: end),
-            URLQueryItem(name: "interval", value: interval),
             URLQueryItem(name: "max_points", value: "\(maxPoints)")
         ]
+        let iv = interval ?? historyInterval(start: start, end: end)
+        queryItems.append(URLQueryItem(name: "interval", value: iv))
+        comp.queryItems = queryItems
         let req = authorizedRequest(comp.url!)
         let d = try await dataWithAuth(req)
         return try JSONDecoder().decode(HistoryResp<T>.self, from: d).data
+    }
+
+    private func trafficTier(start: Date, end: Date, forceDetailed: Bool) -> (interval: String, maxPoints: Int) {
+        let sec = max(0, end.timeIntervalSince(start))
+        if forceDetailed { return ("5m", 2600) }
+        if sec > 3600 * 24 * 365 * 2 { return ("6h", 480) }
+        if sec > 3600 * 24 * 30 { return ("1h", 1200) }
+        if sec > 3600 * 24 * 7 { return ("5m", 1600) }
+        return ("1m", 2400)
+    }
+
+    private func persistSnapshot(_ list: [DeviceStatus]) {
+        do {
+            let raw = try JSONEncoder().encode(list)
+            UserDefaults.standard.set(raw, forKey: "np_snapshot_devices")
+            let ts = ISO8601DateFormatter().string(from: Date())
+            UserDefaults.standard.set(ts, forKey: "np_snapshot_ts")
+            lastSnapshotAt = ts
+        } catch {}
+    }
+
+    private func restoreSnapshot() -> [DeviceStatus] {
+        lastSnapshotAt = UserDefaults.standard.string(forKey: "np_snapshot_ts") ?? ""
+        guard let raw = UserDefaults.standard.data(forKey: "np_snapshot_devices") else { return [] }
+        return (try? JSONDecoder().decode([DeviceStatus].self, from: raw)) ?? []
+    }
+
+    private func recordApiCost(_ ms: Int) {
+        guard ms > 0 else { return }
+        apiCostMs.append(ms)
+        if apiCostMs.count > 120 { apiCostMs.removeFirst(apiCostMs.count - 120) }
+        let sorted = apiCostMs.sorted()
+        guard !sorted.isEmpty else { return }
+        let i = Int(Double(sorted.count - 1) * 0.95)
+        perfSummary = "P95: \(sorted[max(0, min(i, sorted.count - 1))])ms / 最近\(sorted.count)次"
     }
 }
 
@@ -636,6 +818,14 @@ struct DashboardView: View {
                         }
                         .padding(.horizontal, UiSpec.pagePadding)
                     }
+                    NpCard {
+                        Text("性能观测").font(.headline)
+                        Text(vm.perfSummary).font(.footnote).foregroundStyle(.white.opacity(0.82))
+                        if !vm.lastSnapshotAt.isEmpty {
+                            Text("最近快照：\(vm.lastSnapshotAt)").font(.caption2).foregroundStyle(.white.opacity(0.65))
+                        }
+                    }
+                    .padding(.horizontal, UiSpec.pagePadding)
 
                     if vm.devices.isEmpty {
                         EmptyStateCard(title: "暂无资产", desc: "请先在 Web 端添加资产后再查看")
@@ -748,6 +938,7 @@ struct DeviceDetailView: View {
     @EnvironmentObject var vm: AppVM
     let deviceID: Int64
     @State private var keyword = ""
+    @State private var keywordHistory: [String] = []
     @State private var showLogs = false
     @State private var dateEnd = Date()
     @State private var dateStart = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
@@ -757,7 +948,7 @@ struct DeviceDetailView: View {
         let list = vm.deviceDetail?.interfaces ?? []
         let key = keyword.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if key.isEmpty { return list }
-        return list.filter { "\($0.id) \($0.index) \($0.name) \($0.remark)".lowercased().contains(key) }
+        return list.filter { portSearchBlob($0).contains(key) }
     }
     private var visiblePorts: [NetInterface] { Array(filteredPorts.prefix(visiblePortCount)) }
     private var cpuValues: [Double] { vm.cpu.map { $0.cpu_usage ?? 0 } }
@@ -776,7 +967,7 @@ struct DeviceDetailView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: UiSpec.sectionGap) {
+            LazyVStack(spacing: UiSpec.sectionGap) {
                 NpCard {
                     if let d = vm.deviceDetail {
                         HStack {
@@ -801,12 +992,34 @@ struct DeviceDetailView: View {
                 )
 
                 NpCard {
-                    TextField("搜索端口", text: $keyword)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(Color.white.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .foregroundStyle(.white)
+                    VStack(spacing: 8) {
+                        HStack {
+                            TextField("搜索端口（名称/备注/拼音）", text: $keyword)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                                .background(Color.white.opacity(0.08))
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .foregroundStyle(.white)
+                            Button("搜索") {
+                                let k = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !k.isEmpty { keywordHistory = ([k] + keywordHistory).removingDuplicates().prefix(6).map { $0 } }
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        if !keywordHistory.isEmpty {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 6) {
+                                    ForEach(keywordHistory, id: \.self) { kw in
+                                        Button(kw) { keyword = kw }.buttonStyle(.bordered)
+                                    }
+                                    Button("清空") {
+                                        keyword = ""
+                                        visiblePortCount = 80
+                                    }.buttonStyle(.bordered)
+                                }
+                            }
+                        }
+                    }
                 }
 
                 if vm.detailLoading && (vm.deviceDetail?.interfaces.isEmpty ?? true) {
@@ -849,7 +1062,17 @@ struct DeviceDetailView: View {
                 if !vm.deviceError.isEmpty {
                     NpCard {
                         Text(vm.deviceError).font(.footnote).foregroundStyle(NpColor.warning)
+                        Button("重试加载详情") {
+                            Task {
+                                await vm.fetchDeviceDetail(deviceID: deviceID)
+                                await vm.fetchDeviceHistory(deviceID: deviceID, start: dateStart, end: dateEnd)
+                            }
+                        }
+                        .buttonStyle(.bordered)
                     }
+                }
+                NpCard {
+                    Text("任务状态：\(vm.queryProgress)").font(.footnote).foregroundStyle(.white.opacity(0.72))
                 }
             }
             .padding(UiSpec.pagePadding)
@@ -864,15 +1087,13 @@ struct DeviceDetailView: View {
             visiblePortCount = 80
             dateEnd = Date()
             dateStart = Calendar.current.date(byAdding: .day, value: -1, to: dateEnd) ?? dateEnd
-            async let detailTask: Void = vm.fetchDeviceDetail(deviceID: deviceID)
-            async let historyTask: Void = vm.fetchDeviceHistory(deviceID: deviceID, start: dateStart, end: dateEnd)
-            _ = await (detailTask, historyTask)
+            await vm.fetchDeviceDetail(deviceID: deviceID)
+            Task { await vm.fetchDeviceHistory(deviceID: deviceID, start: dateStart, end: dateEnd) }
         }
         .refreshable {
             visiblePortCount = 80
-            async let detailTask: Void = vm.fetchDeviceDetail(deviceID: deviceID)
-            async let historyTask: Void = vm.fetchDeviceHistory(deviceID: deviceID, start: dateStart, end: dateEnd)
-            _ = await (detailTask, historyTask)
+            await vm.fetchDeviceDetail(deviceID: deviceID)
+            Task { await vm.fetchDeviceHistory(deviceID: deviceID, start: dateStart, end: dateEnd) }
         }
     }
 }
@@ -887,6 +1108,8 @@ struct PortDetailView: View {
     @State private var showInSeries = true
     @State private var showOutSeries = true
     @State private var exportMessage = ""
+    @State private var detailed3y = false
+    @State private var selectedTrafficIndex: Int?
 
     private var minDate: Date {
         Calendar.current.date(byAdding: .year, value: -3, to: Date()) ?? .distantPast
@@ -911,19 +1134,38 @@ struct PortDetailView: View {
             ForEach(trafficForRender) { p in
                 if showInSeries, let inV = p.traffic_in_bps {
                     LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("入方向", inV))
-                        .foregroundStyle(NpColor.indigo)
+                        .foregroundStyle(by: .value("Series", "IN"))
                         .interpolationMethod(.catmullRom)
                         .lineStyle(StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
                 }
                 if showOutSeries, let outV = p.traffic_out_bps {
                     LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("出方向", outV))
-                        .foregroundStyle(NpColor.success)
+                        .foregroundStyle(by: .value("Series", "OUT"))
                         .interpolationMethod(.catmullRom)
                         .lineStyle(StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
                 }
             }
+            if let idx = selectedTrafficIndex, idx >= 0, idx < trafficForRender.count {
+                let p = trafficForRender[idx]
+                let ts = parseRFC3339(p.timestamp)
+                RuleMark(x: .value("选中", ts))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 4]))
+                if let inV = p.traffic_in_bps {
+                    PointMark(x: .value("时间", ts), y: .value("入方向", inV))
+                        .foregroundStyle(NpColor.indigo)
+                }
+                if let outV = p.traffic_out_bps {
+                    PointMark(x: .value("时间", ts), y: .value("出方向", outV))
+                        .foregroundStyle(NpColor.success)
+                }
+            }
         }
         .transaction { $0.animation = nil }
+        .chartForegroundStyleScale([
+            "IN": NpColor.indigo,
+            "OUT": NpColor.success
+        ])
         .chartYScale(domain: 0...trafficMaxY)
         .chartYAxis(.hidden)
         .chartXAxis {
@@ -939,6 +1181,23 @@ struct PortDetailView: View {
                 .background(Color(red: 21/255, green: 30/255, blue: 45/255))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
         }
+        .chartOverlay { proxy in
+            GeometryReader { geo in
+                Rectangle()
+                    .fill(.clear)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                let origin = geo[proxy.plotAreaFrame].origin
+                                let x = value.location.x - origin.x
+                                if let ts: Date = proxy.value(atX: x), let i = nearestTrafficIndex(to: ts) {
+                                    selectedTrafficIndex = i
+                                }
+                            }
+                    )
+            }
+        }
         .frame(width: chartContentWidth, height: 360)
     }
 
@@ -949,30 +1208,42 @@ struct PortDetailView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         Button("当日") {
+                            detailed3y = false
                             selectedRange = "day"
                             end = Date()
                             start = Calendar.current.startOfDay(for: end)
-                            Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
+                            Task { await vm.fetchPortHistory(portID: portID, start: start, end: end, forceDetailed: false) }
                         }.buttonStyle(.bordered)
                         Button("近7天") {
+                            detailed3y = false
                             selectedRange = "7d"
                             end = Date()
                             start = Calendar.current.date(byAdding: .day, value: -7, to: end) ?? end
-                            Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
+                            Task { await vm.fetchPortHistory(portID: portID, start: start, end: end, forceDetailed: false) }
                         }.buttonStyle(.bordered)
                         Button("近30天") {
+                            detailed3y = false
                             selectedRange = "30d"
                             end = Date()
                             start = Calendar.current.date(byAdding: .day, value: -30, to: end) ?? end
-                            Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
+                            Task { await vm.fetchPortHistory(portID: portID, start: start, end: end, forceDetailed: false) }
                         }.buttonStyle(.bordered)
                         Button("近3年") {
+                            detailed3y = false
                             selectedRange = "3y"
                             end = Date()
                             start = Calendar.current.date(byAdding: .day, value: -365*3, to: end) ?? end
-                            Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
+                            Task { await vm.fetchPortHistory(portID: portID, start: start, end: end, forceDetailed: false) }
                         }.buttonStyle(.bordered)
                     }
+                }
+                Text("查询状态：\(vm.queryProgress)").font(.footnote).foregroundStyle(.white.opacity(0.72))
+                if start < Calendar.current.date(byAdding: .day, value: -700, to: end) ?? start, !detailed3y {
+                    Button("3年视图：加载更多精度") {
+                        detailed3y = true
+                        Task { await vm.fetchPortHistory(portID: portID, start: start, end: end, forceDetailed: true) }
+                    }
+                    .buttonStyle(.bordered)
                 }
                 DatePicker("开始", selection: $start, in: minDate...Date(), displayedComponents: [.date, .hourAndMinute])
                 DatePicker("结束", selection: $end, in: minDate...Date(), displayedComponents: [.date, .hourAndMinute])
@@ -986,9 +1257,11 @@ struct PortDetailView: View {
                         default: start = Calendar.current.startOfDay(for: end)
                         }
                     }.buttonStyle(.bordered)
-                    Button("查询") { Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) } }
+                    Button("查询") { Task { await vm.fetchPortHistory(portID: portID, start: start, end: end, forceDetailed: detailed3y) } }
                         .buttonStyle(.borderedProminent)
                         .tint(NpColor.indigo)
+                    Button("取消") { vm.cancelPortQuery() }
+                        .buttonStyle(.bordered)
                 }
             }
 
@@ -998,6 +1271,16 @@ struct PortDetailView: View {
             } else if vm.traffic.isEmpty {
                 EmptyStateCard(title: "暂无流量数据", desc: "请调整时间范围后刷新")
                     .padding(.horizontal, UiSpec.pagePadding)
+                if !vm.portError.isEmpty {
+                    NpCard {
+                        Text(vm.portError).font(.footnote).foregroundStyle(NpColor.warning)
+                        Button("一键重试") {
+                            Task { await vm.fetchPortHistory(portID: portID, start: start, end: end, forceDetailed: detailed3y) }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(.horizontal, UiSpec.pagePadding)
+                }
             } else {
                 NpCard {
                     HStack(spacing: 14) {
@@ -1031,6 +1314,21 @@ struct PortDetailView: View {
                     .buttonStyle(.bordered)
                 }
                 .padding(.horizontal, UiSpec.pagePadding)
+                if let idx = selectedTrafficIndex, idx >= 0, idx < trafficForRender.count {
+                    let p = trafficForRender[idx]
+                    NpCard {
+                        Text(parseRFC3339(p.timestamp).formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.8))
+                        Text("入方向: \(formatBps(p.traffic_in_bps ?? 0))")
+                            .font(.footnote)
+                            .foregroundStyle(NpColor.indigo)
+                        Text("出方向: \(formatBps(p.traffic_out_bps ?? 0))")
+                            .font(.footnote)
+                            .foregroundStyle(NpColor.success)
+                    }
+                    .padding(.horizontal, UiSpec.pagePadding)
+                }
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: 8) {
                         VStack(alignment: .trailing, spacing: 0) {
@@ -1063,28 +1361,71 @@ struct PortDetailView: View {
                     .padding(.bottom, 8)
             }
         }
-        .task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
+        .task { await vm.fetchPortHistory(portID: portID, start: start, end: end, forceDetailed: false) }
+    }
+
+    private func nearestTrafficIndex(to date: Date) -> Int? {
+        guard !trafficForRender.isEmpty else { return nil }
+        var best = 0
+        var bestDelta = abs(parseRFC3339(trafficForRender[0].timestamp).timeIntervalSince(date))
+        for i in 1..<trafficForRender.count {
+            let delta = abs(parseRFC3339(trafficForRender[i].timestamp).timeIntervalSince(date))
+            if delta < bestDelta {
+                bestDelta = delta
+                best = i
+            }
+        }
+        return best
     }
 }
 
 func decimateTraffic(_ src: [InterfaceHistoryPoint], maxPoints: Int) -> [InterfaceHistoryPoint] {
     guard src.count > maxPoints, maxPoints > 0 else { return src }
-    let bucket = Double(src.count) / Double(maxPoints)
+    let bucket = max(1, src.count / max(1, maxPoints / 2))
     var out: [InterfaceHistoryPoint] = []
-    out.reserveCapacity(maxPoints)
+    out.reserveCapacity(maxPoints + 2)
     var idx = 0.0
     while idx < Double(src.count) {
         let from = Int(idx)
-        let to = min(src.count, Int(idx + bucket))
+        let to = min(src.count, Int(idx + Double(bucket)))
         guard from < to else { break }
         let slice = src[from..<to]
-        let inVals = slice.compactMap { $0.traffic_in_bps }
-        let outVals = slice.compactMap { $0.traffic_out_bps }
-        let inAvg: Double? = inVals.isEmpty ? nil : (inVals.reduce(0, +) / Double(inVals.count))
-        let outAvg: Double? = outVals.isEmpty ? nil : (outVals.reduce(0, +) / Double(outVals.count))
-        let ts = slice.last?.timestamp ?? src[from].timestamp
-        out.append(InterfaceHistoryPoint(timestamp: ts, traffic_in_bps: inAvg, traffic_out_bps: outAvg))
-        idx += bucket
+        let inVals = Array(slice.compactMap { $0.traffic_in_bps })
+        let outVals = Array(slice.compactMap { $0.traffic_out_bps })
+        if inVals.isEmpty && outVals.isEmpty {
+            let ts = slice[slice.count / 2].timestamp
+            out.append(InterfaceHistoryPoint(timestamp: ts, traffic_in_bps: nil, traffic_out_bps: nil))
+            idx += Double(bucket)
+            continue
+        }
+
+        var peakOffset = 0
+        var peakVal = -Double.greatestFiniteMagnitude
+        for (i, p) in slice.enumerated() {
+            let inAbs = abs(p.traffic_in_bps ?? .nan)
+            let outAbs = abs(p.traffic_out_bps ?? .nan)
+            let local = max(inAbs, outAbs)
+            if local.isFinite && local > peakVal {
+                peakVal = local
+                peakOffset = i
+            }
+        }
+
+        let meanTs = slice[slice.count / 2].timestamp
+        let meanPoint = InterfaceHistoryPoint(
+            timestamp: meanTs,
+            traffic_in_bps: inVals.isEmpty ? nil : inVals.reduce(0, +) / Double(inVals.count),
+            traffic_out_bps: outVals.isEmpty ? nil : outVals.reduce(0, +) / Double(outVals.count)
+        )
+        let peakPoint = slice[slice.index(slice.startIndex, offsetBy: peakOffset)]
+        if peakOffset <= slice.count / 2 {
+            out.append(peakPoint)
+            out.append(meanPoint)
+        } else {
+            out.append(meanPoint)
+            out.append(peakPoint)
+        }
+        idx += Double(bucket)
     }
     return out
 }
@@ -1115,6 +1456,31 @@ func formatBps(_ value: Double) -> String {
     if absV >= 1_000_000 { return String(format: "%.1fMbps", value / 1_000_000) }
     if absV >= 1_000 { return String(format: "%.1fKbps", value / 1_000) }
     return String(format: "%.0fbps", value)
+}
+
+func portSearchBlob(_ itf: NetInterface) -> String {
+    let raw = "\(itf.id) \(itf.index) \(itf.name) \(itf.remark)".lowercased()
+    let pinyin = chineseToPinyin(raw)
+    let initials = pinyin
+        .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        .compactMap { $0.first }
+        .map { String($0) }
+        .joined()
+    return "\(raw) \(pinyin) \(initials)"
+}
+
+func chineseToPinyin(_ src: String) -> String {
+    let mutable = NSMutableString(string: src) as CFMutableString
+    CFStringTransform(mutable, nil, kCFStringTransformToLatin, false)
+    CFStringTransform(mutable, nil, kCFStringTransformStripCombiningMarks, false)
+    return (mutable as String).lowercased()
+}
+
+extension Array where Element: Hashable {
+    func removingDuplicates() -> [Element] {
+        var seen: Set<Element> = []
+        return self.filter { seen.insert($0).inserted }
+    }
 }
 
 struct NpCard<Content: View>: View {
