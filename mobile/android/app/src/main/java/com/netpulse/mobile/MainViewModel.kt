@@ -3,6 +3,7 @@ package com.netpulse.mobile
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -125,10 +126,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val s = DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(start)
                 val e = DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(end)
-                _deviceDetail.value = withContext(Dispatchers.IO) { client.fetchDeviceById(deviceId) }
-                _cpu.value = withContext(Dispatchers.IO) { client.fetchDeviceHistory("cpu", deviceId, s, e) }
-                _mem.value = withContext(Dispatchers.IO) { client.fetchDeviceHistory("mem", deviceId, s, e) }
-                _logs.value = withContext(Dispatchers.IO) { client.fetchLogs(deviceId) }
+                val detailDeferred = async(Dispatchers.IO) { client.fetchDeviceById(deviceId) }
+                val cpuDeferred = async(Dispatchers.IO) { client.fetchDeviceHistory("cpu", deviceId, s, e) }
+                val memDeferred = async(Dispatchers.IO) { client.fetchDeviceHistory("mem", deviceId, s, e) }
+                _deviceDetail.value = detailDeferred.await()
+                _cpu.value = cpuDeferred.await()
+                _mem.value = memDeferred.await()
+                launch(Dispatchers.IO) {
+                    runCatching { client.fetchLogs(deviceId) }
+                        .onSuccess { logs -> _logs.value = logs }
+                        .onFailure { ex -> _message.value = ex.message ?: "加载设备日志失败" }
+                }
             } catch (ex: Exception) {
                 handleApiError(ex, "加载详情失败")
             } finally {
@@ -144,12 +152,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val s = DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(start)
                 val e = DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(end)
-                _traffic.value = withContext(Dispatchers.IO) { client.fetchTrafficHistory(portId, s, e) }
+                _traffic.value = withContext(Dispatchers.IO) { client.fetchTrafficHistory(portId, s, e, historyInterval(start, end)) }
             } catch (ex: Exception) {
                 handleApiError(ex, "加载端口流量失败")
             } finally {
                 _loading.value = false
             }
+        }
+    }
+
+    private fun historyInterval(start: OffsetDateTime, end: OffsetDateTime): String {
+        val days = kotlin.math.max(1L, java.time.Duration.between(start, end).toDays())
+        return when {
+            days > 180 -> "1h"
+            days > 30 -> "5m"
+            else -> "1m"
         }
     }
 

@@ -484,6 +484,8 @@ fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
     var start by remember { mutableStateOf(OffsetDateTime.now().minusDays(1)) }
     var end by remember { mutableStateOf(OffsetDateTime.now()) }
     var showCustomRange by remember { mutableStateOf(false) }
+    var showDebug by remember { mutableStateOf(false) }
+    var debugTapCount by remember { mutableStateOf(0) }
 
     LaunchedEffect(portId) { vm.loadPortTraffic(portId, start, end) }
 
@@ -497,7 +499,18 @@ fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
         Column(Modifier.padding(p).fillMaxSize().padding(Np.screenPadding), verticalArrangement = Arrangement.spacedBy(Np.sectionGap)) {
             ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.fillMaxWidth().padding(Np.cardPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("时间范围", style = MaterialTheme.typography.titleMedium, color = Color.White)
+                    Text(
+                        "时间范围",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White,
+                        modifier = Modifier.clickable {
+                            debugTapCount += 1
+                            if (debugTapCount >= 5) {
+                                showDebug = !showDebug
+                                debugTapCount = 0
+                            }
+                        }
+                    )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                         OutlinedButton(onClick = {
                             end = OffsetDateTime.now()
@@ -531,6 +544,22 @@ fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
                             Button(onClick = { vm.loadPortTraffic(portId, start, end) }, modifier = Modifier.fillMaxWidth()) {
                                 Text("按当前范围查询")
                             }
+                        }
+                    }
+                    AnimatedVisibility(visible = showDebug) {
+                        val hours = kotlin.math.max(1L, java.time.Duration.between(start, end).toHours())
+                        val interval = when {
+                            hours > 24 * 180 -> "1h"
+                            hours > 24 * 30 -> "5m"
+                            else -> "1m"
+                        }
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("调试信息（隐藏面板）", style = MaterialTheme.typography.bodySmall, color = Np.Warning)
+                            Text("portId=$portId", style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
+                            Text("start=$start", style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
+                            Text("end=$end", style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
+                            Text("interval=$interval", style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
+                            Text("points=${traffic.size}", style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
                         }
                     }
                 }

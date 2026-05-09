@@ -93,10 +93,11 @@ class NetPulseClient(
         }
     }
 
-    fun fetchTrafficHistory(interfaceID: Long, start: String, end: String): List<InterfaceHistoryPoint> {
+    fun fetchTrafficHistory(interfaceID: Long, start: String, end: String, interval: String? = null): List<InterfaceHistoryPoint> {
         val s = URLEncoder.encode(start, StandardCharsets.UTF_8)
         val e = URLEncoder.encode(end, StandardCharsets.UTF_8)
-        val req = reqBuilder("/metrics/history?type=traffic&id=$interfaceID&start=$s&end=$e").get().build()
+        val iv = interval?.takeIf { it.isNotBlank() }?.let { "&interval=${URLEncoder.encode(it, StandardCharsets.UTF_8)}" } ?: ""
+        val req = reqBuilder("/metrics/history?type=traffic&id=$interfaceID&start=$s&end=$e$iv").get().build()
         http.newCall(req).execute().use { resp ->
             ensureOk(resp.code, "获取端口流量失败")
             return json.decodeFromString<HistoryResponse<InterfaceHistoryPoint>>(resp.body!!.string()).data
