@@ -180,8 +180,10 @@ function toSeriesData(data) {
   for (const p of data || []) {
     const t = new Date(p.timestamp).getTime();
     if (!Number.isFinite(t)) continue;
-    inbound.push([t, Number(p.traffic_in_bps || 0)]);
-    outbound.push([t, Number(p.traffic_out_bps || 0)]);
+    const inV = p.traffic_in_bps == null ? null : Number(p.traffic_in_bps);
+    const outV = p.traffic_out_bps == null ? null : Number(p.traffic_out_bps);
+    inbound.push([t, Number.isFinite(inV) ? inV : null]);
+    outbound.push([t, Number.isFinite(outV) ? outV : null]);
   }
   return { inbound, outbound };
 }
@@ -208,8 +210,12 @@ function applyChart(chart, title, data) {
   const { inbound, outbound } = toSeriesData(data);
   const inView = decimatePoints(inbound);
   const outView = decimatePoints(outbound);
-  const hasData = inView.length > 0 || outView.length > 0;
-  const maxVal = Math.max(1, ...inView.map((x) => x[1]), ...outView.map((x) => x[1]));
+  const hasData = inView.some((x) => x[1] != null) || outView.some((x) => x[1] != null);
+  const nonNil = [
+    ...inView.map((x) => x[1]).filter((v) => v != null),
+    ...outView.map((x) => x[1]).filter((v) => v != null)
+  ];
+  const maxVal = Math.max(1, ...(nonNil.length ? nonNil : [1]));
   const unitInfo = pickUnit(maxVal);
   const opt = baseOption(title, unitInfo);
   opt.tooltip.confine = true;
@@ -246,7 +252,7 @@ function exportChartCSV(chartKey, title) {
   if (!src.length) return fb.warn("当前图表无数据可导出");
   const lines = ["timestamp,traffic_in_bps,traffic_out_bps"];
   for (const p of src) {
-    lines.push(`${p.timestamp},${Number(p.traffic_in_bps || 0)},${Number(p.traffic_out_bps || 0)}`);
+    lines.push(`${p.timestamp},${p.traffic_in_bps == null ? "" : Number(p.traffic_in_bps)},${p.traffic_out_bps == null ? "" : Number(p.traffic_out_bps)}`);
   }
   const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");

@@ -776,8 +776,8 @@ type DeviceStorageHistoryPoint struct {
 
 type InterfaceHistoryPoint struct {
 	Timestamp     time.Time `json:"timestamp"`
-	TrafficInBps  float64   `json:"traffic_in_bps"`
-	TrafficOutBps float64   `json:"traffic_out_bps"`
+	TrafficInBps  *float64  `json:"traffic_in_bps"`
+	TrafficOutBps *float64  `json:"traffic_out_bps"`
 }
 
 type DeviceCapability struct {
@@ -2365,41 +2365,45 @@ func (r *Repository) GetInterfaceHistory(
 	useAgg := end.Sub(start) > 7*24*time.Hour
 	interval = strings.TrimSpace(strings.ToLower(interval))
 	bucketInterval := resolveHistoryBucketInterval(end.Sub(start), interval, maxPoints, useAgg)
-	q := `
-		SELECT ts, COALESCE(traffic_in_bps, 0), COALESCE(traffic_out_bps, 0)
-		FROM metrics
-		WHERE interface_id = $1 AND ts >= $2 AND ts <= $3
-		ORDER BY ts;
-	`
-	if useAgg {
-		q = `
-			SELECT bucket AS ts, COALESCE(avg_traffic_in_bps, 0), COALESCE(avg_traffic_out_bps, 0)
-			FROM metrics_1m
-			WHERE interface_id = $1 AND bucket >= $2 AND bucket <= $3
-			ORDER BY bucket;
-		`
+	if bucketInterval == "" {
+		bucketInterval = "1 minute"
 	}
-	if bucketInterval != "" {
-		q = fmt.Sprintf(`
-			SELECT time_bucket('%s', bucket) AS ts,
-			       AVG(COALESCE(avg_traffic_in_bps, 0)) AS traffic_in_bps,
-			       AVG(COALESCE(avg_traffic_out_bps, 0)) AS traffic_out_bps
-			FROM metrics_1m
-			WHERE interface_id = $1 AND bucket >= $2 AND bucket <= $3
+
+	q := fmt.Sprintf(`
+		WITH buckets AS (
+			SELECT generate_series($2::timestamptz, $3::timestamptz, '%[1]s'::interval) AS ts
+		),
+		raw AS (
+			SELECT time_bucket('%[1]s', ts) AS ts,
+			       AVG(traffic_in_bps) AS traffic_in_bps,
+			       AVG(traffic_out_bps) AS traffic_out_bps
+			FROM metrics
+			WHERE interface_id = $1 AND ts >= $2 AND ts <= $3
 			GROUP BY 1
-			ORDER BY 1;
-		`, bucketInterval)
-		if !useAgg {
-			q = fmt.Sprintf(`
-				SELECT time_bucket('%s', ts) AS ts,
-				       AVG(COALESCE(traffic_in_bps, 0)) AS traffic_in_bps,
-				       AVG(COALESCE(traffic_out_bps, 0)) AS traffic_out_bps
-				FROM metrics
-				WHERE interface_id = $1 AND ts >= $2 AND ts <= $3
+		)
+		SELECT b.ts, r.traffic_in_bps, r.traffic_out_bps
+		FROM buckets b
+		LEFT JOIN raw r ON r.ts = b.ts
+		ORDER BY b.ts;
+	`, bucketInterval)
+	if useAgg {
+		q = fmt.Sprintf(`
+			WITH buckets AS (
+				SELECT generate_series($2::timestamptz, $3::timestamptz, '%[1]s'::interval) AS ts
+			),
+			raw AS (
+				SELECT time_bucket('%[1]s', bucket) AS ts,
+				       AVG(avg_traffic_in_bps) AS traffic_in_bps,
+				       AVG(avg_traffic_out_bps) AS traffic_out_bps
+				FROM metrics_1m
+				WHERE interface_id = $1 AND bucket >= $2 AND bucket <= $3
 				GROUP BY 1
-				ORDER BY 1;
-			`, bucketInterval)
-		}
+			)
+			SELECT b.ts, r.traffic_in_bps, r.traffic_out_bps
+			FROM buckets b
+			LEFT JOIN raw r ON r.ts = b.ts
+			ORDER BY b.ts;
+		`, bucketInterval)
 	}
 
 	rows, err := r.db.QueryContext(ctx, q, interfaceID, start, end)
@@ -2411,8 +2415,17 @@ func (r *Repository) GetInterfaceHistory(
 	out := make([]InterfaceHistoryPoint, 0)
 	for rows.Next() {
 		var p InterfaceHistoryPoint
-		if err := rows.Scan(&p.Timestamp, &p.TrafficInBps, &p.TrafficOutBps); err != nil {
+		var in, outB sql.NullFloat64
+		if err := rows.Scan(&p.Timestamp, &in, &outB); err != nil {
 			return nil, fmt.Errorf("scan interface history: %w", err)
+		}
+		if in.Valid {
+			v := in.Float64
+			p.TrafficInBps = &v
+		}
+		if outB.Valid {
+			v := outB.Float64
+			p.TrafficOutBps = &v
 		}
 		out = append(out, p)
 	}

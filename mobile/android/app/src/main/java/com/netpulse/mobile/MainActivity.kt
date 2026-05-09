@@ -2,9 +2,12 @@ package com.netpulse.mobile
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.os.Bundle
+import android.provider.MediaStore
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.biometric.BiometricManager
@@ -487,6 +490,8 @@ fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
     var showCustomRange by remember { mutableStateOf(false) }
     var showDebug by remember { mutableStateOf(false) }
     var debugTapCount by remember { mutableStateOf(0) }
+    var chartRef by remember { mutableStateOf<LineChart?>(null) }
+    val ctx = LocalContext.current
 
     LaunchedEffect(portId) { vm.loadPortTraffic(portId, start, end) }
 
@@ -563,6 +568,15 @@ fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
                             Text("points=${traffic.size}", style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
                         }
                     }
+                    Button(
+                        onClick = {
+                            val err = saveChartToGallery(ctx, chartRef, "NetPulse-Port-$portId")
+                            Toast.makeText(ctx, err ?: "图表已保存到相册", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("导出图片并保存到相册")
+                    }
                 }
             }
             ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth().weight(1f)) {
@@ -572,7 +586,11 @@ fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
                     EmptyStateCard(title = "暂无流量数据", desc = "请调整时间范围后刷新", modifier = Modifier.fillMaxSize())
                 } else {
                     val decimated = remember(traffic) { decimateTraffic(traffic, 1800) }
-                    MpTrafficChart(points = decimated, modifier = Modifier.fillMaxSize().padding(10.dp))
+                    MpTrafficChart(
+                        points = decimated,
+                        modifier = Modifier.fillMaxSize().padding(10.dp),
+                        onChartReady = { chartRef = it }
+                    )
                 }
             }
         }
@@ -580,7 +598,11 @@ fun PortDetailScreen(portId: Long, vm: MainViewModel, onBack: () -> Unit) {
 }
 
 @Composable
-fun MpTrafficChart(points: List<InterfaceHistoryPoint>, modifier: Modifier = Modifier) {
+fun MpTrafficChart(
+    points: List<InterfaceHistoryPoint>,
+    modifier: Modifier = Modifier,
+    onChartReady: (LineChart) -> Unit = {}
+) {
     val formatter = DateTimeFormatter.ofPattern("MM-dd HH:mm")
     AndroidView(modifier = modifier, factory = { ctx ->
         LineChart(ctx).apply {
@@ -611,14 +633,15 @@ fun MpTrafficChart(points: List<InterfaceHistoryPoint>, modifier: Modifier = Mod
             legend.form = com.github.mikephil.charting.components.Legend.LegendForm.LINE
             legend.isEnabled = true
             marker = TrafficMarkerView(ctx, points)
+            onChartReady(this)
         }
     }, update = { chart ->
         if (points.isEmpty()) {
             chart.clear()
             return@AndroidView
         }
-        val inEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficInBps ?: 0.0).toFloat()) }
-        val outEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficOutBps ?: 0.0).toFloat()) }
+        val inEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficInBps ?: Double.NaN).toFloat()) }
+        val outEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficOutBps ?: Double.NaN).toFloat()) }
 
         val inSet = LineDataSet(inEntries, "入方向").apply {
             color = android.graphics.Color.parseColor("#6366F1")
@@ -640,6 +663,7 @@ fun MpTrafficChart(points: List<InterfaceHistoryPoint>, modifier: Modifier = Mod
         if (points.size > 96) {
             chart.moveViewToX((points.size - 96).toFloat())
         }
+        onChartReady(chart)
         chart.invalidate()
     })
 }
@@ -665,8 +689,10 @@ fun decimateTraffic(src: List<InterfaceHistoryPoint>, maxPoints: Int): List<Inte
         val from = i.toInt()
         val to = (i + bucket).toInt().coerceAtMost(src.size)
         val slice = src.subList(from, to)
-        val inAvg = slice.map { it.trafficInBps ?: 0.0 }.average()
-        val outAvg = slice.map { it.trafficOutBps ?: 0.0 }.average()
+        val inVals = slice.mapNotNull { it.trafficInBps }
+        val outVals = slice.mapNotNull { it.trafficOutBps }
+        val inAvg = if (inVals.isEmpty()) null else inVals.average()
+        val outAvg = if (outVals.isEmpty()) null else outVals.average()
         out += InterfaceHistoryPoint(timestamp = slice[slice.size / 2].timestamp, trafficInBps = inAvg, trafficOutBps = outAvg)
         i += bucket
     }
@@ -734,6 +760,29 @@ fun formatBps(value: Double): String {
         abs >= 1_000_000 -> String.format("%.1f Mbps", value / 1_000_000.0)
         abs >= 1_000 -> String.format("%.1f Kbps", value / 1_000.0)
         else -> String.format("%.0f bps", value)
+    }
+}
+
+fun saveChartToGallery(context: Context, chart: LineChart?, namePrefix: String): String? {
+    if (chart == null) return "图表尚未就绪"
+    return try {
+        val bitmap = chart.chartBitmap ?: return "图表无可导出内容"
+        val filename = "${namePrefix}_${System.currentTimeMillis()}.png"
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, filename)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/NetPulse")
+        }
+        val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            ?: return "创建相册文件失败"
+        context.contentResolver.openOutputStream(uri).use { os ->
+            if (os == null || !bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, os)) {
+                return "写入图片失败"
+            }
+        }
+        null
+    } catch (e: Exception) {
+        "保存失败: ${e.message ?: "未知错误"}"
     }
 }
 

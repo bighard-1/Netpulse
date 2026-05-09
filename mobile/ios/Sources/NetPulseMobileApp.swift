@@ -886,12 +886,60 @@ struct PortDetailView: View {
     @State private var selectedRange: String = "day"
     @State private var showInSeries = true
     @State private var showOutSeries = true
+    @State private var exportMessage = ""
 
     private var minDate: Date {
         Calendar.current.date(byAdding: .year, value: -3, to: Date()) ?? .distantPast
     }
     private var trafficForRender: [InterfaceHistoryPoint] {
         decimateTraffic(vm.traffic, maxPoints: 700)
+    }
+    private var chartContentWidth: CGFloat {
+        max(UIScreen.main.bounds.width - 72, CGFloat(trafficForRender.count) * 7.5)
+    }
+    private var trafficMaxY: Double {
+        let vals: [Double] = trafficForRender.flatMap { [($0.traffic_in_bps), ($0.traffic_out_bps)] }.compactMap { $0 }
+        let maxV = vals.max() ?? 0
+        return max(1, maxV * 1.08)
+    }
+    private var yTicks: [Double] {
+        let step = trafficMaxY / 4.0
+        return [trafficMaxY, step * 3, step * 2, step, 0]
+    }
+    private var portChartContent: some View {
+        Chart {
+            ForEach(trafficForRender) { p in
+                if showInSeries, let inV = p.traffic_in_bps {
+                    LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("入方向", inV))
+                        .foregroundStyle(NpColor.indigo)
+                        .interpolationMethod(.catmullRom)
+                        .lineStyle(StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
+                }
+                if showOutSeries, let outV = p.traffic_out_bps {
+                    LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("出方向", outV))
+                        .foregroundStyle(NpColor.success)
+                        .interpolationMethod(.catmullRom)
+                        .lineStyle(StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
+                }
+            }
+        }
+        .transaction { $0.animation = nil }
+        .chartYScale(domain: 0...trafficMaxY)
+        .chartYAxis(.hidden)
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 5)) { _ in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.4, dash: [2, 5]))
+                    .foregroundStyle(.white.opacity(0.08))
+                AxisTick().foregroundStyle(.white.opacity(0.4))
+                AxisValueLabel().foregroundStyle(.white.opacity(0.65))
+            }
+        }
+        .chartPlotStyle { plotArea in
+            plotArea
+                .background(Color(red: 21/255, green: 30/255, blue: 45/255))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .frame(width: chartContentWidth, height: 360)
     }
 
     var body: some View {
@@ -970,57 +1018,31 @@ struct PortDetailView: View {
                         }
                         .buttonStyle(.plain)
                     }
+                    Button("导出图片并保存到相册") {
+                        let renderer = ImageRenderer(content: portChartContent)
+                        renderer.scale = UIScreen.main.scale
+                        if let img = renderer.uiImage {
+                            UIImageWriteToSavedPhotosAlbum(img, nil, nil, nil)
+                            exportMessage = "已保存到相册"
+                        } else {
+                            exportMessage = "导出失败，请重试"
+                        }
+                    }
+                    .buttonStyle(.bordered)
                 }
                 .padding(.horizontal, UiSpec.pagePadding)
                 ScrollView(.horizontal, showsIndicators: false) {
-                    Chart {
-                        ForEach(trafficForRender) { p in
-                            if showInSeries {
-                                LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("入方向", p.traffic_in_bps ?? 0))
-                                    .foregroundStyle(NpColor.indigo)
-                                    .interpolationMethod(.catmullRom)
-                                    .lineStyle(StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
-                            }
-                            if showOutSeries {
-                                LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("出方向", p.traffic_out_bps ?? 0))
-                                    .foregroundStyle(NpColor.success)
-                                    .interpolationMethod(.catmullRom)
-                                    .lineStyle(StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
+                    HStack(alignment: .top, spacing: 8) {
+                        VStack(alignment: .trailing, spacing: 0) {
+                            ForEach(yTicks.indices, id: \.self) { i in
+                                Text(formatBps(yTicks[i]))
+                                    .font(.caption2)
+                                    .foregroundStyle(.white.opacity(0.7))
+                                    .frame(height: i == yTicks.count - 1 ? 16 : 86, alignment: .topTrailing)
                             }
                         }
+                        portChartContent
                     }
-                    .transaction { $0.animation = nil }
-                    .chartYAxis {
-                        AxisMarks(position: .leading) { value in
-                            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.6, dash: [3, 4]))
-                                .foregroundStyle(.white.opacity(0.14))
-                            AxisTick().foregroundStyle(.white.opacity(0.45))
-                            AxisValueLabel {
-                                if let v = value.as(Double.self) {
-                                    Text(formatBps(v)).foregroundStyle(.white.opacity(0.70))
-                                } else if let v = value.as(Int.self) {
-                                    Text(formatBps(Double(v))).foregroundStyle(.white.opacity(0.70))
-                                }
-                            }
-                        }
-                    }
-                    .chartXAxis {
-                        AxisMarks(values: .automatic(desiredCount: 5)) { _ in
-                            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.4, dash: [2, 5]))
-                                .foregroundStyle(.white.opacity(0.08))
-                            AxisTick().foregroundStyle(.white.opacity(0.4))
-                            AxisValueLabel().foregroundStyle(.white.opacity(0.65))
-                        }
-                    }
-                    .chartPlotStyle { plotArea in
-                        plotArea
-                            .background(Color(red: 21/255, green: 30/255, blue: 45/255))
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
-                    .frame(
-                        width: max(UIScreen.main.bounds.width - 32, CGFloat(trafficForRender.count) * 7.5),
-                        height: 360
-                    )
                 }
                 .padding(.horizontal)
             }
@@ -1029,7 +1051,12 @@ struct PortDetailView: View {
         .navigationTitle("端口详情")
         .navigationBarTitleDisplayMode(.inline)
         .overlay(alignment: .bottom) {
-            if !vm.portError.isEmpty {
+            if !exportMessage.isEmpty {
+                Text(exportMessage)
+                    .font(.footnote)
+                    .foregroundStyle(NpColor.success)
+                    .padding(.bottom, 8)
+            } else if !vm.portError.isEmpty {
                 Text(vm.portError)
                     .font(.footnote)
                     .foregroundStyle(NpColor.warning)
@@ -1051,8 +1078,10 @@ func decimateTraffic(_ src: [InterfaceHistoryPoint], maxPoints: Int) -> [Interfa
         let to = min(src.count, Int(idx + bucket))
         guard from < to else { break }
         let slice = src[from..<to]
-        let inAvg = slice.compactMap { $0.traffic_in_bps }.reduce(0, +) / Double(slice.count)
-        let outAvg = slice.compactMap { $0.traffic_out_bps }.reduce(0, +) / Double(slice.count)
+        let inVals = slice.compactMap { $0.traffic_in_bps }
+        let outVals = slice.compactMap { $0.traffic_out_bps }
+        let inAvg: Double? = inVals.isEmpty ? nil : (inVals.reduce(0, +) / Double(inVals.count))
+        let outAvg: Double? = outVals.isEmpty ? nil : (outVals.reduce(0, +) / Double(outVals.count))
         let ts = slice.last?.timestamp ?? src[from].timestamp
         out.append(InterfaceHistoryPoint(timestamp: ts, traffic_in_bps: inAvg, traffic_out_bps: outAvg))
         idx += bucket

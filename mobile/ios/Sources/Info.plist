@@ -20,6 +20,8 @@
 	<true/>
 	<key>NSFaceIDUsageDescription</key>
 	<string>用于快速登录 NetPulse</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>用于将图表导出并保存到系统相册</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
