@@ -59,6 +59,15 @@ struct RecentEvent: Codable, Identifiable {
     let created_at: String?
 }
 
+struct DeviceNavTarget: Hashable {
+    let id: Int64
+}
+
+struct PortNavTarget: Hashable {
+    let id: Int64
+    let deviceID: Int64
+}
+
 struct DeviceHistoryPoint: Codable, Identifiable {
     var id: String { timestamp }
     let timestamp: String
@@ -100,6 +109,16 @@ final class AppVM: ObservableObject {
     @Published var historyLoading = false
     @Published var portLoading = false
     @Published var err = ""
+    @Published var loginError = ""
+    @Published var dashboardError = ""
+    @Published var deviceError = ""
+    @Published var portError = ""
+
+    private var detailRequestSeq: Int = 0
+    private var historyRequestSeq: Int = 0
+    private var portRequestSeq: Int = 0
+    private var activeDeviceID: Int64?
+    private var activePortID: Int64?
 
     var baseURL: String {
         get { UserDefaults.standard.string(forKey: "baseURL") ?? "http://119.40.55.18:18080/api" }
@@ -116,7 +135,9 @@ final class AppVM: ObservableObject {
         let (data, resp) = try await URLSession.shared.data(for: req)
         if let http = resp as? HTTPURLResponse, http.statusCode == 401 {
             await MainActor.run {
-                err = "登录已过期，请重新登录"
+                let msg = "登录已过期，请重新登录"
+                err = msg
+                loginError = msg
                 logout()
             }
             throw NSError(domain: "auth", code: 401)
@@ -145,10 +166,13 @@ final class AppVM: ObservableObject {
             let r = try JSONDecoder().decode(LoginResponse.self, from: data)
             token = r.token
             KeychainStore.shared.set("netpulse_jwt", value: r.token)
+            loginError = ""
             await refreshDevices()
         } catch {
             let msg = (error as NSError).localizedDescription
-            err = "登录失败：\(msg)"
+            let m = "登录失败：\(msg)"
+            err = m
+            loginError = m
         }
     }
 
@@ -160,7 +184,9 @@ final class AppVM: ObservableObject {
             // Biometric auth now only unlocks existing secure token session.
             token = KeychainStore.shared.get("netpulse_jwt") ?? ""
             if token.isEmpty {
-                err = "请先使用用户名密码完成首次登录"
+                let m = "请先使用用户名密码完成首次登录"
+                err = m
+                loginError = m
                 return
             }
             await refreshDevices()
@@ -172,6 +198,13 @@ final class AppVM: ObservableObject {
         devices = []
         recentEvents = []
         deviceDetail = nil
+        cpu = []
+        mem = []
+        traffic = []
+        logs = []
+        dashboardError = ""
+        deviceError = ""
+        portError = ""
         KeychainStore.shared.delete("netpulse_jwt")
     }
 
@@ -188,60 +221,99 @@ final class AppVM: ObservableObject {
             } catch {
                 recentEvents = []
             }
+            dashboardError = ""
         } catch {
-            err = "加载设备失败：\((error as NSError).localizedDescription)"
+            let m = "加载设备失败：\((error as NSError).localizedDescription)"
+            err = m
+            dashboardError = m
         }
     }
 
     func fetchDeviceDetail(deviceID: Int64) async {
+        detailRequestSeq += 1
+        let requestID = detailRequestSeq
+        activeDeviceID = deviceID
         detailLoading = true
-        defer { detailLoading = false }
+        defer {
+            if requestID == detailRequestSeq { detailLoading = false }
+        }
         guard !token.isEmpty else { return }
         do {
             let req = authorizedRequest(URL(string: "\(baseURL)/devices/\(deviceID)")!)
             let d = try await dataWithAuth(req)
+            guard requestID == detailRequestSeq, activeDeviceID == deviceID else { return }
             deviceDetail = try JSONDecoder().decode(DeviceStatus.self, from: d)
+            deviceError = ""
         } catch {
-            err = "加载设备详情失败：\((error as NSError).localizedDescription)"
+            guard requestID == detailRequestSeq else { return }
+            let m = "加载设备详情失败：\((error as NSError).localizedDescription)"
+            err = m
+            deviceError = m
         }
     }
 
     func fetchDeviceHistory(deviceID: Int64, start: Date, end: Date) async {
+        historyRequestSeq += 1
+        let requestID = historyRequestSeq
+        activeDeviceID = deviceID
         historyLoading = true
-        defer { historyLoading = false }
+        defer {
+            if requestID == historyRequestSeq { historyLoading = false }
+        }
         do {
             let s = ISO8601DateFormatter().string(from: start)
             let e = ISO8601DateFormatter().string(from: end)
             async let c = fetchHistory(type: "cpu", id: deviceID, start: s, end: e) as [DeviceHistoryPoint]
             async let m = fetchHistory(type: "mem", id: deviceID, start: s, end: e) as [DeviceHistoryPoint]
-            cpu = try await c
-            mem = try await m
+            let cpuPoints = try await c
+            let memPoints = try await m
+            guard requestID == historyRequestSeq, activeDeviceID == deviceID else { return }
+            cpu = cpuPoints
+            mem = memPoints
+            deviceError = ""
             // 日志单独异步加载，避免拖慢详情页首屏图表渲染。
             Task {
                 do {
-                    logs = try await fetchLogs(deviceID: deviceID)
+                    let loadedLogs = try await fetchLogs(deviceID: deviceID)
+                    guard requestID == self.historyRequestSeq, self.activeDeviceID == deviceID else { return }
+                    self.logs = loadedLogs
                 } catch {
-                    logs = []
+                    guard requestID == self.historyRequestSeq else { return }
+                    self.logs = []
                 }
             }
         } catch {
+            guard requestID == historyRequestSeq else { return }
             cpu = []
             mem = []
             logs = []
-            err = "加载性能数据失败：\((error as NSError).localizedDescription)"
+            let m = "加载性能数据失败：\((error as NSError).localizedDescription)"
+            err = m
+            deviceError = m
         }
     }
 
     func fetchPortHistory(portID: Int64, start: Date, end: Date) async {
+        portRequestSeq += 1
+        let requestID = portRequestSeq
+        activePortID = portID
         portLoading = true
-        defer { portLoading = false }
+        defer {
+            if requestID == portRequestSeq { portLoading = false }
+        }
         do {
             let s = ISO8601DateFormatter().string(from: start)
             let e = ISO8601DateFormatter().string(from: end)
-            traffic = try await fetchHistory(type: "traffic", id: portID, start: s, end: e)
+            let points: [InterfaceHistoryPoint] = try await fetchHistory(type: "traffic", id: portID, start: s, end: e)
+            guard requestID == portRequestSeq, activePortID == portID else { return }
+            traffic = points
+            portError = ""
         } catch {
+            guard requestID == portRequestSeq else { return }
             traffic = []
-            err = "加载端口流量失败：\((error as NSError).localizedDescription)"
+            let m = "加载端口流量失败：\((error as NSError).localizedDescription)"
+            err = m
+            portError = m
         }
     }
 
@@ -256,7 +328,9 @@ final class AppVM: ObservableObject {
             await fetchDeviceDetail(deviceID: deviceID)
             await fetchDeviceHistory(deviceID: deviceID, start: start, end: end)
         } catch {
-            err = "更新端口备注失败"
+            let m = "更新端口备注失败"
+            err = m
+            deviceError = m
         }
     }
 
@@ -270,7 +344,9 @@ final class AppVM: ObservableObject {
             _ = try await dataWithAuth(req)
             await refreshDevices()
         } catch {
-            err = "更新设备备注失败"
+            let m = "更新设备备注失败"
+            err = m
+            deviceError = m
         }
     }
 
@@ -289,7 +365,9 @@ final class AppVM: ObservableObject {
             _ = try await dataWithAuth(req)
             await refreshDevices()
         } catch {
-            err = "更新资产失败"
+            let m = "更新资产失败"
+            err = m
+            deviceError = m
         }
     }
 
@@ -317,7 +395,9 @@ final class AppVM: ObservableObject {
             await fetchDeviceDetail(deviceID: deviceID)
             await refreshDevices()
         } catch {
-            err = "更新维护模式失败"
+            let m = "更新维护模式失败"
+            err = m
+            deviceError = m
         }
     }
 
@@ -481,7 +561,7 @@ struct LoginView: View {
                     .buttonStyle(.bordered)
             }
             Text("首次登录必须使用用户名密码").font(.footnote).foregroundStyle(.white.opacity(0.7))
-            if !vm.err.isEmpty { Text(vm.err).foregroundStyle(.red) }
+            if !vm.loginError.isEmpty { Text(vm.loginError).foregroundStyle(.red) }
         }
         .padding(UiSpec.pagePadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -544,7 +624,7 @@ struct DashboardView: View {
                     } else {
                         VStack(spacing: 8) {
                             ForEach(vm.devices) { d in
-                                NavigationLink(value: d.id) { DeviceRow(device: d) }
+                                NavigationLink(value: DeviceNavTarget(id: d.id)) { DeviceRow(device: d) }
                                     .buttonStyle(.plain)
                                     .contextMenu {
                                         Button("快速预览") { quickPeekDevice = d }
@@ -580,8 +660,8 @@ struct DashboardView: View {
                     Button("刷新") { Task { await vm.refreshDevices() } }
                 }
             }
-            .navigationDestination(for: Int64.self) { id in
-                DeviceDetailView(deviceID: id).environmentObject(vm)
+            .navigationDestination(for: DeviceNavTarget.self) { target in
+                DeviceDetailView(deviceID: target.id).environmentObject(vm)
             }
             .task { await vm.refreshDevices() }
             .refreshable { await vm.refreshDevices() }
@@ -617,7 +697,7 @@ struct AssetCenterView: View {
                     } else {
                         VStack(spacing: 8) {
                             ForEach(vm.devices) { d in
-                                NavigationLink(value: d.id) { DeviceRow(device: d) }
+                                NavigationLink(value: DeviceNavTarget(id: d.id)) { DeviceRow(device: d) }
                                     .buttonStyle(.plain)
                                     .contextMenu {
                                         Button("快速预览") { quickPeekDevice = d }
@@ -631,8 +711,8 @@ struct AssetCenterView: View {
             }
             .background(NpColor.bg)
             .navigationTitle("资产中心")
-            .navigationDestination(for: Int64.self) { id in
-                DeviceDetailView(deviceID: id).environmentObject(vm)
+            .navigationDestination(for: DeviceNavTarget.self) { target in
+                DeviceDetailView(deviceID: target.id).environmentObject(vm)
             }
             .task { await vm.refreshDevices() }
             .refreshable { await vm.refreshDevices() }
@@ -688,6 +768,14 @@ struct DeviceDetailView: View {
                         .font(.caption).foregroundStyle(.white.opacity(0.72))
                     Text("内存 当前 \(memCurrent, specifier: "%.1f")% / 峰值 \(memPeak, specifier: "%.1f")%")
                         .font(.caption).foregroundStyle(.white.opacity(0.72))
+                    HStack(spacing: 14) {
+                        Label("CPU", systemImage: "circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(Color.orange)
+                        Label("内存", systemImage: "circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(Color.cyan)
+                    }
                     if vm.historyLoading {
                         ShimmerRect(height: 240)
                     } else if vm.cpu.isEmpty && vm.mem.isEmpty {
@@ -696,11 +784,11 @@ struct DeviceDetailView: View {
                         Chart {
                             ForEach(vm.cpu) { p in
                                 LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("CPU", p.cpu_usage ?? 0))
-                                    .foregroundStyle(NpColor.indigo)
+                                    .foregroundStyle(Color.orange)
                             }
                             ForEach(vm.mem) { p in
                                 LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("内存", p.mem_usage ?? 0))
-                                    .foregroundStyle(NpColor.success)
+                                    .foregroundStyle(Color.cyan)
                             }
                         }
                         .chartYAxis {
@@ -743,7 +831,7 @@ struct DeviceDetailView: View {
                     EmptyStateCard(title: "无匹配端口", desc: "请调整关键字后再试")
                 } else {
                     ForEach(filteredPorts) { p in
-                        NavigationLink(value: p.id) {
+                        NavigationLink(value: PortNavTarget(id: p.id, deviceID: deviceID)) {
                             NpCard {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(p.name)
@@ -768,9 +856,9 @@ struct DeviceDetailView: View {
                         Text("设备日志（默认10条）").font(.headline.weight(.semibold))
                     }
                 }
-                if !vm.err.isEmpty {
+                if !vm.deviceError.isEmpty {
                     NpCard {
-                        Text(vm.err).font(.footnote).foregroundStyle(NpColor.warning)
+                        Text(vm.deviceError).font(.footnote).foregroundStyle(NpColor.warning)
                     }
                 }
             }
@@ -779,18 +867,20 @@ struct DeviceDetailView: View {
         .background(NpColor.bg)
         .navigationTitle("设备详情")
         .navigationBarTitleDisplayMode(.inline)
-        .navigationDestination(for: Int64.self) { portID in
-            PortDetailView(deviceID: deviceID, portID: portID).environmentObject(vm)
+        .navigationDestination(for: PortNavTarget.self) { target in
+            PortDetailView(deviceID: target.deviceID, portID: target.id).environmentObject(vm)
         }
         .task {
-            await vm.fetchDeviceDetail(deviceID: deviceID)
             dateEnd = Date()
             dateStart = Calendar.current.date(byAdding: .day, value: -1, to: dateEnd) ?? dateEnd
-            await vm.fetchDeviceHistory(deviceID: deviceID, start: dateStart, end: dateEnd)
+            async let detailTask: Void = vm.fetchDeviceDetail(deviceID: deviceID)
+            async let historyTask: Void = vm.fetchDeviceHistory(deviceID: deviceID, start: dateStart, end: dateEnd)
+            _ = await (detailTask, historyTask)
         }
         .refreshable {
-            await vm.fetchDeviceDetail(deviceID: deviceID)
-            await vm.fetchDeviceHistory(deviceID: deviceID, start: dateStart, end: dateEnd)
+            async let detailTask: Void = vm.fetchDeviceDetail(deviceID: deviceID)
+            async let historyTask: Void = vm.fetchDeviceHistory(deviceID: deviceID, start: dateStart, end: dateEnd)
+            _ = await (detailTask, historyTask)
         }
     }
 }
@@ -805,6 +895,9 @@ struct PortDetailView: View {
 
     private var minDate: Date {
         Calendar.current.date(byAdding: .year, value: -3, to: Date()) ?? .distantPast
+    }
+    private var trafficForRender: [InterfaceHistoryPoint] {
+        decimateTraffic(vm.traffic, maxPoints: 900)
     }
 
     var body: some View {
@@ -864,8 +957,19 @@ struct PortDetailView: View {
                 EmptyStateCard(title: "暂无流量数据", desc: "请调整时间范围后刷新")
                     .padding(.horizontal, UiSpec.pagePadding)
             } else {
+                NpCard {
+                    HStack(spacing: 14) {
+                        Label("入方向", systemImage: "circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(NpColor.indigo)
+                        Label("出方向", systemImage: "circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(NpColor.success)
+                    }
+                }
+                .padding(.horizontal, UiSpec.pagePadding)
                 Chart {
-                    ForEach(vm.traffic) { p in
+                    ForEach(trafficForRender) { p in
                         LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("入方向", p.traffic_in_bps ?? 0))
                             .foregroundStyle(NpColor.indigo)
                         LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("出方向", p.traffic_out_bps ?? 0))
@@ -900,8 +1004,36 @@ struct PortDetailView: View {
         .background(NpColor.bg)
         .navigationTitle("端口详情")
         .navigationBarTitleDisplayMode(.inline)
+        .overlay(alignment: .bottom) {
+            if !vm.portError.isEmpty {
+                Text(vm.portError)
+                    .font(.footnote)
+                    .foregroundStyle(NpColor.warning)
+                    .padding(.bottom, 8)
+            }
+        }
         .task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
     }
+}
+
+func decimateTraffic(_ src: [InterfaceHistoryPoint], maxPoints: Int) -> [InterfaceHistoryPoint] {
+    guard src.count > maxPoints, maxPoints > 0 else { return src }
+    let bucket = Double(src.count) / Double(maxPoints)
+    var out: [InterfaceHistoryPoint] = []
+    out.reserveCapacity(maxPoints)
+    var idx = 0.0
+    while idx < Double(src.count) {
+        let from = Int(idx)
+        let to = min(src.count, Int(idx + bucket))
+        guard from < to else { break }
+        let slice = src[from..<to]
+        let inAvg = slice.compactMap { $0.traffic_in_bps }.reduce(0, +) / Double(slice.count)
+        let outAvg = slice.compactMap { $0.traffic_out_bps }.reduce(0, +) / Double(slice.count)
+        let ts = slice.last?.timestamp ?? src[from].timestamp
+        out.append(InterfaceHistoryPoint(timestamp: ts, traffic_in_bps: inAvg, traffic_out_bps: outAvg))
+        idx += bucket
+    }
+    return out
 }
 
 struct NpCard<Content: View>: View {
