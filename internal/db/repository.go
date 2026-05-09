@@ -125,6 +125,35 @@ BEGIN
                 ALTER COLUMN traffic_out_bps TYPE BIGINT
                 USING COALESCE(traffic_out_bps::BIGINT, 0);
         END IF;
+
+        -- storage_* historical compatibility: old schemas may use varchar/text.
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'metrics' AND column_name = 'storage_total'
+              AND data_type NOT IN ('numeric','double precision','real','bigint','integer')
+        ) THEN
+            ALTER TABLE metrics
+                ALTER COLUMN storage_total TYPE NUMERIC(20,2)
+                USING NULLIF(regexp_replace(COALESCE(storage_total::text, ''), '[^0-9\\.-]', '', 'g'), '')::NUMERIC(20,2);
+        END IF;
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'metrics' AND column_name = 'storage_free'
+              AND data_type NOT IN ('numeric','double precision','real','bigint','integer')
+        ) THEN
+            ALTER TABLE metrics
+                ALTER COLUMN storage_free TYPE NUMERIC(20,2)
+                USING NULLIF(regexp_replace(COALESCE(storage_free::text, ''), '[^0-9\\.-]', '', 'g'), '')::NUMERIC(20,2);
+        END IF;
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'metrics' AND column_name = 'storage_usage'
+              AND data_type NOT IN ('numeric','double precision','real','bigint','integer')
+        ) THEN
+            ALTER TABLE metrics
+                ALTER COLUMN storage_usage TYPE NUMERIC(5,2)
+                USING NULLIF(regexp_replace(COALESCE(storage_usage::text, ''), '[^0-9\\.-]', '', 'g'), '')::NUMERIC(5,2);
+        END IF;
     END IF;
 END $$;
 
@@ -151,6 +180,26 @@ SELECT remove_continuous_aggregate_policy(
     'metrics_1m',
     if_exists => TRUE
 );
+
+DO $$
+DECLARE
+    j RECORD;
+BEGIN
+    -- Defensive cleanup for old/duplicated refresh policies to prevent overlap errors.
+    FOR j IN
+        SELECT job_id
+        FROM timescaledb_information.jobs
+        WHERE hypertable_name = 'metrics_1m'
+          AND proc_name = 'policy_refresh_continuous_aggregate'
+    LOOP
+        BEGIN
+            PERFORM delete_job(j.job_id);
+        EXCEPTION
+            WHEN OTHERS THEN
+                NULL;
+        END;
+    END LOOP;
+END $$;
 
 SELECT add_continuous_aggregate_policy(
     'metrics_1m',

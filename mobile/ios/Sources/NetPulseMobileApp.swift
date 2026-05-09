@@ -884,6 +884,8 @@ struct PortDetailView: View {
     @State private var start = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
     @State private var end = Date()
     @State private var selectedRange: String = "day"
+    @State private var showInSeries = true
+    @State private var showOutSeries = true
 
     private var minDate: Date {
         Calendar.current.date(byAdding: .year, value: -3, to: Date()) ?? .distantPast
@@ -951,56 +953,75 @@ struct PortDetailView: View {
             } else {
                 NpCard {
                     HStack(spacing: 14) {
-                        Label("入方向", systemImage: "circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(NpColor.indigo)
-                        Label("出方向", systemImage: "circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(NpColor.success)
+                        Button {
+                            showInSeries.toggle()
+                        } label: {
+                            Label("入方向", systemImage: showInSeries ? "circle.fill" : "circle")
+                                .font(.caption)
+                                .foregroundStyle(NpColor.indigo)
+                        }
+                        .buttonStyle(.plain)
+                        Button {
+                            showOutSeries.toggle()
+                        } label: {
+                            Label("出方向", systemImage: showOutSeries ? "circle.fill" : "circle")
+                                .font(.caption)
+                                .foregroundStyle(NpColor.success)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, UiSpec.pagePadding)
-                Chart {
-                    ForEach(trafficForRender) { p in
-                        LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("入方向", p.traffic_in_bps ?? 0))
-                            .foregroundStyle(NpColor.indigo)
-                            .interpolationMethod(.catmullRom)
-                            .lineStyle(StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round))
-                        LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("出方向", p.traffic_out_bps ?? 0))
-                            .foregroundStyle(NpColor.success)
-                            .interpolationMethod(.catmullRom)
-                            .lineStyle(StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round))
-                    }
-                }
-                .transaction { $0.animation = nil }
-                .chartYAxis {
-                    AxisMarks(position: .leading) { value in
-                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.6, dash: [3, 4]))
-                            .foregroundStyle(.white.opacity(0.14))
-                        AxisTick().foregroundStyle(.white.opacity(0.45))
-                        AxisValueLabel {
-                            if let v = value.as(Double.self) {
-                                Text(formatBps(v)).foregroundStyle(.white.opacity(0.70))
-                            } else if let v = value.as(Int.self) {
-                                Text(formatBps(Double(v))).foregroundStyle(.white.opacity(0.70))
+                ScrollView(.horizontal, showsIndicators: false) {
+                    Chart {
+                        ForEach(trafficForRender) { p in
+                            if showInSeries {
+                                LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("入方向", p.traffic_in_bps ?? 0))
+                                    .foregroundStyle(NpColor.indigo)
+                                    .interpolationMethod(.catmullRom)
+                                    .lineStyle(StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
+                            }
+                            if showOutSeries {
+                                LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("出方向", p.traffic_out_bps ?? 0))
+                                    .foregroundStyle(NpColor.success)
+                                    .interpolationMethod(.catmullRom)
+                                    .lineStyle(StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round))
                             }
                         }
                     }
-                }
-                .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: 5)) { _ in
-                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.4, dash: [2, 5]))
-                            .foregroundStyle(.white.opacity(0.08))
-                        AxisTick().foregroundStyle(.white.opacity(0.4))
-                        AxisValueLabel().foregroundStyle(.white.opacity(0.65))
+                    .transaction { $0.animation = nil }
+                    .chartYAxis {
+                        AxisMarks(position: .leading) { value in
+                            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.6, dash: [3, 4]))
+                                .foregroundStyle(.white.opacity(0.14))
+                            AxisTick().foregroundStyle(.white.opacity(0.45))
+                            AxisValueLabel {
+                                if let v = value.as(Double.self) {
+                                    Text(formatBps(v)).foregroundStyle(.white.opacity(0.70))
+                                } else if let v = value.as(Int.self) {
+                                    Text(formatBps(Double(v))).foregroundStyle(.white.opacity(0.70))
+                                }
+                            }
+                        }
                     }
+                    .chartXAxis {
+                        AxisMarks(values: .automatic(desiredCount: 5)) { _ in
+                            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.4, dash: [2, 5]))
+                                .foregroundStyle(.white.opacity(0.08))
+                            AxisTick().foregroundStyle(.white.opacity(0.4))
+                            AxisValueLabel().foregroundStyle(.white.opacity(0.65))
+                        }
+                    }
+                    .chartPlotStyle { plotArea in
+                        plotArea
+                            .background(Color(red: 21/255, green: 30/255, blue: 45/255))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .frame(
+                        width: max(UIScreen.main.bounds.width - 32, CGFloat(trafficForRender.count) * 7.5),
+                        height: 360
+                    )
                 }
-                .chartPlotStyle { plotArea in
-                    plotArea
-                        .background(Color(red: 21/255, green: 30/255, blue: 45/255))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(.horizontal)
             }
         }
@@ -1087,6 +1108,8 @@ struct CpuMemPanel: View {
     let memPeak: Double
     let cpuSeries: [UsageLinePoint]
     let memSeries: [UsageLinePoint]
+    @State private var showCPU = true
+    @State private var showMEM = true
 
     var body: some View {
         NpCard {
@@ -1096,8 +1119,14 @@ struct CpuMemPanel: View {
             Text("内存 当前 \(memCurrent, specifier: "%.1f")% / 峰值 \(memPeak, specifier: "%.1f")%")
                 .font(.caption).foregroundStyle(.white.opacity(0.72))
             HStack(spacing: 14) {
-                Label("CPU(%)", systemImage: "circle.fill").font(.caption).foregroundStyle(Color.orange)
-                Label("内存(%)", systemImage: "circle.fill").font(.caption).foregroundStyle(Color.cyan)
+                Button { showCPU.toggle() } label: {
+                    Label("CPU(%)", systemImage: showCPU ? "circle.fill" : "circle")
+                        .font(.caption).foregroundStyle(Color.orange)
+                }.buttonStyle(.plain)
+                Button { showMEM.toggle() } label: {
+                    Label("内存(%)", systemImage: showMEM ? "circle.fill" : "circle")
+                        .font(.caption).foregroundStyle(Color.cyan)
+                }.buttonStyle(.plain)
             }
             if historyLoading {
                 ShimmerRect(height: 240)
@@ -1105,13 +1134,20 @@ struct CpuMemPanel: View {
                 EmptyStateCard(title: "暂无性能数据", desc: "等待下一轮采集后自动显示")
             } else {
                 Chart {
-                    ForEach(cpuSeries) { p in
-                        LineMark(x: .value("时间", p.ts), y: .value("CPU", p.value))
-                            .foregroundStyle(Color.orange)
+                    RuleMark(y: .value("告警70", 70)).foregroundStyle(.yellow.opacity(0.55)).lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 5]))
+                    RuleMark(y: .value("告警85", 85)).foregroundStyle(.orange.opacity(0.55)).lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 5]))
+                    RuleMark(y: .value("告警90", 90)).foregroundStyle(.red.opacity(0.55)).lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 5]))
+                    if showCPU {
+                        ForEach(cpuSeries) { p in
+                            LineMark(x: .value("时间", p.ts), y: .value("CPU", p.value))
+                                .foregroundStyle(Color.orange)
+                        }
                     }
-                    ForEach(memSeries) { p in
-                        LineMark(x: .value("时间", p.ts), y: .value("内存", p.value))
-                            .foregroundStyle(Color.cyan)
+                    if showMEM {
+                        ForEach(memSeries) { p in
+                            LineMark(x: .value("时间", p.ts), y: .value("内存", p.value))
+                                .foregroundStyle(Color.cyan)
+                        }
                     }
                 }
                 .transaction { $0.animation = nil }
@@ -1347,15 +1383,19 @@ struct DeviceQuickPeekSheet: View {
                     }
                     NpCard {
                         Text("CPU / 内存").font(.headline.weight(.semibold)).foregroundStyle(.white)
+                        HStack(spacing: 14) {
+                            Label("CPU(%)", systemImage: "circle.fill").font(.caption).foregroundStyle(Color.orange)
+                            Label("内存(%)", systemImage: "circle.fill").font(.caption).foregroundStyle(Color.cyan)
+                        }
                         if vm.loading {
                             ShimmerRect(height: 220)
                         } else {
                             Chart {
                                 ForEach(vm.cpu) { p in
-                                    LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("CPU", p.cpu_usage ?? 0)).foregroundStyle(NpColor.indigo)
+                                    LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("CPU", p.cpu_usage ?? 0)).foregroundStyle(Color.orange)
                                 }
                                 ForEach(vm.mem) { p in
-                                    LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("MEM", p.mem_usage ?? 0)).foregroundStyle(NpColor.success)
+                                    LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("MEM", p.mem_usage ?? 0)).foregroundStyle(Color.cyan)
                                 }
                             }
                             .chartYAxis {

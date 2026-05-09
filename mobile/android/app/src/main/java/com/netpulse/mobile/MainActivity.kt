@@ -67,6 +67,7 @@ import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Date
+import kotlin.math.absoluteValue
 
 private object Np {
     val Bg = Color(0xFF0F172A)
@@ -588,16 +589,27 @@ fun MpTrafficChart(points: List<InterfaceHistoryPoint>, modifier: Modifier = Mod
             setPinchZoom(true)
             isDragEnabled = true
             setScaleEnabled(true)
-            setVisibleXRangeMaximum(180f)
+            setVisibleXRangeMaximum(96f)
             axisRight.isEnabled = false
+            axisLeft.textColor = android.graphics.Color.parseColor("#CBD5E1")
+            axisLeft.gridColor = android.graphics.Color.parseColor("#233043")
+            axisLeft.valueFormatter = object : ValueFormatter() {
+                override fun getFormattedValue(value: Float): String = formatBps(value.toDouble())
+            }
             xAxis.position = XAxis.XAxisPosition.BOTTOM
             xAxis.granularity = 1f
+            xAxis.textColor = android.graphics.Color.parseColor("#94A3B8")
+            xAxis.gridColor = android.graphics.Color.parseColor("#233043")
+            xAxis.labelCount = 5
             xAxis.valueFormatter = object : ValueFormatter() {
                 override fun getFormattedValue(value: Float): String {
                     val i = value.toInt().coerceIn(0, points.lastIndex)
                     return parseTs(points[i].timestamp).format(formatter)
                 }
             }
+            legend.textColor = android.graphics.Color.parseColor("#E2E8F0")
+            legend.form = com.github.mikephil.charting.components.Legend.LegendForm.LINE
+            legend.isEnabled = true
             marker = TrafficMarkerView(ctx, points)
         }
     }, update = { chart ->
@@ -611,16 +623,23 @@ fun MpTrafficChart(points: List<InterfaceHistoryPoint>, modifier: Modifier = Mod
         val inSet = LineDataSet(inEntries, "入方向").apply {
             color = android.graphics.Color.parseColor("#6366F1")
             setDrawCircles(false)
+            setDrawValues(false)
+            setDrawFilled(false)
             lineWidth = 2f
-            mode = LineDataSet.Mode.LINEAR
+            mode = LineDataSet.Mode.CUBIC_BEZIER
         }
         val outSet = LineDataSet(outEntries, "出方向").apply {
             color = android.graphics.Color.parseColor("#22C55E")
             setDrawCircles(false)
+            setDrawValues(false)
+            setDrawFilled(false)
             lineWidth = 2f
-            mode = LineDataSet.Mode.LINEAR
+            mode = LineDataSet.Mode.CUBIC_BEZIER
         }
         chart.data = LineData(inSet, outSet)
+        if (points.size > 96) {
+            chart.moveViewToX((points.size - 96).toFloat())
+        }
         chart.invalidate()
     })
 }
@@ -631,7 +650,7 @@ class TrafficMarkerView(context: Context, private val points: List<InterfaceHist
         if (e == null || points.isEmpty()) return
         val i = e.x.toInt().coerceIn(0, points.lastIndex)
         val p = points[i]
-        tv.text = "${p.timestamp}\n入: ${(p.trafficInBps ?: 0.0).toLong()} bps\n出: ${(p.trafficOutBps ?: 0.0).toLong()} bps"
+        tv.text = "${p.timestamp}\n入: ${formatBps(p.trafficInBps ?: 0.0)}\n出: ${formatBps(p.trafficOutBps ?: 0.0)}"
         super.refreshContent(e, highlight)
     }
     override fun getOffset(): MPPointF = MPPointF(-(width / 2f), -height.toFloat())
@@ -658,10 +677,64 @@ fun parseTs(ts: String): OffsetDateTime = try { OffsetDateTime.parse(ts) } catch
 
 @Composable
 fun MiniLineChart(cpu: List<Double>, mem: List<Double>) {
-    val pts = cpu.indices.map { i ->
+    MpCpuMemChart(cpu, mem, modifier = Modifier.fillMaxWidth().height(220.dp))
+}
+
+@Composable
+fun MpCpuMemChart(cpu: List<Double>, mem: List<Double>, modifier: Modifier = Modifier) {
+    val points = cpu.indices.map { i ->
         InterfaceHistoryPoint(timestamp = i.toString(), trafficInBps = cpu[i], trafficOutBps = mem.getOrElse(i) { 0.0 })
     }
-    MpTrafficChart(points = decimateTraffic(pts, 400), modifier = Modifier.fillMaxWidth().height(220.dp))
+    AndroidView(modifier = modifier, factory = { ctx ->
+        LineChart(ctx).apply {
+            description.isEnabled = false
+            setTouchEnabled(true)
+            setPinchZoom(true)
+            isDragEnabled = true
+            setScaleEnabled(true)
+            axisRight.isEnabled = false
+            axisLeft.axisMinimum = 0f
+            axisLeft.axisMaximum = 100f
+            axisLeft.textColor = android.graphics.Color.parseColor("#CBD5E1")
+            axisLeft.valueFormatter = object : ValueFormatter() {
+                override fun getFormattedValue(value: Float): String = "${value.toInt()}%"
+            }
+            xAxis.position = XAxis.XAxisPosition.BOTTOM
+            xAxis.setDrawLabels(false)
+            xAxis.setDrawGridLines(false)
+            legend.textColor = android.graphics.Color.parseColor("#E2E8F0")
+            legend.isEnabled = true
+        }
+    }, update = { chart ->
+        val inEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficInBps ?: 0.0).toFloat()) }
+        val outEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficOutBps ?: 0.0).toFloat()) }
+        val cpuSet = LineDataSet(inEntries, "CPU").apply {
+            color = android.graphics.Color.parseColor("#F59E0B")
+            setDrawCircles(false)
+            setDrawValues(false)
+            lineWidth = 2f
+            mode = LineDataSet.Mode.CUBIC_BEZIER
+        }
+        val memSet = LineDataSet(outEntries, "内存").apply {
+            color = android.graphics.Color.parseColor("#06B6D4")
+            setDrawCircles(false)
+            setDrawValues(false)
+            lineWidth = 2f
+            mode = LineDataSet.Mode.CUBIC_BEZIER
+        }
+        chart.data = LineData(cpuSet, memSet)
+        chart.invalidate()
+    })
+}
+
+fun formatBps(value: Double): String {
+    val abs = value.absoluteValue
+    return when {
+        abs >= 1_000_000_000 -> String.format("%.1f Gbps", value / 1_000_000_000.0)
+        abs >= 1_000_000 -> String.format("%.1f Mbps", value / 1_000_000.0)
+        abs >= 1_000 -> String.format("%.1f Kbps", value / 1_000.0)
+        else -> String.format("%.0f bps", value)
+    }
 }
 
 @Composable
