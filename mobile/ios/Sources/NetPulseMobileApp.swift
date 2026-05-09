@@ -65,11 +65,6 @@ struct DeviceNavTarget: Hashable {
     let id: Int64
 }
 
-struct PortNavTarget: Hashable {
-    let id: Int64
-    let deviceID: Int64
-}
-
 struct MetricLinePoint: Identifiable {
     let id: String
     let ts: Date
@@ -86,6 +81,7 @@ struct UsageLinePoint: Identifiable {
     let ts: Date
     let value: Double
     let kind: UsageKind
+    var seriesName: String { kind == .cpu ? "CPU(%)" : "内存(%)" }
 }
 
 struct DeviceHistoryPoint: Codable, Identifiable {
@@ -795,6 +791,17 @@ struct DashboardView: View {
             return "\(d.name) \(d.ip) \(d.brand) \(d.remark) \(ports)".lowercased().contains(k)
         }
     }
+    private var portMatches: [(DeviceStatus, NetInterface, String)] {
+        let k = keyword.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if k.isEmpty { return [] }
+        return vm.devices.flatMap { d in
+            d.interfaces.compactMap { p -> (DeviceStatus, NetInterface, String)? in
+                let nm = (p.custom_name?.isEmpty == false ? p.custom_name! : p.name)
+                let blob = "\(nm) \(p.name) \(p.remark) \(p.index)".lowercased()
+                return blob.contains(k) ? (d, p, nm) : nil
+            }
+        }.prefix(30).map { $0 }
+    }
 
     var body: some View {
         NavigationStack {
@@ -838,6 +845,25 @@ struct DashboardView: View {
                             .foregroundStyle(.white)
                     }
                     .padding(.horizontal, UiSpec.pagePadding)
+                    if !portMatches.isEmpty {
+                        NpCard {
+                            Text("端口直达结果").font(.headline)
+                            ForEach(Array(portMatches.enumerated()), id: \.offset) { _, x in
+                                let (d, p, nm) = x
+                                NavigationLink {
+                                    PortDetailView(deviceID: d.id, portID: p.id).environmentObject(vm)
+                                } label: {
+                                    HStack {
+                                        PortStatusDot(operStatus: p.oper_status)
+                                        Text("\(nm) · \(d.name.isEmpty ? d.ip : d.name)")
+                                            .font(.footnote)
+                                            .foregroundStyle(.white.opacity(0.88))
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.horizontal, UiSpec.pagePadding)
+                    }
 
                     NpCard {
                         Text("性能观测").font(.headline)
@@ -1011,7 +1037,9 @@ struct DeviceDetailView: View {
                     EmptyStateCard(title: "无匹配端口", desc: "请调整关键字后再试")
                 } else {
                     ForEach(visiblePorts) { p in
-                        NavigationLink(value: PortNavTarget(id: p.id, deviceID: deviceID)) {
+                        NavigationLink {
+                            PortDetailView(deviceID: deviceID, portID: p.id).environmentObject(vm)
+                        } label: {
                             NpCard {
                                 VStack(alignment: .leading, spacing: 4) {
                                     let nm = (p.custom_name?.isEmpty == false ? p.custom_name! : p.name)
@@ -1067,9 +1095,6 @@ struct DeviceDetailView: View {
         .background(NpColor.bg)
         .navigationTitle("设备详情")
         .navigationBarTitleDisplayMode(.inline)
-        .navigationDestination(for: PortNavTarget.self) { target in
-            PortDetailView(deviceID: target.deviceID, portID: target.id).environmentObject(vm)
-        }
         .task {
             visiblePortCount = 80
             dateEnd = Date()
@@ -1102,7 +1127,13 @@ struct PortDetailView: View {
         Calendar.current.date(byAdding: .year, value: -3, to: Date()) ?? .distantPast
     }
     private var trafficForRender: [InterfaceHistoryPoint] {
-        decimateTraffic(vm.traffic, maxPoints: 700)
+        decimateTraffic(vm.traffic, maxPoints: 700).map { p in
+            InterfaceHistoryPoint(
+                timestamp: p.timestamp,
+                traffic_in_bps: sanitizeFinite(p.traffic_in_bps),
+                traffic_out_bps: sanitizeFinite(p.traffic_out_bps)
+            )
+        }
     }
     private var chartContentWidth: CGFloat {
         max(UIScreen.main.bounds.width - 72, CGFloat(trafficForRender.count) * 7.5)
@@ -1119,15 +1150,15 @@ struct PortDetailView: View {
     private var portChartContent: some View {
         Chart {
             ForEach(trafficForRender) { p in
-                if showInSeries, let inV = p.traffic_in_bps {
+                if showInSeries, let inV = p.traffic_in_bps, inV.isFinite {
                     LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("入方向", inV))
-                        .foregroundStyle(by: .value("Series", "IN"))
+                        .foregroundStyle(NpColor.indigo)
                         .interpolationMethod(.linear)
                         .lineStyle(StrokeStyle(lineWidth: 2.1, lineCap: .round, lineJoin: .round, dash: [8, 4]))
                 }
-                if showOutSeries, let outV = p.traffic_out_bps {
+                if showOutSeries, let outV = p.traffic_out_bps, outV.isFinite {
                     LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("出方向", outV))
-                        .foregroundStyle(by: .value("Series", "OUT"))
+                        .foregroundStyle(NpColor.success)
                         .interpolationMethod(.linear)
                         .lineStyle(StrokeStyle(lineWidth: 2.1, lineCap: .round, lineJoin: .round))
                 }
@@ -1138,21 +1169,17 @@ struct PortDetailView: View {
                 RuleMark(x: .value("选中", ts))
                     .foregroundStyle(.white.opacity(0.55))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 4]))
-                if let inV = p.traffic_in_bps {
+                if let inV = p.traffic_in_bps, inV.isFinite {
                     PointMark(x: .value("时间", ts), y: .value("入方向", inV))
                         .foregroundStyle(NpColor.indigo)
                 }
-                if let outV = p.traffic_out_bps {
+                if let outV = p.traffic_out_bps, outV.isFinite {
                     PointMark(x: .value("时间", ts), y: .value("出方向", outV))
                         .foregroundStyle(NpColor.success)
                 }
             }
         }
         .transaction { $0.animation = nil }
-        .chartForegroundStyleScale([
-            "IN": NpColor.indigo,
-            "OUT": NpColor.success
-        ])
         .chartYScale(domain: 0...trafficMaxY)
         .chartYAxis(.hidden)
         .chartXAxis {
@@ -1348,7 +1375,11 @@ struct PortDetailView: View {
                     .padding(.bottom, 8)
             }
         }
-        .task { await vm.fetchPortHistory(portID: portID, start: start, end: end, forceDetailed: false) }
+        .task {
+            guard portID > 0 else { return }
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            await vm.fetchPortHistory(portID: portID, start: start, end: end, forceDetailed: false)
+        }
     }
 
     private func nearestTrafficIndex(to date: Date) -> Int? {
@@ -1377,8 +1408,8 @@ func decimateTraffic(_ src: [InterfaceHistoryPoint], maxPoints: Int) -> [Interfa
         let to = min(src.count, Int(idx + Double(bucket)))
         guard from < to else { break }
         let slice = src[from..<to]
-        let inVals = Array(slice.compactMap { $0.traffic_in_bps })
-        let outVals = Array(slice.compactMap { $0.traffic_out_bps })
+        let inVals = Array(slice.compactMap { sanitizeFinite($0.traffic_in_bps) })
+        let outVals = Array(slice.compactMap { sanitizeFinite($0.traffic_out_bps) })
         if inVals.isEmpty && outVals.isEmpty {
             let ts = slice[slice.count / 2].timestamp
             out.append(InterfaceHistoryPoint(timestamp: ts, traffic_in_bps: nil, traffic_out_bps: nil))
@@ -1389,8 +1420,8 @@ func decimateTraffic(_ src: [InterfaceHistoryPoint], maxPoints: Int) -> [Interfa
         var peakOffset = 0
         var peakVal = -Double.greatestFiniteMagnitude
         for (i, p) in slice.enumerated() {
-            let inAbs = abs(p.traffic_in_bps ?? .nan)
-            let outAbs = abs(p.traffic_out_bps ?? .nan)
+            let inAbs = abs(sanitizeFinite(p.traffic_in_bps) ?? .nan)
+            let outAbs = abs(sanitizeFinite(p.traffic_out_bps) ?? .nan)
             let local = max(inAbs, outAbs)
             if local.isFinite && local > peakVal {
                 peakVal = local
@@ -1415,6 +1446,11 @@ func decimateTraffic(_ src: [InterfaceHistoryPoint], maxPoints: Int) -> [Interfa
         idx += Double(bucket)
     }
     return out
+}
+
+func sanitizeFinite(_ value: Double?) -> Double? {
+    guard let v = value, v.isFinite else { return nil }
+    return v
 }
 
 func decimateDeviceHistory(_ src: [DeviceHistoryPoint], maxPoints: Int) -> [DeviceHistoryPoint] {
@@ -1521,14 +1557,20 @@ struct CpuMemPanel: View {
                     RuleMark(y: .value("告警90", 90)).foregroundStyle(.red.opacity(0.55)).lineStyle(StrokeStyle(lineWidth: 1, dash: [5, 5]))
                     if showCPU {
                         ForEach(cpuSeries) { p in
-                            LineMark(x: .value("时间", p.ts), y: .value("CPU", p.value))
+                            LineMark(
+                                x: .value("时间", p.ts),
+                                y: .value("CPU", p.value)
+                            )
                                 .foregroundStyle(Color.orange)
                                 .lineStyle(StrokeStyle(lineWidth: 2.0, dash: [8, 4]))
                         }
                     }
                     if showMEM {
                         ForEach(memSeries) { p in
-                            LineMark(x: .value("时间", p.ts), y: .value("内存", p.value))
+                            LineMark(
+                                x: .value("时间", p.ts),
+                                y: .value("内存", p.value)
+                            )
                                 .foregroundStyle(Color.cyan)
                                 .lineStyle(StrokeStyle(lineWidth: 2.2))
                         }

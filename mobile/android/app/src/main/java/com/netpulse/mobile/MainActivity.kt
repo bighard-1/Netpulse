@@ -201,6 +201,7 @@ private fun MainShell(vm: MainViewModel, nav: androidx.navigation.NavHostControl
                 recentEvents = auditLogs,
                 onRefresh = vm::refreshDevices,
                 onOpen = { id -> nav.navigate("device/$id") },
+                onOpenPort = { id -> nav.navigate("port/$id") },
                 onQuickPeek = { id -> vm.openQuickPeek(id) },
                 modifier = Modifier.padding(p)
             )
@@ -212,6 +213,7 @@ private fun MainShell(vm: MainViewModel, nav: androidx.navigation.NavHostControl
                 recentEvents = auditLogs,
                 onRefresh = vm::refreshDevices,
                 onOpen = { id -> nav.navigate("device/$id") },
+                onOpenPort = { id -> nav.navigate("port/$id") },
                 onQuickPeek = { id -> vm.openQuickPeek(id) },
                 modifier = Modifier.padding(p)
             )
@@ -265,6 +267,7 @@ fun HomeScreen(
     recentEvents: List<AuditLog>,
     onRefresh: () -> Unit,
     onOpen: (Long) -> Unit,
+    onOpenPort: (Long) -> Unit,
     onQuickPeek: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -279,6 +282,18 @@ fun HomeScreen(
         if (k.isBlank()) devices else devices.filter { d ->
             val ports = d.interfaces.joinToString(" ") { "${it.customName ?: ""} ${it.name} ${it.remark}" }
             "${d.name} ${d.ip} ${d.brand} ${d.remark} $ports".lowercase().contains(k)
+        }
+    }
+    val portMatches = remember(devices, keyword) {
+        val k = keyword.trim().lowercase()
+        if (k.isBlank()) emptyList()
+        else {
+            devices.flatMap { d ->
+                d.interfaces.mapNotNull { p ->
+                    val blob = "${p.customName ?: ""} ${p.name} ${p.remark} ${p.index}".lowercase()
+                    if (blob.contains(k)) Triple(d, p, p.customName?.takeIf { it.isNotBlank() } ?: p.name) else null
+                }
+            }.take(30)
         }
     }
     val todoItems = buildList {
@@ -315,6 +330,23 @@ fun HomeScreen(
             label = { Text("全局搜索（设备/IP/备注/端口）") },
             modifier = Modifier.fillMaxWidth()
         )
+        if (keyword.isNotBlank() && portMatches.isNotEmpty()) {
+            ElevatedCard(shape = RoundedCornerShape(Np.corner), colors = CardDefaults.elevatedCardColors(containerColor = Color(0xFF1E293B))) {
+                Column(Modifier.fillMaxWidth().padding(Np.cardPadding), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("端口直达结果", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    portMatches.forEach { (d, p, name) ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { onOpenPort(p.id) }.padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            PortStatusDot(p.operStatus)
+                            Spacer(Modifier.width(8.dp))
+                            Text("$name  ·  ${d.name.ifBlank { d.ip }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFFE2E8F0))
+                        }
+                    }
+                }
+            }
+        }
         if (loading) {
             repeat(3) { SkeletonCard() }
         } else if (filteredDevices.isEmpty()) {
