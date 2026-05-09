@@ -150,11 +150,16 @@ fun NetPulseApp(vm: MainViewModel, onBiometricLogin: () -> Unit) {
                 composable("home") { MainShell(vm = vm, nav = nav) }
                 composable("device/{id}", arguments = listOf(navArgument("id") { type = NavType.LongType })) {
                     val id = it.arguments?.getLong("id") ?: 0L
-                    DeviceDetailScreen(id, vm, onBack = { nav.popBackStack() }, onOpenPort = { portId -> nav.navigate("port/$portId") })
+                    DeviceDetailScreen(id, vm, onBack = { nav.popBackStack() }, onOpenPort = { portId -> nav.navigate("port/${portId}") })
                 }
-                composable("port/{id}", arguments = listOf(navArgument("id") { type = NavType.LongType })) {
-                    val id = it.arguments?.getLong("id") ?: 0L
-                    PortDetailScreen(id, vm, onBack = { nav.popBackStack() })
+                composable("port/{id}", arguments = listOf(navArgument("id") { type = NavType.StringType })) {
+                    val raw = it.arguments?.getString("id")
+                    val id = raw?.toLongOrNull() ?: 0L
+                    if (id <= 0L) {
+                        nav.popBackStack()
+                    } else {
+                        PortDetailScreen(id, vm, onBack = { nav.popBackStack() })
+                    }
                 }
             }
         }
@@ -201,7 +206,7 @@ private fun MainShell(vm: MainViewModel, nav: androidx.navigation.NavHostControl
                 recentEvents = auditLogs,
                 onRefresh = vm::refreshDevices,
                 onOpen = { id -> nav.navigate("device/$id") },
-                onOpenPort = { id -> nav.navigate("port/$id") },
+                onOpenPort = { id -> nav.navigate("port/${id}") },
                 onQuickPeek = { id -> vm.openQuickPeek(id) },
                 modifier = Modifier.padding(p)
             )
@@ -213,7 +218,7 @@ private fun MainShell(vm: MainViewModel, nav: androidx.navigation.NavHostControl
                 recentEvents = auditLogs,
                 onRefresh = vm::refreshDevices,
                 onOpen = { id -> nav.navigate("device/$id") },
-                onOpenPort = { id -> nav.navigate("port/$id") },
+                onOpenPort = { id -> nav.navigate("port/${id}") },
                 onQuickPeek = { id -> vm.openQuickPeek(id) },
                 modifier = Modifier.padding(p)
             )
@@ -753,8 +758,18 @@ fun MpTrafficChart(
         val yMax = maxTrafficOf(points).coerceAtLeast(1.0) * 1.1
         chart.axisLeft.axisMinimum = 0f
         chart.axisLeft.axisMaximum = yMax.toFloat()
-        val inEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficInBps ?: Double.NaN).toFloat()) }
-        val outEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficOutBps ?: Double.NaN).toFloat()) }
+        val inEntries = points.mapIndexedNotNull { i, p ->
+            val v = p.trafficInBps
+            if (v == null || !v.isFinite()) null else Entry(i.toFloat(), v.toFloat())
+        }
+        val outEntries = points.mapIndexedNotNull { i, p ->
+            val v = p.trafficOutBps
+            if (v == null || !v.isFinite()) null else Entry(i.toFloat(), v.toFloat())
+        }
+        if (inEntries.isEmpty() && outEntries.isEmpty()) {
+            chart.clear()
+            return@AndroidView
+        }
 
         val inSet = LineDataSet(inEntries, "入方向").apply {
             color = android.graphics.Color.parseColor("#6366F1")
@@ -896,8 +911,14 @@ fun MpCpuMemChart(cpu: List<Double>, mem: List<Double>, modifier: Modifier = Mod
             legend.isEnabled = true
         }
     }, update = { chart ->
-        val inEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficInBps ?: 0.0).toFloat()) }
-        val outEntries = points.mapIndexed { i, p -> Entry(i.toFloat(), (p.trafficOutBps ?: 0.0).toFloat()) }
+        val inEntries = points.mapIndexedNotNull { i, p ->
+            val v = p.trafficInBps
+            if (v == null || !v.isFinite()) null else Entry(i.toFloat(), v.toFloat())
+        }
+        val outEntries = points.mapIndexedNotNull { i, p ->
+            val v = p.trafficOutBps
+            if (v == null || !v.isFinite()) null else Entry(i.toFloat(), v.toFloat())
+        }
         val cpuSet = LineDataSet(inEntries, "CPU").apply {
             color = android.graphics.Color.parseColor("#F59E0B")
             setDrawCircles(false)
