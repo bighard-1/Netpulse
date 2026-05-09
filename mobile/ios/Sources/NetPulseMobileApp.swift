@@ -50,11 +50,13 @@ struct DeviceLog: Codable, Identifiable {
     let created_at: String
 }
 
-struct AuditLog: Codable, Identifiable {
+struct RecentEvent: Codable, Identifiable {
     let id: Int64
-    let action: String
-    let target: String?
-    let timestamp: String
+    let device_id: Int64?
+    let device_name: String?
+    let level: String?
+    let message: String?
+    let created_at: String?
 }
 
 struct DeviceHistoryPoint: Codable, Identifiable {
@@ -87,13 +89,16 @@ struct LoginResponse: Codable {
 final class AppVM: ObservableObject {
     @Published var token: String = KeychainStore.shared.get("netpulse_jwt") ?? ""
     @Published var devices: [DeviceStatus] = []
-    @Published var recentEvents: [AuditLog] = []
+    @Published var recentEvents: [RecentEvent] = []
     @Published var deviceDetail: DeviceStatus?
     @Published var logs: [DeviceLog] = []
     @Published var cpu: [DeviceHistoryPoint] = []
     @Published var mem: [DeviceHistoryPoint] = []
     @Published var traffic: [InterfaceHistoryPoint] = []
     @Published var loading = false
+    @Published var detailLoading = false
+    @Published var historyLoading = false
+    @Published var portLoading = false
     @Published var err = ""
 
     var baseURL: String {
@@ -129,13 +134,21 @@ final class AppVM: ObservableObject {
             req.addValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONSerialization.data(withJSONObject: ["username": u, "password": p])
             let (data, resp) = try await URLSession.shared.data(for: req)
-            guard let h = resp as? HTTPURLResponse, (200..<300).contains(h.statusCode) else { throw NSError(domain: "login", code: 1) }
+            guard let h = resp as? HTTPURLResponse else { throw NSError(domain: "login", code: 1) }
+            guard (200..<300).contains(h.statusCode) else {
+                if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    let m = (obj["error"] as? String) ?? (obj["message"] as? String) ?? "登录失败"
+                    throw NSError(domain: "login", code: h.statusCode, userInfo: [NSLocalizedDescriptionKey: m])
+                }
+                throw NSError(domain: "login", code: h.statusCode, userInfo: [NSLocalizedDescriptionKey: "登录失败(\(h.statusCode))"])
+            }
             let r = try JSONDecoder().decode(LoginResponse.self, from: data)
             token = r.token
             KeychainStore.shared.set("netpulse_jwt", value: r.token)
             await refreshDevices()
         } catch {
-            err = "登录失败，请检查账号密码与地址"
+            let msg = (error as NSError).localizedDescription
+            err = "登录失败：\(msg)"
         }
     }
 
@@ -170,47 +183,65 @@ final class AppVM: ObservableObject {
             let req = authorizedRequest(URL(string: "\(baseURL)/devices")!)
             let d = try await dataWithAuth(req)
             devices = try JSONDecoder().decode([DeviceStatus].self, from: d)
-            recentEvents = try await fetchAuditLogs().prefix(5).map { $0 }
+            do {
+                recentEvents = try await fetchRecentEvents().prefix(5).map { $0 }
+            } catch {
+                recentEvents = []
+            }
         } catch {
-            err = "加载设备失败"
+            err = "加载设备失败：\((error as NSError).localizedDescription)"
         }
     }
 
     func fetchDeviceDetail(deviceID: Int64) async {
+        detailLoading = true
+        defer { detailLoading = false }
         guard !token.isEmpty else { return }
         do {
             let req = authorizedRequest(URL(string: "\(baseURL)/devices/\(deviceID)")!)
             let d = try await dataWithAuth(req)
             deviceDetail = try JSONDecoder().decode(DeviceStatus.self, from: d)
         } catch {
-            deviceDetail = nil
+            err = "加载设备详情失败：\((error as NSError).localizedDescription)"
         }
     }
 
     func fetchDeviceHistory(deviceID: Int64, start: Date, end: Date) async {
+        historyLoading = true
+        defer { historyLoading = false }
         do {
             let s = ISO8601DateFormatter().string(from: start)
             let e = ISO8601DateFormatter().string(from: end)
             async let c = fetchHistory(type: "cpu", id: deviceID, start: s, end: e) as [DeviceHistoryPoint]
             async let m = fetchHistory(type: "mem", id: deviceID, start: s, end: e) as [DeviceHistoryPoint]
-            async let l = fetchLogs(deviceID: deviceID)
             cpu = try await c
             mem = try await m
-            logs = try await l
+            // 日志单独异步加载，避免拖慢详情页首屏图表渲染。
+            Task {
+                do {
+                    logs = try await fetchLogs(deviceID: deviceID)
+                } catch {
+                    logs = []
+                }
+            }
         } catch {
             cpu = []
             mem = []
             logs = []
+            err = "加载性能数据失败：\((error as NSError).localizedDescription)"
         }
     }
 
     func fetchPortHistory(portID: Int64, start: Date, end: Date) async {
+        portLoading = true
+        defer { portLoading = false }
         do {
             let s = ISO8601DateFormatter().string(from: start)
             let e = ISO8601DateFormatter().string(from: end)
             traffic = try await fetchHistory(type: "traffic", id: portID, start: s, end: e)
         } catch {
             traffic = []
+            err = "加载端口流量失败：\((error as NSError).localizedDescription)"
         }
     }
 
@@ -296,22 +327,24 @@ final class AppVM: ObservableObject {
         return try JSONDecoder().decode([DeviceLog].self, from: d)
     }
 
-    private func fetchAuditLogs() async throws -> [AuditLog] {
+    private func fetchRecentEvents() async throws -> [RecentEvent] {
         let req = authorizedRequest(URL(string: "\(baseURL)/events/recent?limit=5")!)
         let d = try await dataWithAuth(req)
         if let wrapped = try? JSONDecoder().decode(EventsResponse.self, from: d) {
             return wrapped.data
         }
-        return try JSONDecoder().decode([AuditLog].self, from: d)
+        return try JSONDecoder().decode([RecentEvent].self, from: d)
     }
 
     private func fetchHistory<T: Codable>(type: String, id: Int64, start: String, end: String) async throws -> [T] {
         var comp = URLComponents(string: "\(baseURL)/metrics/history")!
+        let interval = historyInterval(start: start, end: end)
         comp.queryItems = [
             URLQueryItem(name: "type", value: type),
             URLQueryItem(name: "id", value: "\(id)"),
             URLQueryItem(name: "start", value: start),
-            URLQueryItem(name: "end", value: end)
+            URLQueryItem(name: "end", value: end),
+            URLQueryItem(name: "interval", value: interval)
         ]
         let req = authorizedRequest(comp.url!)
         let d = try await dataWithAuth(req)
@@ -320,7 +353,7 @@ final class AppVM: ObservableObject {
 }
 
 struct EventsResponse: Codable {
-    let data: [AuditLog]
+    let data: [RecentEvent]
 }
 
 final class KeychainStore {
@@ -367,10 +400,15 @@ final class KeychainStore {
 @main
 struct NetPulseMobileApp: App {
     @StateObject private var vm = AppVM()
+    #if DEBUG
+    private let skipLoginForDebug = false
+    #else
+    private let skipLoginForDebug = false
+    #endif
 
     var body: some Scene {
         WindowGroup {
-            if vm.token.isEmpty {
+            if !skipLoginForDebug && vm.token.isEmpty {
                 LoginView().environmentObject(vm)
             } else {
                 MainTabView().environmentObject(vm)
@@ -524,7 +562,7 @@ struct DashboardView: View {
                             } else {
                                 ForEach(vm.recentEvents.prefix(5)) { event in
                                     let sev = severity(of: event)
-                                    Text("[\(sev.rawValue.uppercased())] \(event.action) · \(event.target ?? "-")")
+                                    Text("[\(sev.rawValue.uppercased())] \(event.message ?? "-")")
                                         .font(.footnote)
                                         .foregroundStyle(severityColor(sev))
                                 }
@@ -635,10 +673,10 @@ struct DeviceDetailView: View {
                     if let d = vm.deviceDetail {
                         HStack {
                             PulseDot(status: d.status)
-                            Text(d.ip).font(.headline)
+                            Text(d.name.isEmpty ? d.ip : d.name).font(.headline)
                             Spacer()
                         }
-                        Text("\(statusText(d.status)) · \(d.brand) · \(d.remark.isEmpty ? "未备注" : d.remark)")
+                        Text("\(statusText(d.status)) · \(d.ip) · \(d.brand) · \(d.remark.isEmpty ? "未备注" : d.remark)")
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.7))
                     }
@@ -650,28 +688,56 @@ struct DeviceDetailView: View {
                         .font(.caption).foregroundStyle(.white.opacity(0.72))
                     Text("内存 当前 \(memCurrent, specifier: "%.1f")% / 峰值 \(memPeak, specifier: "%.1f")%")
                         .font(.caption).foregroundStyle(.white.opacity(0.72))
-                    if vm.loading {
+                    if vm.historyLoading {
                         ShimmerRect(height: 240)
+                    } else if vm.cpu.isEmpty && vm.mem.isEmpty {
+                        EmptyStateCard(title: "暂无性能数据", desc: "等待下一轮采集后自动显示")
                     } else {
                         Chart {
                             ForEach(vm.cpu) { p in
-                                LineMark(x: .value("时间", p.timestamp), y: .value("CPU", p.cpu_usage ?? 0))
+                                LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("CPU", p.cpu_usage ?? 0))
                                     .foregroundStyle(NpColor.indigo)
                             }
                             ForEach(vm.mem) { p in
-                                LineMark(x: .value("时间", p.timestamp), y: .value("内存", p.mem_usage ?? 0))
+                                LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("内存", p.mem_usage ?? 0))
                                     .foregroundStyle(NpColor.success)
                             }
+                        }
+                        .chartYAxis {
+                            AxisMarks(position: .leading, values: [0, 25, 50, 75, 100]) { _ in
+                                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                                    .foregroundStyle(.white.opacity(0.10))
+                                AxisTick().foregroundStyle(.white.opacity(0.35))
+                                AxisValueLabel().foregroundStyle(.white.opacity(0.70))
+                            }
+                        }
+                        .chartXAxis {
+                            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.35))
+                                    .foregroundStyle(.white.opacity(0.05))
+                                AxisTick().foregroundStyle(.white.opacity(0.4))
+                                AxisValueLabel().foregroundStyle(.white.opacity(0.65))
+                            }
+                        }
+                        .chartPlotStyle { plotArea in
+                            plotArea
+                                .background(Color(red: 21/255, green: 30/255, blue: 45/255))
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
                         }
                         .frame(height: 260)
                     }
                 }
 
                 NpCard {
-                    TextField("搜索端口", text: $keyword).textFieldStyle(.roundedBorder)
+                    TextField("搜索端口", text: $keyword)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .foregroundStyle(.white)
                 }
 
-                if vm.loading {
+                if vm.detailLoading && (vm.deviceDetail?.interfaces.isEmpty ?? true) {
                     ForEach(0..<3, id: \.self) { _ in ShimmerRect(height: 80) }
                 } else if filteredPorts.isEmpty {
                     EmptyStateCard(title: "无匹配端口", desc: "请调整关键字后再试")
@@ -702,6 +768,11 @@ struct DeviceDetailView: View {
                         Text("设备日志（默认10条）").font(.headline.weight(.semibold))
                     }
                 }
+                if !vm.err.isEmpty {
+                    NpCard {
+                        Text(vm.err).font(.footnote).foregroundStyle(NpColor.warning)
+                    }
+                }
             }
             .padding(UiSpec.pagePadding)
         }
@@ -730,7 +801,7 @@ struct PortDetailView: View {
     let portID: Int64
     @State private var start = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
     @State private var end = Date()
-    @State private var showCustom = false
+    @State private var selectedRange: String = "day"
 
     private var minDate: Date {
         Calendar.current.date(byAdding: .year, value: -3, to: Date()) ?? .distantPast
@@ -743,40 +814,50 @@ struct PortDetailView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         Button("当日") {
+                            selectedRange = "day"
                             end = Date()
                             start = Calendar.current.startOfDay(for: end)
                             Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
                         }.buttonStyle(.bordered)
                         Button("近7天") {
+                            selectedRange = "7d"
                             end = Date()
                             start = Calendar.current.date(byAdding: .day, value: -7, to: end) ?? end
                             Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
                         }.buttonStyle(.bordered)
                         Button("近30天") {
+                            selectedRange = "30d"
                             end = Date()
                             start = Calendar.current.date(byAdding: .day, value: -30, to: end) ?? end
                             Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
                         }.buttonStyle(.bordered)
                         Button("近3年") {
+                            selectedRange = "3y"
                             end = Date()
                             start = Calendar.current.date(byAdding: .day, value: -365*3, to: end) ?? end
                             Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) }
                         }.buttonStyle(.bordered)
                     }
                 }
-
-                DisclosureGroup(isExpanded: $showCustom) {
-                    DatePicker("开始", selection: $start, in: minDate...Date(), displayedComponents: [.date, .hourAndMinute])
-                    DatePicker("结束", selection: $end, in: minDate...Date(), displayedComponents: [.date, .hourAndMinute])
-                    Button("按自定义范围查询") { Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) } }
+                DatePicker("开始", selection: $start, in: minDate...Date(), displayedComponents: [.date, .hourAndMinute])
+                DatePicker("结束", selection: $end, in: minDate...Date(), displayedComponents: [.date, .hourAndMinute])
+                HStack {
+                    Button("取消") {
+                        end = Date()
+                        switch selectedRange {
+                        case "7d": start = Calendar.current.date(byAdding: .day, value: -7, to: end) ?? end
+                        case "30d": start = Calendar.current.date(byAdding: .day, value: -30, to: end) ?? end
+                        case "3y": start = Calendar.current.date(byAdding: .day, value: -365*3, to: end) ?? end
+                        default: start = Calendar.current.startOfDay(for: end)
+                        }
+                    }.buttonStyle(.bordered)
+                    Button("查询") { Task { await vm.fetchPortHistory(portID: portID, start: start, end: end) } }
                         .buttonStyle(.borderedProminent)
                         .tint(NpColor.indigo)
-                } label: {
-                    Text("自定义时间")
                 }
             }
 
-            if vm.loading {
+            if vm.portLoading {
                 ShimmerRect(height: 360)
                     .padding(.horizontal)
             } else if vm.traffic.isEmpty {
@@ -785,11 +866,32 @@ struct PortDetailView: View {
             } else {
                 Chart {
                     ForEach(vm.traffic) { p in
-                        LineMark(x: .value("时间", p.timestamp), y: .value("入方向", p.traffic_in_bps ?? 0))
+                        LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("入方向", p.traffic_in_bps ?? 0))
                             .foregroundStyle(NpColor.indigo)
-                        LineMark(x: .value("时间", p.timestamp), y: .value("出方向", p.traffic_out_bps ?? 0))
+                        LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("出方向", p.traffic_out_bps ?? 0))
                             .foregroundStyle(NpColor.success)
                     }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .leading) { _ in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.6, dash: [3, 4]))
+                            .foregroundStyle(.white.opacity(0.14))
+                        AxisTick().foregroundStyle(.white.opacity(0.45))
+                        AxisValueLabel().foregroundStyle(.white.opacity(0.7))
+                    }
+                }
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 5)) { _ in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.4, dash: [2, 5]))
+                            .foregroundStyle(.white.opacity(0.08))
+                        AxisTick().foregroundStyle(.white.opacity(0.4))
+                        AxisValueLabel().foregroundStyle(.white.opacity(0.65))
+                    }
+                }
+                .chartPlotStyle { plotArea in
+                    plotArea
+                        .background(Color(red: 21/255, green: 30/255, blue: 45/255))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(.horizontal)
@@ -900,8 +1002,8 @@ enum Severity: String {
     case info, warning, error
 }
 
-func severity(of event: AuditLog) -> Severity {
-    let txt = (event.action + " " + (event.target ?? "")).uppercased()
+func severity(of event: RecentEvent) -> Severity {
+    let txt = ((event.level ?? "") + " " + (event.message ?? "")).uppercased()
     if txt.contains("OFFLINE") || txt.contains("ERROR") || txt.contains("RESTORE") { return .error }
     if txt.contains("WARN") || txt.contains("BGP") || txt.contains("OSPF") || txt.contains("FLAP") { return .warning }
     return .info
@@ -934,6 +1036,31 @@ func statusText(_ status: String) -> String {
     }
 }
 
+func parseRFC3339(_ value: String) -> Date {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let d = f.date(from: value) { return d }
+    let f0 = ISO8601DateFormatter()
+    f0.formatOptions = [.withInternetDateTime]
+    if let d = f0.date(from: value) { return d }
+    let f2 = DateFormatter()
+    f2.locale = Locale(identifier: "en_US_POSIX")
+    f2.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
+    if let d = f2.date(from: value) { return d }
+    return .distantPast
+}
+
+func historyInterval(start: String, end: String) -> String {
+    let fmt = ISO8601DateFormatter()
+    guard let s = fmt.date(from: start), let e = fmt.date(from: end) else {
+        return "1m"
+    }
+    let span = e.timeIntervalSince(s)
+    if span > 180 * 24 * 3600 { return "1h" }
+    if span > 30 * 24 * 3600 { return "5m" }
+    return "1m"
+}
+
 struct EmptyStateCard: View {
     let title: String
     let desc: String
@@ -961,10 +1088,10 @@ struct DeviceRow: View {
             HStack(spacing: 8) {
                 PulseDot(status: device.status)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(device.ip)
+                    Text(device.name.isEmpty ? device.ip : device.name)
                         .font(.headline)
                         .onLongPressGesture { UIPasteboard.general.string = device.ip }
-                    Text("\(statusText(device.status)) · \(device.brand) · \(device.remark.isEmpty ? "未备注" : device.remark)")
+                    Text("\(statusText(device.status)) · \(device.ip) · \(device.brand) · \(device.remark.isEmpty ? "未备注" : device.remark)")
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.7))
                     if let reason = device.status_reason, !reason.isEmpty {
@@ -988,8 +1115,8 @@ struct DeviceQuickPeekSheet: View {
             ScrollView {
                 VStack(spacing: UiSpec.sectionGap) {
                     NpCard {
-                        Text(device.ip).font(.headline).foregroundStyle(.white)
-                        Text("\(device.brand) · \(device.remark)").font(.footnote).foregroundStyle(.white.opacity(0.7))
+                        Text(device.name.isEmpty ? device.ip : device.name).font(.headline).foregroundStyle(.white)
+                        Text("\(device.ip) · \(device.brand) · \(device.remark)").font(.footnote).foregroundStyle(.white.opacity(0.7))
                     }
                     NpCard {
                         Text("CPU / 内存").font(.headline.weight(.semibold)).foregroundStyle(.white)
@@ -998,12 +1125,34 @@ struct DeviceQuickPeekSheet: View {
                         } else {
                             Chart {
                                 ForEach(vm.cpu) { p in
-                                    LineMark(x: .value("时间", p.timestamp), y: .value("CPU", p.cpu_usage ?? 0)).foregroundStyle(NpColor.indigo)
+                                    LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("CPU", p.cpu_usage ?? 0)).foregroundStyle(NpColor.indigo)
                                 }
                                 ForEach(vm.mem) { p in
-                                    LineMark(x: .value("时间", p.timestamp), y: .value("MEM", p.mem_usage ?? 0)).foregroundStyle(NpColor.success)
+                                    LineMark(x: .value("时间", parseRFC3339(p.timestamp)), y: .value("MEM", p.mem_usage ?? 0)).foregroundStyle(NpColor.success)
                                 }
-                            }.frame(height: 220)
+                            }
+                            .chartYAxis {
+                                AxisMarks(position: .leading) { _ in
+                                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.6, dash: [3, 4]))
+                                        .foregroundStyle(.white.opacity(0.14))
+                                    AxisTick().foregroundStyle(.white.opacity(0.45))
+                                    AxisValueLabel().foregroundStyle(.white.opacity(0.7))
+                                }
+                            }
+                            .chartXAxis {
+                                AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.4, dash: [2, 5]))
+                                        .foregroundStyle(.white.opacity(0.08))
+                                    AxisTick().foregroundStyle(.white.opacity(0.4))
+                                    AxisValueLabel().foregroundStyle(.white.opacity(0.65))
+                                }
+                            }
+                            .chartPlotStyle { plotArea in
+                                plotArea
+                                    .background(Color(red: 21/255, green: 30/255, blue: 45/255))
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                            .frame(height: 220)
                         }
                     }
                     NpCard {
