@@ -7,18 +7,84 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		0080057A9639D07F31049EC2 /* NetPulseMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FBB40C8A17EBF9CD141771F /* NetPulseMobileApp.swift */; };
-		FA4312227A58664077DF05DB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 299B2EB66DEB18AF5521154B /* Assets.xcassets */; };
+		00460054F59510C9240D53B2 /* StatusDot.swift in Sources */ = {isa = PBXBuildFile; fileRef = C46795B0C7B8C7E6F8A5CD26 /* StatusDot.swift */; };
+		08E6B048A8D9CA945EC5294B /* CpuMemChartView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C566E58496A30F4A9EF46557 /* CpuMemChartView.swift */; };
+		0A54AB1EC46EC596E1D44F5B /* DeviceListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7179735B7A3C409AE9135455 /* DeviceListView.swift */; };
+		0D6DE16AD734831E1E92459E /* DeviceDetailViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3280EE3D9916BA9A0F007E5F /* DeviceDetailViewModel.swift */; };
+		27ADF557F0E3D2DCC271934A /* TrafficChartView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21DDE288E8BB6ABF13850BB0 /* TrafficChartView.swift */; };
+		2982F7BA4BBEB62EDD812A19 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D1EB09B71FB52D21062861D0 /* Assets.xcassets */; };
+		46F61CFD91C8BAE04F097325 /* HistoryQueryPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 007FE5B243095101A231B584 /* HistoryQueryPlanner.swift */; };
+		56979B8B33451A638B60609D /* PortDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3546F81D475DC2E2B8EBE61 /* PortDetailView.swift */; };
+		6C91A8DC120D4AE799B04175 /* ViewState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 142D008DEF4694B1AF67C9CE /* ViewState.swift */; };
+		741FD98D8FD7B87EBD97E1EF /* SessionState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F30A4D435E767BF8364ABEEE /* SessionState.swift */; };
+		7BE46FD28CB827C2624DE256 /* NetPulseApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5434F3F99A2546FA4DE497B /* NetPulseApp.swift */; };
+		7FC52F0CCAA60775AAB7B53C /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5188A40FF89994C72A0F2A3 /* LoginView.swift */; };
+		847B036010FA7674AC258D4A /* BiometricAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFC3383385A89B3BA22E6627 /* BiometricAuth.swift */; };
+		90415DAF4E6620B15DD4E731 /* AuthViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3FE6C235E2BBECB63DF25A0 /* AuthViewModel.swift */; };
+		A1F5891272DFF258AF010BEB /* ChartDataProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8509C9A6DBEA1075CA020DC /* ChartDataProcessor.swift */; };
+		ABFD9650802643978B58505B /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C3E15D5299BCA7E7A2356D8 /* APIClient.swift */; };
+		B77F2119F277C781470341E8 /* KeychainManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 108F1BC40BB7D0F8619C41A9 /* KeychainManager.swift */; };
+		B88AF786CD08ECF911689C50 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59BF657C792B4BECF7EAD4AA /* Models.swift */; };
+		CC2A7BBDD96E8D5C6563FD65 /* Formatters.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39CFCBAFD218621E3E418B3B /* Formatters.swift */; };
+		D0115C80E2101C00C8748600 /* DeviceListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55444E569C48D16FF1CBE9AF /* DeviceListViewModel.swift */; };
+		D9C0D0E6B439BE4C7F4F89BD /* PortDetailViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EEEB3C7AC5A7A50167FC0F3 /* PortDetailViewModel.swift */; };
+		DCA40DC2715413793B31C380 /* DeviceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE392600487267DBC3643BB5 /* DeviceDetailView.swift */; };
+		DD8973D8B7CD1C1E37B445EF /* AppRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = 216AC96E25F05065F5C498B6 /* AppRoute.swift */; };
+		EC211F595AD2625992DE70F0 /* StatefulContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15564CC4F81E46F80E12F48A /* StatefulContainer.swift */; };
+		F15F69A902F18E4618D4FDB3 /* AuthGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B146A789A5D4FA1B9407FC75 /* AuthGate.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		299B2EB66DEB18AF5521154B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		4FBB40C8A17EBF9CD141771F /* NetPulseMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetPulseMobileApp.swift; sourceTree = "<group>"; };
-		8FEF236FE3EA45284E30166D /* NetPulseMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NetPulseMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		FC4BF890DBFD86C70D1B9400 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		007FE5B243095101A231B584 /* HistoryQueryPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryQueryPlanner.swift; sourceTree = "<group>"; };
+		108F1BC40BB7D0F8619C41A9 /* KeychainManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainManager.swift; sourceTree = "<group>"; };
+		142D008DEF4694B1AF67C9CE /* ViewState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewState.swift; sourceTree = "<group>"; };
+		15564CC4F81E46F80E12F48A /* StatefulContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatefulContainer.swift; sourceTree = "<group>"; };
+		1C3E15D5299BCA7E7A2356D8 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		216AC96E25F05065F5C498B6 /* AppRoute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRoute.swift; sourceTree = "<group>"; };
+		21DDE288E8BB6ABF13850BB0 /* TrafficChartView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrafficChartView.swift; sourceTree = "<group>"; };
+		2D32FC97D1B96ECCDB4B8784 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		3280EE3D9916BA9A0F007E5F /* DeviceDetailViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDetailViewModel.swift; sourceTree = "<group>"; };
+		39CFCBAFD218621E3E418B3B /* Formatters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Formatters.swift; sourceTree = "<group>"; };
+		55444E569C48D16FF1CBE9AF /* DeviceListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceListViewModel.swift; sourceTree = "<group>"; };
+		59BF657C792B4BECF7EAD4AA /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		5EEEB3C7AC5A7A50167FC0F3 /* PortDetailViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortDetailViewModel.swift; sourceTree = "<group>"; };
+		7179735B7A3C409AE9135455 /* DeviceListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceListView.swift; sourceTree = "<group>"; };
+		8FEF236FE3EA45284E30166D /* NetPulseMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = NetPulseMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B146A789A5D4FA1B9407FC75 /* AuthGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthGate.swift; sourceTree = "<group>"; };
+		B3546F81D475DC2E2B8EBE61 /* PortDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortDetailView.swift; sourceTree = "<group>"; };
+		B3FE6C235E2BBECB63DF25A0 /* AuthViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthViewModel.swift; sourceTree = "<group>"; };
+		C46795B0C7B8C7E6F8A5CD26 /* StatusDot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusDot.swift; sourceTree = "<group>"; };
+		C5434F3F99A2546FA4DE497B /* NetPulseApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetPulseApp.swift; sourceTree = "<group>"; };
+		C566E58496A30F4A9EF46557 /* CpuMemChartView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CpuMemChartView.swift; sourceTree = "<group>"; };
+		C8509C9A6DBEA1075CA020DC /* ChartDataProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartDataProcessor.swift; sourceTree = "<group>"; };
+		CE392600487267DBC3643BB5 /* DeviceDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDetailView.swift; sourceTree = "<group>"; };
+		D1EB09B71FB52D21062861D0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		F30A4D435E767BF8364ABEEE /* SessionState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionState.swift; sourceTree = "<group>"; };
+		F5188A40FF89994C72A0F2A3 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		FFC3383385A89B3BA22E6627 /* BiometricAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BiometricAuth.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
+		01DF41064BA7185723B9466D /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				4BE4413CA8551D0A436CD931 /* Network */,
+				7AF15B7BBD6C60849793C7CC /* Security */,
+				226F6E9DED7A6DA802E5B5BD /* State */,
+				ACEEAAB14F5D795E86DB2305 /* Utilities */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		03737B3C5280F36AE4A570A7 /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				15564CC4F81E46F80E12F48A /* StatefulContainer.swift */,
+				C46795B0C7B8C7E6F8A5CD26 /* StatusDot.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
 		08F2701EE7FB8BC59B40427E /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -27,22 +93,161 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		226F6E9DED7A6DA802E5B5BD /* State */ = {
+			isa = PBXGroup;
+			children = (
+				216AC96E25F05065F5C498B6 /* AppRoute.swift */,
+				F30A4D435E767BF8364ABEEE /* SessionState.swift */,
+				142D008DEF4694B1AF67C9CE /* ViewState.swift */,
+			);
+			path = State;
+			sourceTree = "<group>";
+		};
 		249D447F11201A6A8CD9B213 = {
 			isa = PBXGroup;
 			children = (
-				7F36D497BC2B342AC1F6193C /* Sources */,
+				8E9913EBACAFC9E1211ECEFE /* App */,
+				01DF41064BA7185723B9466D /* Core */,
+				921DAD2CA6823B1B54849E97 /* Domain */,
+				713E985DFD934D8F164E1992 /* Features */,
+				8BFA5E4C1CB0D0A6D7C802DE /* Resources */,
+				8AAB07ECB576072F8C88E00F /* Shared */,
 				08F2701EE7FB8BC59B40427E /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		7F36D497BC2B342AC1F6193C /* Sources */ = {
+		2831C8E0BF049647AC12D48A /* DeviceList */ = {
 			isa = PBXGroup;
 			children = (
-				299B2EB66DEB18AF5521154B /* Assets.xcassets */,
-				FC4BF890DBFD86C70D1B9400 /* Info.plist */,
-				4FBB40C8A17EBF9CD141771F /* NetPulseMobileApp.swift */,
+				7179735B7A3C409AE9135455 /* DeviceListView.swift */,
+				55444E569C48D16FF1CBE9AF /* DeviceListViewModel.swift */,
 			);
-			path = Sources;
+			path = DeviceList;
+			sourceTree = "<group>";
+		};
+		2F089BE968B62BB5BE58147E /* Auth */ = {
+			isa = PBXGroup;
+			children = (
+				B3FE6C235E2BBECB63DF25A0 /* AuthViewModel.swift */,
+				F5188A40FF89994C72A0F2A3 /* LoginView.swift */,
+			);
+			path = Auth;
+			sourceTree = "<group>";
+		};
+		4BE4413CA8551D0A436CD931 /* Network */ = {
+			isa = PBXGroup;
+			children = (
+				1C3E15D5299BCA7E7A2356D8 /* APIClient.swift */,
+				B146A789A5D4FA1B9407FC75 /* AuthGate.swift */,
+			);
+			path = Network;
+			sourceTree = "<group>";
+		};
+		713E985DFD934D8F164E1992 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				2F089BE968B62BB5BE58147E /* Auth */,
+				C93D1A287E6BA0DF9F9551E9 /* DeviceDetail */,
+				2831C8E0BF049647AC12D48A /* DeviceList */,
+				801822EFD8FDB2B99A27D3A3 /* PortDetail */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		7AF15B7BBD6C60849793C7CC /* Security */ = {
+			isa = PBXGroup;
+			children = (
+				FFC3383385A89B3BA22E6627 /* BiometricAuth.swift */,
+				108F1BC40BB7D0F8619C41A9 /* KeychainManager.swift */,
+			);
+			path = Security;
+			sourceTree = "<group>";
+		};
+		801822EFD8FDB2B99A27D3A3 /* PortDetail */ = {
+			isa = PBXGroup;
+			children = (
+				B3546F81D475DC2E2B8EBE61 /* PortDetailView.swift */,
+				5EEEB3C7AC5A7A50167FC0F3 /* PortDetailViewModel.swift */,
+			);
+			path = PortDetail;
+			sourceTree = "<group>";
+		};
+		85C901DA11F64EBB712653BF /* Charts */ = {
+			isa = PBXGroup;
+			children = (
+				C566E58496A30F4A9EF46557 /* CpuMemChartView.swift */,
+				21DDE288E8BB6ABF13850BB0 /* TrafficChartView.swift */,
+			);
+			path = Charts;
+			sourceTree = "<group>";
+		};
+		8AAB07ECB576072F8C88E00F /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				85C901DA11F64EBB712653BF /* Charts */,
+				03737B3C5280F36AE4A570A7 /* Components */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		8BFA5E4C1CB0D0A6D7C802DE /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				D1EB09B71FB52D21062861D0 /* Assets.xcassets */,
+				2D32FC97D1B96ECCDB4B8784 /* Info.plist */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		8E9913EBACAFC9E1211ECEFE /* App */ = {
+			isa = PBXGroup;
+			children = (
+				C5434F3F99A2546FA4DE497B /* NetPulseApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		921DAD2CA6823B1B54849E97 /* Domain */ = {
+			isa = PBXGroup;
+			children = (
+				DD8E4F52487BB492EE9D2379 /* Models */,
+				E6931AAA3E9B899815FE3994 /* Services */,
+			);
+			path = Domain;
+			sourceTree = "<group>";
+		};
+		ACEEAAB14F5D795E86DB2305 /* Utilities */ = {
+			isa = PBXGroup;
+			children = (
+				39CFCBAFD218621E3E418B3B /* Formatters.swift */,
+			);
+			path = Utilities;
+			sourceTree = "<group>";
+		};
+		C93D1A287E6BA0DF9F9551E9 /* DeviceDetail */ = {
+			isa = PBXGroup;
+			children = (
+				CE392600487267DBC3643BB5 /* DeviceDetailView.swift */,
+				3280EE3D9916BA9A0F007E5F /* DeviceDetailViewModel.swift */,
+			);
+			path = DeviceDetail;
+			sourceTree = "<group>";
+		};
+		DD8E4F52487BB492EE9D2379 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				59BF657C792B4BECF7EAD4AA /* Models.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		E6931AAA3E9B899815FE3994 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				C8509C9A6DBEA1075CA020DC /* ChartDataProcessor.swift */,
+				007FE5B243095101A231B584 /* HistoryQueryPlanner.swift */,
+			);
+			path = Services;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -74,6 +279,8 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
 			};
 			buildConfigurationList = 41DD361FD7E66DA8CC974140 /* Build configuration list for PBXProject "NetPulseMobile" */;
 			developmentRegion = en;
@@ -99,7 +306,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				FA4312227A58664077DF05DB /* Assets.xcassets in Resources */,
+				2982F7BA4BBEB62EDD812A19 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -110,7 +317,30 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				0080057A9639D07F31049EC2 /* NetPulseMobileApp.swift in Sources */,
+				ABFD9650802643978B58505B /* APIClient.swift in Sources */,
+				DD8973D8B7CD1C1E37B445EF /* AppRoute.swift in Sources */,
+				F15F69A902F18E4618D4FDB3 /* AuthGate.swift in Sources */,
+				90415DAF4E6620B15DD4E731 /* AuthViewModel.swift in Sources */,
+				847B036010FA7674AC258D4A /* BiometricAuth.swift in Sources */,
+				A1F5891272DFF258AF010BEB /* ChartDataProcessor.swift in Sources */,
+				08E6B048A8D9CA945EC5294B /* CpuMemChartView.swift in Sources */,
+				DCA40DC2715413793B31C380 /* DeviceDetailView.swift in Sources */,
+				0D6DE16AD734831E1E92459E /* DeviceDetailViewModel.swift in Sources */,
+				0A54AB1EC46EC596E1D44F5B /* DeviceListView.swift in Sources */,
+				D0115C80E2101C00C8748600 /* DeviceListViewModel.swift in Sources */,
+				CC2A7BBDD96E8D5C6563FD65 /* Formatters.swift in Sources */,
+				46F61CFD91C8BAE04F097325 /* HistoryQueryPlanner.swift in Sources */,
+				B77F2119F277C781470341E8 /* KeychainManager.swift in Sources */,
+				7FC52F0CCAA60775AAB7B53C /* LoginView.swift in Sources */,
+				B88AF786CD08ECF911689C50 /* Models.swift in Sources */,
+				7BE46FD28CB827C2624DE256 /* NetPulseApp.swift in Sources */,
+				56979B8B33451A638B60609D /* PortDetailView.swift in Sources */,
+				D9C0D0E6B439BE4C7F4F89BD /* PortDetailViewModel.swift in Sources */,
+				741FD98D8FD7B87EBD97E1EF /* SessionState.swift in Sources */,
+				EC211F595AD2625992DE70F0 /* StatefulContainer.swift in Sources */,
+				00460054F59510C9240D53B2 /* StatusDot.swift in Sources */,
+				27ADF557F0E3D2DCC271934A /* TrafficChartView.swift in Sources */,
+				6C91A8DC120D4AE799B04175 /* ViewState.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -151,6 +381,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -169,6 +400,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MARKETING_VERSION = 2.1.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -186,15 +418,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = "";
-				INFOPLIST_FILE = Sources/Info.plist;
+				INFOPLIST_FILE = Resources/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = NO;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.8;
-				CURRENT_PROJECT_VERSION = 108;
-				PRODUCT_NAME = NetPulseMobile;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -205,15 +435,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = "";
-				INFOPLIST_FILE = Sources/Info.plist;
+				INFOPLIST_FILE = Resources/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = NO;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.8;
-				CURRENT_PROJECT_VERSION = 108;
-				PRODUCT_NAME = NetPulseMobile;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -253,6 +481,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -265,6 +494,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MARKETING_VERSION = 2.1.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.cwzs.netpulse;

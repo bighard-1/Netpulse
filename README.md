@@ -1,6 +1,6 @@
 # NetPulse V1.0.0-pro
 
-NetPulse is a modern Network Operations & Maintenance (O&M) platform built for Huawei/H3C and standard SNMP devices, with a production-ready Go backend, TimescaleDB time-series core, Vue 3 NOC console, and synchronized iOS/Android mobile clients.
+NetPulse is a modern Network Operations & Maintenance (O&M) platform built for Huawei/H3C and standard SNMP devices, with a production-ready Go backend, TimescaleDB time-series core, Vue 3 NOC console, and iOS mobile client.
 
 ## Project Vision
 
@@ -53,7 +53,6 @@ NetPulse targets that gap with:
 - Unified error payload (`code + message + hint`)
 - Mobile secure token storage:
   - iOS Keychain
-  - Android Encrypted storage
 
 ### 6. O&M Operations
 - One-click backup / restore
@@ -72,7 +71,6 @@ NetPulse targets that gap with:
 - Frontend: Vue 3 + Element Plus + ECharts
 - Mobile:
   - iOS: SwiftUI + Charts + Keychain + Face ID/Touch ID
-  - Android: Compose + MPAndroidChart + Biometric login
 
 ---
 
@@ -113,8 +111,6 @@ package/
 
 Recommended naming:
 - `NetPulse_v1.0.0-pro_linux_amd64.tar`
-- `NetPulse_v1.0.0-pro_android_universal.apk`
-- `NetPulse_v1.0.0-pro_android_amd64.apk`
 - `NetPulse_v1.0.0-pro_ios_unsigned.ipa`
 
 ## GHCR Push
@@ -203,8 +199,7 @@ Port mapping:
 - Sensitive SNMP secrets can be encrypted at rest via `NETPULSE_CRED_KEY`
 - Mobile secure sessions:
   - iOS token in Keychain
-  - Android token in encrypted storage
-
+  
 ---
 
 ## Golden Shimmer UI Standard
@@ -218,7 +213,6 @@ All skeleton loaders now follow production shimmer spec:
 Applied on:
 - Web (`el-skeleton` global style override)
 - iOS (`ShimmerRect`)
-- Android (`SkeletonBox`)
 
 ---
 
@@ -237,7 +231,6 @@ internal/db             # schema bootstrap, repository
 internal/snmp           # collector, worker, alert manager
 web                     # Vue 3 NOC console
 mobile/ios              # iOS app
-mobile/android          # Android app
 deploy                  # docker/1panel materials
 package                 # packaged outputs
 ```
