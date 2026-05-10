@@ -22,6 +22,23 @@ struct PortDetailView: View {
             .pickerStyle(.segmented)
             .onChange(of: vm.preset) { _ in vm.load(portID: portID) }
 
+            GroupBox("自定义时间段（3年内）") {
+                VStack(spacing: 8) {
+                    DatePicker("开始", selection: $vm.customStart, displayedComponents: [.date, .hourAndMinute])
+                    DatePicker("结束", selection: $vm.customEnd, displayedComponents: [.date, .hourAndMinute])
+                    HStack {
+                        Button("取消") {
+                            vm.customStart = Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date()
+                            vm.customEnd = Date()
+                        }
+                        .buttonStyle(.bordered)
+                        Spacer()
+                        Button("查询") { vm.loadCustom(portID: portID) }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+
             HStack {
                 Toggle("入方向", isOn: $showIn)
                 Toggle("出方向", isOn: $showOut)
@@ -68,13 +85,14 @@ struct PortDetailView: View {
             presentToast("图表尚未就绪")
             return
         }
-        let chart = TrafficChartView(model: model, showIn: showIn, showOut: showOut)
+        let chart = TrafficChartExportView(model: model, showIn: showIn, showOut: showOut)
             .frame(width: 1280, height: 720)
             .padding(12)
             .background(.white)
 
         let renderer = ImageRenderer(content: chart)
         renderer.scale = 2
+        renderer.isOpaque = true
         guard let image = renderer.uiImage else {
             presentToast("生成图片失败")
             return
