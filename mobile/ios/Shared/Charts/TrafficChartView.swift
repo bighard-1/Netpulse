@@ -13,6 +13,11 @@ private struct TrafficChartPoint: Identifiable {
     let value: Double
 }
 
+private struct MidnightMarker: Identifiable {
+    let id = UUID()
+    let ts: Date
+}
+
 struct TrafficChartView: View {
     let model: TrafficRenderModel
     let showIn: Bool
@@ -52,6 +57,10 @@ struct TrafficChartView: View {
 
     private var yMax: Double {
         max(1.0, model.yMax)
+    }
+
+    private var midnightMarkers: [MidnightMarker] {
+        buildMidnightMarkers(model.decimated.map(\.timestamp))
     }
 
     private var chartWidth: CGFloat {
@@ -103,10 +112,22 @@ struct TrafficChartView: View {
                     .lineStyle(StrokeStyle(lineWidth: 0.8))
             }
 
+            ForEach(midnightMarkers) { marker in
+                RuleMark(x: .value("Midnight", marker.ts))
+                    .foregroundStyle(Color.white.opacity(0.18))
+                    .lineStyle(StrokeStyle(lineWidth: 1.0, dash: [2, 3]))
+                    .annotation(position: .bottom, spacing: 6) {
+                        Text(marker.ts.formatted(.dateTime.month().day().hour().minute()))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+            }
+
             ForEach(allPoints) { p in
                 LineMark(
                     x: .value("时间", p.ts),
-                    y: .value("值", p.value)
+                    y: .value("值", p.value),
+                    series: .value("线段", p.series.rawValue)
                 )
                 .foregroundStyle(by: .value("序列", p.series.rawValue))
                 .lineStyle(by: .value("序列", p.series.rawValue))
@@ -163,6 +184,48 @@ struct TrafficChartExportView: View {
     let showIn: Bool
     let showOut: Bool
 
+    private struct ExportPoint: Identifiable {
+        let id = UUID()
+        let ts: Date
+        let value: Double
+        let seriesName: String
+        let segmentName: String
+    }
+
+    private var midnightMarkers: [MidnightMarker] {
+        buildMidnightMarkers(model.decimated.map(\.timestamp))
+    }
+
+    private var exportInPoints: [ExportPoint] {
+        guard showIn else { return [] }
+        return inboundSegments.enumerated().flatMap { pair in
+            let (idx, segment) = pair
+            return segment.map { p in
+                ExportPoint(
+                    ts: p.ts,
+                    value: p.value,
+                    seriesName: "入方向",
+                    segmentName: "in-\(idx)"
+                )
+            }
+        }
+    }
+
+    private var exportOutPoints: [ExportPoint] {
+        guard showOut else { return [] }
+        return outboundSegments.enumerated().flatMap { pair in
+            let (idx, segment) = pair
+            return segment.map { p in
+                ExportPoint(
+                    ts: p.ts,
+                    value: p.value,
+                    seriesName: "出方向",
+                    segmentName: "out-\(idx)"
+                )
+            }
+        }
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
@@ -190,25 +253,40 @@ struct TrafficChartExportView: View {
                             .lineStyle(StrokeStyle(lineWidth: 0.8))
                     }
 
-                    if showIn {
-                        ForEach(inboundSegments.indices, id: \.self) { idx in
-                            ForEach(inboundSegments[idx]) { p in
-                                LineMark(x: .value("时间", p.ts), y: .value("值", p.value))
-                                    .lineStyle(StrokeStyle(lineWidth: 2.6))
-                                    .foregroundStyle(Color(red: 0.22, green: 0.36, blue: 0.95))
+                    ForEach(midnightMarkers) { marker in
+                        RuleMark(x: .value("Midnight", marker.ts))
+                            .foregroundStyle(Color.gray.opacity(0.25))
+                            .lineStyle(StrokeStyle(lineWidth: 1.0, dash: [2, 3]))
+                            .annotation(position: .bottom, spacing: 6) {
+                                Text(marker.ts.formatted(.dateTime.month().day().hour().minute()))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
                             }
-                        }
                     }
-                    if showOut {
-                        ForEach(outboundSegments.indices, id: \.self) { idx in
-                            ForEach(outboundSegments[idx]) { p in
-                                LineMark(x: .value("时间", p.ts), y: .value("值", p.value))
-                                    .lineStyle(StrokeStyle(lineWidth: 2.6))
-                                    .foregroundStyle(Color(red: 0.04, green: 0.73, blue: 0.43))
-                            }
-                        }
+
+                    ForEach(exportInPoints) { p in
+                        LineMark(
+                            x: .value("时间", p.ts),
+                            y: .value("值", p.value),
+                            series: .value("线段", p.segmentName)
+                        )
+                        .foregroundStyle(by: .value("序列", p.seriesName))
+                        .lineStyle(StrokeStyle(lineWidth: 2.6))
+                    }
+                    ForEach(exportOutPoints) { p in
+                        LineMark(
+                            x: .value("时间", p.ts),
+                            y: .value("值", p.value),
+                            series: .value("线段", p.segmentName)
+                        )
+                        .foregroundStyle(by: .value("序列", p.seriesName))
+                        .lineStyle(StrokeStyle(lineWidth: 2.6))
                     }
                 }
+                .chartForegroundStyleScale([
+                    "入方向": Color(red: 0.22, green: 0.36, blue: 0.95),
+                    "出方向": Color(red: 0.04, green: 0.73, blue: 0.43)
+                ])
                 .chartYScale(domain: 0...max(1.0, model.yMax))
                 .chartYAxis(.hidden)
                 .chartXAxis {
@@ -259,4 +337,18 @@ struct TrafficChartExportView: View {
         }
         return date.formatted(.dateTime.hour().minute())
     }
+}
+
+private func buildMidnightMarkers(_ timestamps: [Date]) -> [MidnightMarker] {
+    guard let first = timestamps.min(), let last = timestamps.max(), first < last else { return [] }
+    let cal = Calendar.current
+    let firstDay = cal.startOfDay(for: first)
+    let nextDay = cal.date(byAdding: .day, value: 1, to: firstDay) ?? firstDay
+    var cursor = nextDay
+    var out: [MidnightMarker] = []
+    while cursor <= last {
+        out.append(MidnightMarker(ts: cursor))
+        cursor = cal.date(byAdding: .day, value: 1, to: cursor) ?? Date.distantFuture
+    }
+    return out
 }
