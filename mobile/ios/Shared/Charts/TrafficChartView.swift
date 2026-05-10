@@ -13,11 +13,6 @@ private struct TrafficChartPoint: Identifiable {
     let value: Double
 }
 
-private struct MidnightMarker: Identifiable {
-    let id = UUID()
-    let ts: Date
-}
-
 struct TrafficChartView: View {
     let model: TrafficRenderModel
     let showIn: Bool
@@ -51,16 +46,17 @@ struct TrafficChartView: View {
         }
     }
 
+    private var yStep: Double {
+        let raw = max(10.0, ceil(model.yMax / 4.0 / 10.0) * 10.0)
+        return raw
+    }
+
+    private var yAxisMax: Double {
+        yStep * 4.0
+    }
+
     private var yTicks: [Double] {
-        [0, 0.25, 0.5, 0.75, 1.0].map { yMax * $0 }
-    }
-
-    private var yMax: Double {
-        max(1.0, model.yMax)
-    }
-
-    private var midnightMarkers: [MidnightMarker] {
-        buildMidnightMarkers(model.decimated.map(\.timestamp))
+        [0, 1, 2, 3, 4].map { Double($0) * yStep }
     }
 
     private var chartWidth: CGFloat {
@@ -71,13 +67,13 @@ struct TrafficChartView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
-                Text(Fmt.bps(yMax)).font(.caption2).foregroundStyle(.secondary)
+                Text(Fmt.bps(yAxisMax)).font(.caption2).foregroundStyle(.secondary)
                 Spacer()
-                Text(Fmt.bps(yMax * 0.75)).font(.caption2).foregroundStyle(.secondary)
+                Text(Fmt.bps(yStep * 3)).font(.caption2).foregroundStyle(.secondary)
                 Spacer()
-                Text(Fmt.bps(yMax * 0.5)).font(.caption2).foregroundStyle(.secondary)
+                Text(Fmt.bps(yStep * 2)).font(.caption2).foregroundStyle(.secondary)
                 Spacer()
-                Text(Fmt.bps(yMax * 0.25)).font(.caption2).foregroundStyle(.secondary)
+                Text(Fmt.bps(yStep)).font(.caption2).foregroundStyle(.secondary)
                 Spacer()
                 Text("0 bps").font(.caption2).foregroundStyle(.secondary)
             }
@@ -112,17 +108,6 @@ struct TrafficChartView: View {
                     .lineStyle(StrokeStyle(lineWidth: 0.8))
             }
 
-            ForEach(midnightMarkers) { marker in
-                RuleMark(x: .value("Midnight", marker.ts))
-                    .foregroundStyle(Color.white.opacity(0.18))
-                    .lineStyle(StrokeStyle(lineWidth: 1.0, dash: [2, 3]))
-                    .annotation(position: .bottom, spacing: 6) {
-                        Text(marker.ts.formatted(.dateTime.month().day().hour().minute()))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-            }
-
             ForEach(allPoints) { p in
                 LineMark(
                     x: .value("时间", p.ts),
@@ -142,14 +127,14 @@ struct TrafficChartView: View {
             TrafficSeries.inbound.rawValue: StrokeStyle(lineWidth: 2),
             TrafficSeries.outbound.rawValue: StrokeStyle(lineWidth: 2)
         ])
-        .chartYScale(domain: 0...yMax)
+        .chartYScale(domain: 0...yAxisMax)
         .chartYAxis(.hidden)
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 6)) { value in
+            AxisMarks(values: xAxisValues(zoomScale: zoomScale)) { value in
                 AxisGridLine(); AxisTick()
                 AxisValueLabel {
                     if let date = value.as(Date.self) {
-                        Text(xLabelText(date))
+                        Text(xAxisLabel(date))
                     }
                 }
             }
@@ -166,7 +151,7 @@ struct TrafficChartView: View {
         )
     }
 
-    private func xLabelText(_ date: Date) -> String {
+    private func xAxisLabel(_ date: Date) -> String {
         let cal = Calendar.current
         let hm = cal.dateComponents([.hour, .minute], from: date)
         let h = hm.hour ?? 0
@@ -175,6 +160,23 @@ struct TrafficChartView: View {
             return date.formatted(.dateTime.month().day().hour().minute())
         }
         return date.formatted(.dateTime.hour().minute())
+    }
+
+    private func xAxisValues(zoomScale: CGFloat) -> [Date] {
+        let times = allPoints.map(\.ts)
+        guard let start = times.min(), let end = times.max(), start < end else { return [] }
+        let span = end.timeIntervalSince(start)
+        let visibleSpan = Int(span / max(1.0, Double(zoomScale)))
+        let minuteStep: Int
+        switch visibleSpan {
+        case ..<10800: minuteStep = 15
+        case ..<21600: minuteStep = 30
+        case ..<86400: minuteStep = 60
+        case ..<259200: minuteStep = 180
+        case ..<1209600: minuteStep = 360
+        default: minuteStep = 720
+        }
+        return buildTimeAxisValues(start: start, end: end, minuteStep: minuteStep)
     }
 }
 
@@ -190,10 +192,6 @@ struct TrafficChartExportView: View {
         let value: Double
         let seriesName: String
         let segmentName: String
-    }
-
-    private var midnightMarkers: [MidnightMarker] {
-        buildMidnightMarkers(model.decimated.map(\.timestamp))
     }
 
     private var exportInPoints: [ExportPoint] {
@@ -229,10 +227,10 @@ struct TrafficChartExportView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
-                Text(Fmt.bps(max(1.0, model.yMax))).font(.caption2).foregroundStyle(.secondary)
-                Spacer(); Text(Fmt.bps(model.yMax * 0.75)).font(.caption2).foregroundStyle(.secondary)
-                Spacer(); Text(Fmt.bps(model.yMax * 0.5)).font(.caption2).foregroundStyle(.secondary)
-                Spacer(); Text(Fmt.bps(model.yMax * 0.25)).font(.caption2).foregroundStyle(.secondary)
+                Text(Fmt.bps(yAxisMax)).font(.caption2).foregroundStyle(.secondary)
+                Spacer(); Text(Fmt.bps(yStep * 3)).font(.caption2).foregroundStyle(.secondary)
+                Spacer(); Text(Fmt.bps(yStep * 2)).font(.caption2).foregroundStyle(.secondary)
+                Spacer(); Text(Fmt.bps(yStep)).font(.caption2).foregroundStyle(.secondary)
                 Spacer(); Text("0 bps").font(.caption2).foregroundStyle(.secondary)
             }
             .frame(width: 74)
@@ -251,17 +249,6 @@ struct TrafficChartExportView: View {
                         RuleMark(y: .value("YTick", tick))
                             .foregroundStyle(Color.gray.opacity(0.22))
                             .lineStyle(StrokeStyle(lineWidth: 0.8))
-                    }
-
-                    ForEach(midnightMarkers) { marker in
-                        RuleMark(x: .value("Midnight", marker.ts))
-                            .foregroundStyle(Color.gray.opacity(0.25))
-                            .lineStyle(StrokeStyle(lineWidth: 1.0, dash: [2, 3]))
-                            .annotation(position: .bottom, spacing: 6) {
-                                Text(marker.ts.formatted(.dateTime.month().day().hour().minute()))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
                     }
 
                     ForEach(exportInPoints) { p in
@@ -287,14 +274,14 @@ struct TrafficChartExportView: View {
                     "入方向": Color(red: 0.22, green: 0.36, blue: 0.95),
                     "出方向": Color(red: 0.04, green: 0.73, blue: 0.43)
                 ])
-                .chartYScale(domain: 0...max(1.0, model.yMax))
+                .chartYScale(domain: 0...yAxisMax)
                 .chartYAxis(.hidden)
                 .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: 8)) { value in
+                    AxisMarks(values: xAxisValues) { value in
                         AxisGridLine(); AxisTick()
                         AxisValueLabel {
                             if let date = value.as(Date.self) {
-                                Text(xLabelText(date))
+                                Text(xAxisLabel(date))
                             }
                         }
                     }
@@ -305,8 +292,15 @@ struct TrafficChartExportView: View {
     }
 
     private var yTicks: [Double] {
-        let yMax = max(1.0, model.yMax)
-        return [0, 0.25, 0.5, 0.75, 1.0].map { yMax * $0 }
+        [0, 1, 2, 3, 4].map { Double($0) * yStep }
+    }
+
+    private var yStep: Double {
+        max(10.0, ceil(model.yMax / 4.0 / 10.0) * 10.0)
+    }
+
+    private var yAxisMax: Double {
+        yStep * 4.0
     }
 
     private var inboundSegments: [[TrafficChartPoint]] {
@@ -327,7 +321,7 @@ struct TrafficChartExportView: View {
         }
     }
 
-    private func xLabelText(_ date: Date) -> String {
+    private func xAxisLabel(_ date: Date) -> String {
         let cal = Calendar.current
         let hm = cal.dateComponents([.hour, .minute], from: date)
         let h = hm.hour ?? 0
@@ -337,18 +331,53 @@ struct TrafficChartExportView: View {
         }
         return date.formatted(.dateTime.hour().minute())
     }
+
+    private var xAxisValues: [Date] {
+        let times = model.decimated.map(\.timestamp)
+        guard let start = times.min(), let end = times.max(), start < end else { return [] }
+        let span = Int(end.timeIntervalSince(start))
+        let minuteStep: Int
+        switch span {
+        case ..<21600: minuteStep = 30
+        case ..<86400: minuteStep = 60
+        case ..<259200: minuteStep = 180
+        case ..<1209600: minuteStep = 360
+        default: minuteStep = 720
+        }
+        return buildTimeAxisValues(start: start, end: end, minuteStep: minuteStep)
+    }
 }
 
-private func buildMidnightMarkers(_ timestamps: [Date]) -> [MidnightMarker] {
-    guard let first = timestamps.min(), let last = timestamps.max(), first < last else { return [] }
+private func buildTimeAxisValues(start: Date, end: Date, minuteStep: Int) -> [Date] {
+    guard start < end else { return [] }
     let cal = Calendar.current
-    let firstDay = cal.startOfDay(for: first)
-    let nextDay = cal.date(byAdding: .day, value: 1, to: firstDay) ?? firstDay
-    var cursor = nextDay
-    var out: [MidnightMarker] = []
-    while cursor <= last {
-        out.append(MidnightMarker(ts: cursor))
-        cursor = cal.date(byAdding: .day, value: 1, to: cursor) ?? Date.distantFuture
+    let step = max(1, minuteStep)
+    var values: [Date] = []
+
+    var c = cal.dateComponents([.year, .month, .day, .hour, .minute], from: start)
+    c.minute = ((c.minute ?? 0) / step) * step
+    c.second = 0
+    var cursor = cal.date(from: c) ?? start
+    if cursor < start {
+        cursor = cal.date(byAdding: .minute, value: step, to: cursor) ?? start
     }
-    return out
+    while cursor <= end {
+        values.append(cursor)
+        cursor = cal.date(byAdding: .minute, value: step, to: cursor) ?? end.addingTimeInterval(1)
+    }
+
+    let firstDay = cal.startOfDay(for: start)
+    var midnight = cal.date(byAdding: .day, value: 1, to: firstDay) ?? firstDay
+    if midnight <= start {
+        midnight = cal.date(byAdding: .day, value: 1, to: midnight) ?? midnight
+    }
+    var midnights: [Date] = []
+    while midnight <= end {
+        midnights.append(midnight)
+        midnight = cal.date(byAdding: .day, value: 1, to: midnight) ?? end.addingTimeInterval(1)
+    }
+
+    values.append(contentsOf: midnights)
+    let merged = Array(Set(values.map { $0.timeIntervalSince1970 })).sorted()
+    return merged.map { Date(timeIntervalSince1970: $0) }
 }
