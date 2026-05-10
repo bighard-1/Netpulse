@@ -24,18 +24,30 @@ struct TrafficChartView: View {
     private var allPoints: [TrafficChartPoint] {
         var out: [TrafficChartPoint] = []
         if showIn {
-            out.append(contentsOf: model.decimated.compactMap { p in
-                guard let v = finite(p.traffic_in_bps) else { return nil }
-                return TrafficChartPoint(ts: p.timestamp, series: .inbound, value: v)
-            })
+            out.append(contentsOf: inboundPoints)
         }
         if showOut {
-            out.append(contentsOf: model.decimated.compactMap { p in
-                guard let v = finite(p.traffic_out_bps) else { return nil }
-                return TrafficChartPoint(ts: p.timestamp, series: .outbound, value: v)
-            })
+            out.append(contentsOf: outboundPoints)
         }
         return out.sorted { $0.ts < $1.ts }
+    }
+
+    private var inboundPoints: [TrafficChartPoint] {
+        model.decimated.compactMap { p in
+            guard let v = finite(p.traffic_in_bps) else { return nil }
+            return TrafficChartPoint(ts: p.timestamp, series: .inbound, value: v)
+        }
+    }
+
+    private var outboundPoints: [TrafficChartPoint] {
+        model.decimated.compactMap { p in
+            guard let v = finite(p.traffic_out_bps) else { return nil }
+            return TrafficChartPoint(ts: p.timestamp, series: .outbound, value: v)
+        }
+    }
+
+    private var yTicks: [Double] {
+        [0, 0.25, 0.5, 0.75, 1.0].map { yMax * $0 }
     }
 
     private var yMax: Double {
@@ -84,14 +96,22 @@ struct TrafficChartView: View {
     }
 
     private var chartCore: some View {
-        Chart(allPoints) { p in
-            LineMark(
-                x: .value("时间", p.ts),
-                y: .value("值", p.value)
-            )
-            .foregroundStyle(by: .value("序列", p.series.rawValue))
-            .lineStyle(by: .value("序列", p.series.rawValue))
-            .interpolationMethod(.linear)
+        Chart {
+            ForEach(yTicks, id: \.self) { tick in
+                RuleMark(y: .value("YTick", tick))
+                    .foregroundStyle(Color.white.opacity(0.10))
+                    .lineStyle(StrokeStyle(lineWidth: 0.8))
+            }
+
+            ForEach(allPoints) { p in
+                LineMark(
+                    x: .value("时间", p.ts),
+                    y: .value("值", p.value)
+                )
+                .foregroundStyle(by: .value("序列", p.series.rawValue))
+                .lineStyle(by: .value("序列", p.series.rawValue))
+                .interpolationMethod(.linear)
+            }
         }
         .chartForegroundStyleScale([
             TrafficSeries.inbound.rawValue: Color.indigo,
@@ -106,7 +126,11 @@ struct TrafficChartView: View {
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 6)) { value in
                 AxisGridLine(); AxisTick()
-                AxisValueLabel(format: .dateTime.hour().minute())
+                AxisValueLabel {
+                    if let date = value.as(Date.self) {
+                        Text(xLabelText(date))
+                    }
+                }
             }
         }
         .gesture(
@@ -119,6 +143,17 @@ struct TrafficChartView: View {
                     baseZoom = zoomScale
                 }
         )
+    }
+
+    private func xLabelText(_ date: Date) -> String {
+        let cal = Calendar.current
+        let hm = cal.dateComponents([.hour, .minute], from: date)
+        let h = hm.hour ?? 0
+        let m = hm.minute ?? 0
+        if h == 0 && m == 0 {
+            return date.formatted(.dateTime.month().day().hour().minute())
+        }
+        return date.formatted(.dateTime.hour().minute())
     }
 }
 
@@ -149,24 +184,28 @@ struct TrafficChartExportView: View {
                 .font(.caption)
 
                 Chart {
+                    ForEach(yTicks, id: \.self) { tick in
+                        RuleMark(y: .value("YTick", tick))
+                            .foregroundStyle(Color.gray.opacity(0.22))
+                            .lineStyle(StrokeStyle(lineWidth: 0.8))
+                    }
+
                     if showIn {
-                        ForEach(model.decimated.compactMap { p -> TrafficChartPoint? in
-                            guard let v = finite(p.traffic_in_bps) else { return nil }
-                            return TrafficChartPoint(ts: p.timestamp, series: .inbound, value: v)
-                        }) { p in
-                            LineMark(x: .value("时间", p.ts), y: .value("值", p.value))
-                                .lineStyle(StrokeStyle(lineWidth: 2.6))
-                                .foregroundStyle(Color(red: 0.22, green: 0.36, blue: 0.95))
+                        ForEach(inboundSegments.indices, id: \.self) { idx in
+                            ForEach(inboundSegments[idx]) { p in
+                                LineMark(x: .value("时间", p.ts), y: .value("值", p.value))
+                                    .lineStyle(StrokeStyle(lineWidth: 2.6))
+                                    .foregroundStyle(Color(red: 0.22, green: 0.36, blue: 0.95))
+                            }
                         }
                     }
                     if showOut {
-                        ForEach(model.decimated.compactMap { p -> TrafficChartPoint? in
-                            guard let v = finite(p.traffic_out_bps) else { return nil }
-                            return TrafficChartPoint(ts: p.timestamp, series: .outbound, value: v)
-                        }) { p in
-                            LineMark(x: .value("时间", p.ts), y: .value("值", p.value))
-                                .lineStyle(StrokeStyle(lineWidth: 2.6))
-                                .foregroundStyle(Color(red: 0.04, green: 0.73, blue: 0.43))
+                        ForEach(outboundSegments.indices, id: \.self) { idx in
+                            ForEach(outboundSegments[idx]) { p in
+                                LineMark(x: .value("时间", p.ts), y: .value("值", p.value))
+                                    .lineStyle(StrokeStyle(lineWidth: 2.6))
+                                    .foregroundStyle(Color(red: 0.04, green: 0.73, blue: 0.43))
+                            }
                         }
                     }
                 }
@@ -175,11 +214,49 @@ struct TrafficChartExportView: View {
                 .chartXAxis {
                     AxisMarks(values: .automatic(desiredCount: 8)) { value in
                         AxisGridLine(); AxisTick()
-                        AxisValueLabel(format: .dateTime.hour().minute())
+                        AxisValueLabel {
+                            if let date = value.as(Date.self) {
+                                Text(xLabelText(date))
+                            }
+                        }
                     }
                 }
                 .frame(height: 520)
             }
         }
+    }
+
+    private var yTicks: [Double] {
+        let yMax = max(1.0, model.yMax)
+        return [0, 0.25, 0.5, 0.75, 1.0].map { yMax * $0 }
+    }
+
+    private var inboundSegments: [[TrafficChartPoint]] {
+        model.inSegments.map { seg in
+            seg.points.compactMap { p in
+                guard let v = finite(p.traffic_in_bps) else { return nil }
+                return TrafficChartPoint(ts: p.timestamp, series: .inbound, value: v)
+            }
+        }
+    }
+
+    private var outboundSegments: [[TrafficChartPoint]] {
+        model.outSegments.map { seg in
+            seg.points.compactMap { p in
+                guard let v = finite(p.traffic_out_bps) else { return nil }
+                return TrafficChartPoint(ts: p.timestamp, series: .outbound, value: v)
+            }
+        }
+    }
+
+    private func xLabelText(_ date: Date) -> String {
+        let cal = Calendar.current
+        let hm = cal.dateComponents([.hour, .minute], from: date)
+        let h = hm.hour ?? 0
+        let m = hm.minute ?? 0
+        if h == 0 && m == 0 {
+            return date.formatted(.dateTime.month().day().hour().minute())
+        }
+        return date.formatted(.dateTime.hour().minute())
     }
 }

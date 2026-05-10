@@ -17,15 +17,36 @@ final class PortDetailViewModel: ObservableObject {
 
     func loadCustom(portID: String) {
         let now = Date()
-        let maxStart = Calendar.current.date(byAdding: .year, value: -3, to: now) ?? now
-        let s = max(customStart, maxStart)
-        let e = min(customEnd, now)
-        guard e > s else {
+        let minStart = Calendar.current.date(byAdding: .year, value: -3, to: now) ?? now
+        let rawStart = max(customStart, minStart)
+        let rawEnd = min(customEnd, now)
+        guard rawEnd > rawStart else {
             state = .error("结束时间必须晚于开始时间")
             return
         }
-        // 自定义区间交给后端按点数自动聚合。
-        let plan = HistoryQueryPlan(start: s, end: e, interval: "1h", maxPoints: 2200)
+
+        let span = rawEnd.timeIntervalSince(rawStart)
+        let (interval, maxPoints, alignedStart, alignedEnd): (String, Int, Date, Date)
+
+        switch Int(span) {
+        case ..<86400:
+            interval = "1m"
+            maxPoints = 1800
+            alignedStart = floorToMinute(rawStart, step: 1)
+            alignedEnd = floorToMinute(rawEnd, step: 1)
+        case ..<691200:
+            interval = "5m"
+            maxPoints = 2200
+            alignedStart = floorToMinute(rawStart, step: 5)
+            alignedEnd = floorToMinute(rawEnd, step: 5)
+        default:
+            interval = "1h"
+            maxPoints = 2200
+            alignedStart = floorToHour(rawStart, step: 1)
+            alignedEnd = floorToHour(rawEnd, step: 1)
+        }
+
+        let plan = HistoryQueryPlan(start: alignedStart, end: alignedEnd, interval: interval, maxPoints: maxPoints)
         loadWithPlan(portID: portID, plan: plan)
     }
 
@@ -48,5 +69,22 @@ final class PortDetailViewModel: ObservableObject {
             }
             loadingText = ""
         }
+    }
+
+    private func floorToMinute(_ date: Date, step: Int) -> Date {
+        var c = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+        let m = c.minute ?? 0
+        c.minute = (m / max(1, step)) * max(1, step)
+        c.second = 0
+        return Calendar.current.date(from: c) ?? date
+    }
+
+    private func floorToHour(_ date: Date, step: Int) -> Date {
+        var c = Calendar.current.dateComponents([.year, .month, .day, .hour], from: date)
+        let h = c.hour ?? 0
+        c.hour = (h / max(1, step)) * max(1, step)
+        c.minute = 0
+        c.second = 0
+        return Calendar.current.date(from: c) ?? date
     }
 }
