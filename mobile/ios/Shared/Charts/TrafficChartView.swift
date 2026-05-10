@@ -40,14 +40,12 @@ struct TrafficChartView: View {
     }
 
     private var chartWidth: CGFloat {
-        // 增宽图表支持左右拖动，避免窄屏挤压。
         let points = max(120, allPoints.count)
         return CGFloat(points) * 1.6
     }
 
     var body: some View {
         HStack(spacing: 0) {
-            // 固定左侧纵轴刻度，横向滚动时不丢失。
             VStack(spacing: 0) {
                 Text(Fmt.bps(yMax)).font(.caption2).foregroundStyle(.secondary)
                 Spacer()
@@ -62,7 +60,7 @@ struct TrafficChartView: View {
             .frame(width: 74)
             .padding(.vertical, 6)
 
-            ScrollView(.horizontal, showsIndicators: false) {
+            ScrollView(.horizontal, showsIndicators: true) {
                 Chart(allPoints) { p in
                     LineMark(
                         x: .value("时间", p.ts),
@@ -76,8 +74,9 @@ struct TrafficChartView: View {
                     TrafficSeries.inbound.rawValue: Color.indigo,
                     TrafficSeries.outbound.rawValue: Color.green
                 ])
+                // 两条都改为实线，只用颜色区分。
                 .chartLineStyleScale([
-                    TrafficSeries.inbound.rawValue: StrokeStyle(lineWidth: 2, dash: [7, 4]),
+                    TrafficSeries.inbound.rawValue: StrokeStyle(lineWidth: 2),
                     TrafficSeries.outbound.rawValue: StrokeStyle(lineWidth: 2)
                 ])
                 .chartYScale(domain: 0...yMax)
@@ -85,7 +84,7 @@ struct TrafficChartView: View {
                 .chartXAxis {
                     AxisMarks(values: .automatic(desiredCount: 6)) { value in
                         AxisGridLine(); AxisTick()
-                        AxisValueLabel(format: .dateTime.hour().minute())
+                        AxisValueLabel(format: .dateTime.month().day().hour())
                     }
                 }
                 .frame(width: chartWidth, height: 300)

@@ -51,7 +51,7 @@ struct CpuMemChartView: View {
             CpuMemSeries.mem.rawValue: Color.cyan
         ])
         .chartLineStyleScale([
-            CpuMemSeries.cpu.rawValue: StrokeStyle(lineWidth: 2, dash: [7, 4]),
+            CpuMemSeries.cpu.rawValue: StrokeStyle(lineWidth: 2),
             CpuMemSeries.mem.rawValue: StrokeStyle(lineWidth: 2)
         ])
         .chartYScale(domain: 0...100)

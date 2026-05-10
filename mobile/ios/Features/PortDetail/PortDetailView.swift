@@ -16,6 +16,7 @@ struct PortDetailView: View {
                 Text("当日").tag(TimePreset.day)
                 Text("近7天").tag(TimePreset.sevenDays)
                 Text("近30天").tag(TimePreset.thirtyDays)
+                Text("近1年").tag(TimePreset.oneYear)
                 Text("近3年").tag(TimePreset.threeYears)
             }
             .pickerStyle(.segmented)
