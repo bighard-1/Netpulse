@@ -12,7 +12,7 @@ struct StatefulContainer<T, Content: View>: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .error(let msg):
             VStack(spacing: 10) {
-                Text(msg).font(.footnote).foregroundStyle(.red)
+                Text(Fmt.readableError(msg)).font(.footnote).foregroundStyle(.red)
                 if let retry { Button("重试", action: retry) }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

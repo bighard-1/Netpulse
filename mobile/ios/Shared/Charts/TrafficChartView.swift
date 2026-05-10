@@ -139,33 +139,46 @@ struct TrafficChartExportView: View {
             }
             .frame(width: 74)
 
-            Chart {
-                if showIn {
-                    ForEach(model.decimated.compactMap { p -> TrafficChartPoint? in
-                        guard let v = finite(p.traffic_in_bps) else { return nil }
-                        return TrafficChartPoint(ts: p.timestamp, series: .inbound, value: v)
-                    }) { p in
-                        LineMark(x: .value("时间", p.ts), y: .value("值", p.value))
-                            .foregroundStyle(Color.indigo)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 16) {
+                    Label("入方向", systemImage: "line.diagonal")
+                        .foregroundStyle(Color(red: 0.22, green: 0.36, blue: 0.95))
+                    Label("出方向", systemImage: "line.diagonal")
+                        .foregroundStyle(Color(red: 0.04, green: 0.73, blue: 0.43))
+                }
+                .font(.caption)
+
+                Chart {
+                    if showIn {
+                        ForEach(model.decimated.compactMap { p -> TrafficChartPoint? in
+                            guard let v = finite(p.traffic_in_bps) else { return nil }
+                            return TrafficChartPoint(ts: p.timestamp, series: .inbound, value: v)
+                        }) { p in
+                            LineMark(x: .value("时间", p.ts), y: .value("值", p.value))
+                                .lineStyle(StrokeStyle(lineWidth: 2.6))
+                                .foregroundStyle(Color(red: 0.22, green: 0.36, blue: 0.95))
+                        }
+                    }
+                    if showOut {
+                        ForEach(model.decimated.compactMap { p -> TrafficChartPoint? in
+                            guard let v = finite(p.traffic_out_bps) else { return nil }
+                            return TrafficChartPoint(ts: p.timestamp, series: .outbound, value: v)
+                        }) { p in
+                            LineMark(x: .value("时间", p.ts), y: .value("值", p.value))
+                                .lineStyle(StrokeStyle(lineWidth: 2.6))
+                                .foregroundStyle(Color(red: 0.04, green: 0.73, blue: 0.43))
+                        }
                     }
                 }
-                if showOut {
-                    ForEach(model.decimated.compactMap { p -> TrafficChartPoint? in
-                        guard let v = finite(p.traffic_out_bps) else { return nil }
-                        return TrafficChartPoint(ts: p.timestamp, series: .outbound, value: v)
-                    }) { p in
-                        LineMark(x: .value("时间", p.ts), y: .value("值", p.value))
-                            .foregroundStyle(Color.green)
+                .chartYScale(domain: 0...max(1.0, model.yMax))
+                .chartYAxis(.hidden)
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 8)) { value in
+                        AxisGridLine(); AxisTick()
+                        AxisValueLabel(format: .dateTime.hour().minute())
                     }
                 }
-            }
-            .chartYScale(domain: 0...max(1.0, model.yMax))
-            .chartYAxis(.hidden)
-            .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 8)) { value in
-                    AxisGridLine(); AxisTick()
-                    AxisValueLabel(format: .dateTime.hour().minute())
-                }
+                .frame(height: 520)
             }
         }
     }
