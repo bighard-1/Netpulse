@@ -47,8 +47,14 @@ struct TrafficChartView: View {
     }
 
     private var yStep: Double {
-        let raw = max(10.0, ceil(model.yMax / 4.0 / 10.0) * 10.0)
-        return raw
+        if model.yMax >= 1_000_000 {
+            let maxMbps = model.yMax / 1_000_000
+            let stepMbps = max(10.0, ceil(maxMbps / 4.0 / 10.0) * 10.0)
+            return stepMbps * 1_000_000
+        }
+        let maxKbps = model.yMax / 1_000
+        let stepKbps = max(10.0, ceil(maxKbps / 4.0 / 10.0) * 10.0)
+        return stepKbps * 1_000
     }
 
     private var yAxisMax: Double {
@@ -67,13 +73,13 @@ struct TrafficChartView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
-                Text(Fmt.bps(yAxisMax)).font(.caption2).foregroundStyle(.secondary)
+                Text(yTickLabel(yAxisMax)).font(.caption2).foregroundStyle(.secondary)
                 Spacer()
-                Text(Fmt.bps(yStep * 3)).font(.caption2).foregroundStyle(.secondary)
+                Text(yTickLabel(yStep * 3)).font(.caption2).foregroundStyle(.secondary)
                 Spacer()
-                Text(Fmt.bps(yStep * 2)).font(.caption2).foregroundStyle(.secondary)
+                Text(yTickLabel(yStep * 2)).font(.caption2).foregroundStyle(.secondary)
                 Spacer()
-                Text(Fmt.bps(yStep)).font(.caption2).foregroundStyle(.secondary)
+                Text(yTickLabel(yStep)).font(.caption2).foregroundStyle(.secondary)
                 Spacer()
                 Text("0 bps").font(.caption2).foregroundStyle(.secondary)
             }
@@ -156,10 +162,15 @@ struct TrafficChartView: View {
         let hm = cal.dateComponents([.hour, .minute], from: date)
         let h = hm.hour ?? 0
         let m = hm.minute ?? 0
-        if h == 0 && m == 0 {
-            return date.formatted(.dateTime.month().day().hour().minute())
-        }
+        if h == 0 && m == 0 { return date.formatted(.dateTime.month().day()) }
         return date.formatted(.dateTime.hour().minute())
+    }
+
+    private func yTickLabel(_ value: Double) -> String {
+        if yStep >= 1_000_000 {
+            return "\(Int((value / 1_000_000).rounded())) Mbps"
+        }
+        return "\(Int((value / 1_000).rounded())) Kbps"
     }
 
     private func xAxisValues(zoomScale: CGFloat) -> [Date] {
@@ -227,10 +238,10 @@ struct TrafficChartExportView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
-                Text(Fmt.bps(yAxisMax)).font(.caption2).foregroundStyle(.secondary)
-                Spacer(); Text(Fmt.bps(yStep * 3)).font(.caption2).foregroundStyle(.secondary)
-                Spacer(); Text(Fmt.bps(yStep * 2)).font(.caption2).foregroundStyle(.secondary)
-                Spacer(); Text(Fmt.bps(yStep)).font(.caption2).foregroundStyle(.secondary)
+                Text(yTickLabel(yAxisMax)).font(.caption2).foregroundStyle(.secondary)
+                Spacer(); Text(yTickLabel(yStep * 3)).font(.caption2).foregroundStyle(.secondary)
+                Spacer(); Text(yTickLabel(yStep * 2)).font(.caption2).foregroundStyle(.secondary)
+                Spacer(); Text(yTickLabel(yStep)).font(.caption2).foregroundStyle(.secondary)
                 Spacer(); Text("0 bps").font(.caption2).foregroundStyle(.secondary)
             }
             .frame(width: 74)
@@ -296,7 +307,14 @@ struct TrafficChartExportView: View {
     }
 
     private var yStep: Double {
-        max(10.0, ceil(model.yMax / 4.0 / 10.0) * 10.0)
+        if model.yMax >= 1_000_000 {
+            let maxMbps = model.yMax / 1_000_000
+            let stepMbps = max(10.0, ceil(maxMbps / 4.0 / 10.0) * 10.0)
+            return stepMbps * 1_000_000
+        }
+        let maxKbps = model.yMax / 1_000
+        let stepKbps = max(10.0, ceil(maxKbps / 4.0 / 10.0) * 10.0)
+        return stepKbps * 1_000
     }
 
     private var yAxisMax: Double {
@@ -326,10 +344,15 @@ struct TrafficChartExportView: View {
         let hm = cal.dateComponents([.hour, .minute], from: date)
         let h = hm.hour ?? 0
         let m = hm.minute ?? 0
-        if h == 0 && m == 0 {
-            return date.formatted(.dateTime.month().day().hour().minute())
-        }
+        if h == 0 && m == 0 { return date.formatted(.dateTime.month().day()) }
         return date.formatted(.dateTime.hour().minute())
+    }
+
+    private func yTickLabel(_ value: Double) -> String {
+        if yStep >= 1_000_000 {
+            return "\(Int((value / 1_000_000).rounded())) Mbps"
+        }
+        return "\(Int((value / 1_000).rounded())) Kbps"
     }
 
     private var xAxisValues: [Date] {
