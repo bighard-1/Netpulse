@@ -1,6 +1,6 @@
 <script setup>
-import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
-import { useRoute } from "vue-router";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { api } from "../services/api";
 import { formatBps } from "../utils/format";
 import { zhCN } from "../i18n/zhCN";
@@ -9,7 +9,9 @@ import { npAxisLabel, npAxisLine, npChartGrid, npSplitLine, npTooltip } from "..
 
 const props = defineProps({ id: { type: [String, Number], required: true } });
 const route = useRoute();
+const router = useRouter();
 const fb = useFeedback();
+const editMode = ref(localStorage.getItem("np_edit_mode") === "1");
 
 const loading = ref(false);
 const customRange = ref([]);
@@ -20,17 +22,21 @@ const chart30dRef = ref(null);
 const chartCustomRef = ref(null);
 const portMeta = ref({ id: props.id, name: route.query.portName || `端口-${props.id}` });
 const portEdit = ref({ name: route.query.portName || "", remark: route.query.portRemark || "" });
+const portBaseName = ref(String(route.query.portBaseName || route.query.portName || `端口-${props.id}`));
+const portSuffix = ref("");
 const savingPort = ref(false);
 const terminalType = ref("ssh");
 const customChartAnchorRef = ref(null);
 const trafficThresholdBps = ref(0);
 const chartCardActive = ref("today");
+const siblingPorts = ref([]);
 const lastSeriesCache = ref({
   today: [],
   d7: [],
   d30: [],
   custom: []
 });
+const runtimePollSec = ref(60);
 let charts = { today: null, d7: null, d30: null, custom: null };
 
 function startOfDay(d = new Date()) {
@@ -146,9 +152,10 @@ function baseOption(title, unitInfo) {
         name: "入方向",
         type: "line",
         showSymbol: false,
-        smooth: true,
+        smooth: false,
+        step: false,
         connectNulls: false,
-        sampling: "average",
+        sampling: "lttb",
         progressive: 5000,
         lineStyle: { color: "#6366F1", width: 2 },
         itemStyle: { color: "#6366F1" },
@@ -164,9 +171,10 @@ function baseOption(title, unitInfo) {
         name: "出方向",
         type: "line",
         showSymbol: false,
-        smooth: true,
+        smooth: false,
+        step: false,
         connectNulls: false,
-        sampling: "average",
+        sampling: "lttb",
         progressive: 5000,
         lineStyle: { color: "#22C55E", width: 2 },
         itemStyle: { color: "#22C55E" },
@@ -199,37 +207,99 @@ function toSeriesData(data) {
 function decimatePoints(points, maxPoints = 2200) {
   const arr = points || [];
   if (arr.length <= maxPoints) return arr;
-  const bucket = Math.max(1, Math.floor(arr.length / Math.max(1, Math.floor(maxPoints / 2))));
+  const stride = Math.max(1, Math.ceil(arr.length / maxPoints));
   const out = [];
-  for (let i = 0; i < arr.length; i += bucket) {
-    const slice = arr.slice(i, Math.min(arr.length, i + bucket));
-    if (!slice.length) continue;
-    const valid = slice.filter((x) => x[1] != null);
-    if (!valid.length) {
-      out.push(slice[Math.floor(slice.length / 2)]);
-      continue;
-    }
-    let peak = valid[0];
-    let sum = 0;
-    for (const p of valid) {
-      const v = Number(p[1]);
-      if (Math.abs(v) > Math.abs(Number(peak[1]))) peak = p;
-      sum += v;
-    }
-    const mean = sum / valid.length;
-    const meanPoint = [valid[Math.floor(valid.length / 2)][0], mean];
-    if (Number(peak[0]) <= Number(meanPoint[0])) out.push(peak, meanPoint);
-    else out.push(meanPoint, peak);
+  for (let i = 0; i < arr.length; i += stride) {
+    out.push(arr[i]);
   }
-  if (arr.length > 0 && out[out.length - 1] !== arr[arr.length - 1]) out.push(arr[arr.length - 1]);
+  if (arr.length > 0 && out[out.length - 1] !== arr[arr.length - 1]) {
+    out.push(arr[arr.length - 1]);
+  }
   return out;
 }
 
 async function fetchRange(start, end) {
   const spanMs = end.getTime() - start.getTime();
-  const interval = spanMs > 180 * 24 * 3600 * 1000 ? "1h" : (spanMs > 30 * 24 * 3600 * 1000 ? "5m" : "1m");
-  const res = await api.getHistory("traffic", props.id, start.toISOString(), end.toISOString(), interval);
+  const pollSec = Math.max(5, Number(runtimePollSec.value || 60));
+  let interval = `${Math.max(10, Math.round(pollSec / 5) * 5)}s`;
+  if (spanMs > 180 * 24 * 3600 * 1000) interval = "1h";
+  else if (spanMs > 30 * 24 * 3600 * 1000) interval = "5m";
+  else if (spanMs > 7 * 24 * 3600 * 1000) interval = "2m";
+  const maxPoints = spanMs > 365 * 24 * 3600 * 1000 ? 1500 : 2500;
+  const res = await api.getHistory("traffic", props.id, start.toISOString(), end.toISOString(), interval, maxPoints);
   return res.data.data || [];
+}
+
+async function loadRuntimePollSec() {
+  const deviceID = Number(route.query.deviceId || 0);
+  try {
+    const runtimeRes = await api.getRuntimeSettings();
+    const runtime = runtimeRes?.data || {};
+    const core = Math.max(5, Number(runtime?.poll_interval_core_sec || 60));
+    const agg = Math.max(5, Number(runtime?.poll_interval_agg_sec || 90));
+    const access = Math.max(5, Number(runtime?.poll_interval_access_sec || 120));
+    const globalPoll = Math.max(5, Number(runtime?.snmp_poll_interval_sec || 60));
+    if (deviceID > 0) {
+      const d = await api.getDeviceById(deviceID);
+      const perDevice = Number(d?.poll_interval_sec || 0);
+      if (perDevice >= 5) {
+        runtimePollSec.value = perDevice;
+        return;
+      }
+      const text = `${String(d?.name || "")} ${String(d?.remark || "")}`.toLowerCase();
+      if (text.includes("核心") || text.includes("core")) {
+        runtimePollSec.value = core;
+        return;
+      }
+      if (text.includes("汇聚") || text.includes("aggregation") || text.includes("agg")) {
+        runtimePollSec.value = agg;
+        return;
+      }
+      runtimePollSec.value = access;
+      return;
+    }
+    runtimePollSec.value = globalPoll;
+  } catch {
+    runtimePollSec.value = 60;
+  }
+}
+
+async function loadSiblingPorts() {
+  const deviceID = Number(route.query.deviceId || 0);
+  if (!deviceID) {
+    siblingPorts.value = [];
+    return;
+  }
+  try {
+    const d = await api.getDeviceById(deviceID);
+    const list = (d?.interfaces || []).slice().sort((a, b) => Number(a.index || 0) - Number(b.index || 0));
+    siblingPorts.value = list.map((x) => ({
+      id: Number(x.id),
+      name: x.name || `ifIndex-${x.index}`,
+      remark: x.remark || ""
+    }));
+  } catch {
+    siblingPorts.value = [];
+  }
+}
+
+const currentPortPos = computed(() => {
+  const idx = siblingPorts.value.findIndex((x) => Number(x.id) === Number(props.id));
+  return idx >= 0 ? idx : -1;
+});
+const prevPort = computed(() => {
+  const i = currentPortPos.value;
+  return i > 0 ? siblingPorts.value[i - 1] : null;
+});
+const nextPort = computed(() => {
+  const i = currentPortPos.value;
+  return i >= 0 && i < siblingPorts.value.length - 1 ? siblingPorts.value[i + 1] : null;
+});
+
+function jumpSibling(port) {
+  if (!port?.id) return;
+  const q = { ...route.query, portName: port.name, portRemark: port.remark || "" };
+  router.push({ path: `/port/${port.id}`, query: q });
 }
 
 function applyChart(chart, title, data) {
@@ -372,6 +442,31 @@ function switchChartCard(name) {
   nextTick(() => resizeCharts());
 }
 
+async function loadPortMeta() {
+  const fromQueryName = String(route.query.portName || "").trim();
+  const fromQueryRemark = String(route.query.portRemark || "").trim();
+  if (fromQueryName) {
+    portMeta.value = { id: props.id, name: fromQueryName };
+    portEdit.value.name = fromQueryName;
+    portEdit.value.remark = fromQueryRemark;
+    const base = String(route.query.portBaseName || fromQueryName || "").trim();
+    portBaseName.value = base || fromQueryName;
+    portSuffix.value = fromQueryName.startsWith(`${portBaseName.value} `)
+      ? fromQueryName.slice((`${portBaseName.value} `).length)
+      : "";
+    return;
+  }
+  const hit = siblingPorts.value.find((x) => Number(x.id) === Number(props.id));
+  if (hit) {
+    portMeta.value = { id: props.id, name: hit.name };
+    portEdit.value.name = hit.name;
+    portEdit.value.remark = hit.remark || "";
+  } else {
+    portMeta.value = { id: props.id, name: `端口-${props.id}` };
+    portEdit.value.name = "";
+  }
+}
+
 function buildTerminalUrl() {
   const ip = String(route.query.deviceIp || "").trim();
   if (!ip) return "";
@@ -395,13 +490,17 @@ function openTerminal() {
 }
 
 async function savePortProfile() {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
   savingPort.value = true;
   try {
+    const suffix = String(portSuffix.value || "").trim();
+    const finalName = suffix ? `${portBaseName.value} ${suffix}` : `${portBaseName.value}`;
     await api.updateInterfaceProfile(props.id, {
-      name: portEdit.value.name || "",
+      name: finalName,
       remark: portEdit.value.remark || ""
     });
-    portMeta.value.name = portEdit.value.name || portMeta.value.name;
+    portMeta.value.name = finalName;
+    portEdit.value.name = finalName;
     fb.success("端口名称/备注已保存");
   } catch (err) {
     fb.apiError(err, "保存端口信息失败");
@@ -411,6 +510,7 @@ async function savePortProfile() {
 }
 
 async function restoreDefaultPortName() {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
   savingPort.value = true;
   try {
     await api.updateInterfaceProfile(props.id, {
@@ -440,6 +540,9 @@ async function copyTerminalTarget() {
 }
 
 onMounted(async () => {
+  await loadRuntimePollSec();
+  await loadSiblingPorts();
+  await loadPortMeta();
   await nextTick();
   const e = await import("echarts");
   charts.today = e.init(chartTodayRef.value);
@@ -453,15 +556,27 @@ onMounted(async () => {
   customRangeDraft.value = [...(customRange.value || [])];
   await loadAllCharts();
   window.addEventListener("resize", resizeCharts);
+  window.addEventListener("np-edit-mode", onEditModeEvent);
+});
+
+watch(() => props.id, async () => {
+  await loadSiblingPorts();
+  await loadPortMeta();
+  await loadAllCharts();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("resize", resizeCharts);
+  window.removeEventListener("np-edit-mode", onEditModeEvent);
   charts.today?.dispose();
   charts.d7?.dispose();
   charts.d30?.dispose();
   charts.custom?.dispose();
 });
+
+function onEditModeEvent(e) {
+  editMode.value = Boolean(e?.detail?.enabled);
+}
 </script>
 
 <template>
@@ -479,11 +594,16 @@ onBeforeUnmount(() => {
             <div class="text-xs text-slate-500">端口</div>
             <div class="text-lg font-semibold">{{ portMeta.name }}</div>
           </div>
+          <div class="flex items-center gap-2">
+            <el-button :disabled="!prevPort" @click="jumpSibling(prevPort)">上一端口</el-button>
+            <el-button :disabled="!nextPort" @click="jumpSibling(nextPort)">下一端口</el-button>
+          </div>
           <div class="flex flex-wrap items-center gap-2">
-            <el-input v-model="portEdit.name" placeholder="自定义端口名称" class="w-[200px]" />
+            <el-input :model-value="portBaseName" disabled class="w-[220px]" />
+            <el-input v-model="portSuffix" placeholder="追加后缀（可空）" class="w-[220px]" />
             <el-input v-model="portEdit.remark" placeholder="端口备注" class="w-[220px]" />
-            <el-button type="warning" plain @click="savePortProfile" :loading="savingPort">保存</el-button>
-            <el-button plain @click="restoreDefaultPortName" :loading="savingPort">恢复默认名</el-button>
+            <el-button type="warning" plain :disabled="!editMode" @click="savePortProfile" :loading="savingPort">保存</el-button>
+            <el-button plain :disabled="!editMode" @click="restoreDefaultPortName" :loading="savingPort">恢复默认名</el-button>
           </div>
           <div class="flex flex-wrap items-center gap-2">
             <el-input-number v-model="trafficThresholdBps" :min="0" :step="1000000" placeholder="告警阈值(bps)" />

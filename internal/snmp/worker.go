@@ -24,12 +24,19 @@ type counterState struct {
 	inOctets  uint64
 	outOctets uint64
 	at        time.Time
+	inBps     int64
+	outBps    int64
+	inZeroStreak  int
+	outZeroStreak int
 }
 
 type Worker struct {
 	repo          *db.Repository
 	collector     *Collector
 	interval      time.Duration
+	pollCore      time.Duration
+	pollAgg       time.Duration
+	pollAccess    time.Duration
 	parallel      int
 	deviceTimeout time.Duration
 	alertWebhook  string
@@ -46,6 +53,7 @@ type Worker struct {
 	evts   map[string]time.Time
 
 	lastHealthSnapshot time.Time
+	lastPolled         map[int64]time.Time
 }
 
 type alertPolicy struct {
@@ -86,6 +94,9 @@ func NewWorker(repo *db.Repository, collector *Collector, interval time.Duration
 		repo:          repo,
 		collector:     collector,
 		interval:      interval,
+		pollCore:      interval,
+		pollAgg:       interval,
+		pollAccess:    interval,
 		parallel:      p,
 		deviceTimeout: time.Duration(timeoutSec) * time.Second,
 		alertWebhook:  os.Getenv("ALERT_WEBHOOK_URL"),
@@ -98,6 +109,7 @@ func NewWorker(repo *db.Repository, collector *Collector, interval time.Duration
 		evts:          make(map[string]time.Time),
 		alertMgr:      NewAlertManager(repo, os.Getenv("ALERT_WEBHOOK_URL")),
 		calibration:   loadCalibrationMap(os.Getenv("SNMP_CALIBRATION_MAP")),
+		lastPolled:    make(map[int64]time.Time),
 	}
 }
 
@@ -123,6 +135,15 @@ func (w *Worker) applyRuntimeSettings(ctx context.Context) {
 	if cfg.SNMPPollIntervalSec >= 5 {
 		w.interval = time.Duration(cfg.SNMPPollIntervalSec) * time.Second
 	}
+	if cfg.PollIntervalCoreSec >= 5 {
+		w.pollCore = time.Duration(cfg.PollIntervalCoreSec) * time.Second
+	}
+	if cfg.PollIntervalAggSec >= 5 {
+		w.pollAgg = time.Duration(cfg.PollIntervalAggSec) * time.Second
+	}
+	if cfg.PollIntervalAccessSec >= 5 {
+		w.pollAccess = time.Duration(cfg.PollIntervalAccessSec) * time.Second
+	}
 	if cfg.SNMPDeviceTimeoutSec >= 2 {
 		w.deviceTimeout = time.Duration(cfg.SNMPDeviceTimeoutSec) * time.Second
 	}
@@ -143,13 +164,14 @@ func (w *Worker) applyRuntimeSettings(ctx context.Context) {
 
 func (w *Worker) nextInterval(ctx context.Context) time.Duration {
 	w.applyRuntimeSettings(ctx)
-	if w.interval < 5*time.Second {
-		return 5 * time.Second
+	base := minDuration(w.pollCore, minDuration(w.pollAgg, w.pollAccess))
+	if base < 5*time.Second {
+		base = 5 * time.Second
 	}
-	if w.interval > time.Hour {
+	if base > time.Hour {
 		return time.Hour
 	}
-	return w.interval
+	return base
 }
 
 func (w *Worker) runOnce(ctx context.Context) {
@@ -164,7 +186,11 @@ func (w *Worker) runOnce(ctx context.Context) {
 
 	sem := make(chan struct{}, w.parallel)
 	var wg sync.WaitGroup
+	now := time.Now()
 	for _, d := range devices {
+		if !w.shouldPoll(d, now) {
+			continue
+		}
 		device := d
 		wg.Add(1)
 		sem <- struct{}{}
@@ -172,10 +198,56 @@ func (w *Worker) runOnce(ctx context.Context) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			w.pollOne(ctx, device)
+			w.markPolled(device.ID, now)
 		}()
 	}
 	wg.Wait()
 	w.persistSystemHealth(ctx, devices)
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a <= 0 {
+		return b
+	}
+	if b <= 0 || a < b {
+		return a
+	}
+	return b
+}
+
+func (w *Worker) markPolled(deviceID int64, at time.Time) {
+	w.mu.Lock()
+	w.lastPolled[deviceID] = at
+	w.mu.Unlock()
+}
+
+func (w *Worker) shouldPoll(d db.Device, now time.Time) bool {
+	interval := w.pollIntervalForDevice(d)
+	if interval < 5*time.Second {
+		interval = 5 * time.Second
+	}
+	w.mu.Lock()
+	last, ok := w.lastPolled[d.ID]
+	w.mu.Unlock()
+	if !ok {
+		return true
+	}
+	return now.Sub(last) >= interval
+}
+
+func (w *Worker) pollIntervalForDevice(d db.Device) time.Duration {
+	if d.PollIntervalSec > 0 {
+		return time.Duration(d.PollIntervalSec) * time.Second
+	}
+	text := strings.ToLower(strings.TrimSpace(d.Name + " " + d.Remark))
+	switch {
+	case strings.Contains(text, "核心") || strings.Contains(text, "core"):
+		return w.pollCore
+	case strings.Contains(text, "汇聚") || strings.Contains(text, "aggregation") || strings.Contains(text, "agg"):
+		return w.pollAgg
+	default:
+		return w.pollAccess
+	}
 }
 
 func (w *Worker) pollOne(ctx context.Context, d db.Device) {
@@ -232,7 +304,7 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 
 	mList := make([]db.InterfaceMetric, 0, len(result.Interfaces))
 	for _, itf := range result.Interfaces {
-		inBps, outBps := w.calcBps(d.ID, itf.IfIndex, itf.InOctets, itf.OutOctets, result.PolledAt)
+		inBps, outBps := w.calcBps(d.ID, itf.IfIndex, itf.InOctets, itf.OutOctets, result.PolledAt, itf.SpeedMbps, w.pollIntervalForDevice(d))
 		w.trackPortState(ctx, d, itf.IfIndex, itf.IfName, itf.OperUp)
 		mList = append(mList, db.InterfaceMetric{
 			IfIndex:       itf.IfIndex,
@@ -269,10 +341,16 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 		return
 	}
 	cpuTh := policy.cpuThreshold
+	if d.CPUThreshold > 0 {
+		cpuTh = d.CPUThreshold
+	}
 	if cpuTh <= 0 {
 		cpuTh = w.cpuThreshold
 	}
 	memTh := policy.memThreshold
+	if d.MemThreshold > 0 {
+		memTh = d.MemThreshold
+	}
 	if memTh <= 0 {
 		memTh = w.memThreshold
 	}
@@ -598,40 +676,78 @@ func (w *Worker) persistSystemHealth(ctx context.Context, devices []db.Device) {
 	}
 }
 
-func (w *Worker) calcBps(deviceID int64, ifIndex int, inOctets, outOctets uint64, now time.Time) (int64, int64) {
+func (w *Worker) calcBps(deviceID int64, ifIndex int, inOctets, outOctets uint64, now time.Time, speedMbps int, expectedInterval time.Duration) (int64, int64) {
 	key := interfaceKey(deviceID, ifIndex)
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	prev, ok := w.last[key]
-	w.last[key] = counterState{inOctets: inOctets, outOctets: outOctets, at: now}
 	if !ok {
+		w.last[key] = counterState{
+			inOctets: inOctets, outOctets: outOctets, at: now,
+			inBps: 0, outBps: 0, inZeroStreak: 0, outZeroStreak: 0,
+		}
 		return 0, 0
 	}
 
 	seconds := now.Sub(prev.at).Seconds()
 	if seconds <= 0 {
-		return 0, 0
+		return prev.inBps, prev.outBps
 	}
 
-	inDelta := safeDelta(inOctets, prev.inOctets)
-	outDelta := safeDelta(outOctets, prev.outOctets)
-	inBps := safeBps(inDelta, seconds)
-	outBps := safeBps(outDelta, seconds)
+	// Guard against scheduling jitter and long gap spikes:
+	// keep the previous stable value when deltaTs is far from expected.
+	if expectedInterval > 0 {
+		exp := expectedInterval.Seconds()
+		if seconds < exp*0.4 || seconds > exp*3.5 {
+			w.last[key] = counterState{
+				inOctets: inOctets, outOctets: outOctets, at: now,
+				inBps: prev.inBps, outBps: prev.outBps,
+				inZeroStreak: prev.inZeroStreak, outZeroStreak: prev.outZeroStreak,
+			}
+			return prev.inBps, prev.outBps
+		}
+	}
+
+	inDelta, inDis := safeDeltaWithDiscontinuity(inOctets, prev.inOctets)
+	outDelta, outDis := safeDeltaWithDiscontinuity(outOctets, prev.outOctets)
+	if inDis || outDis {
+		// ifCounter discontinuity/reset detected: keep previous rate to avoid false plunge.
+		w.last[key] = counterState{
+			inOctets: inOctets, outOctets: outOctets, at: now,
+			inBps: prev.inBps, outBps: prev.outBps,
+			inZeroStreak: prev.inZeroStreak, outZeroStreak: prev.outZeroStreak,
+		}
+		return prev.inBps, prev.outBps
+	}
+
+	maxBps := maxReasonableBpsBySpeed(speedMbps)
+	rawIn := rawBps(inDelta, seconds)
+	rawOut := rawBps(outDelta, seconds)
+	inBps := clampOrKeepPrev(rawIn, prev.inBps, maxBps)
+	outBps := clampOrKeepPrev(rawOut, prev.outBps, maxBps)
+	// lightweight EWMA smoothing, reduces aliasing when polling interval changes.
+	inBps, inZeroStreak := smoothRate(prev.inBps, inBps, prev.inZeroStreak)
+	outBps, outZeroStreak := smoothRate(prev.outBps, outBps, prev.outZeroStreak)
+	w.last[key] = counterState{
+		inOctets: inOctets, outOctets: outOctets, at: now,
+		inBps: inBps, outBps: outBps,
+		inZeroStreak: inZeroStreak, outZeroStreak: outZeroStreak,
+	}
 	return inBps, outBps
 }
 
 func interfaceKey(deviceID int64, ifIndex int) string { return fmt.Sprintf("%d:%d", deviceID, ifIndex) }
 
-func safeDelta(curr, prev uint64) uint64 {
+func safeDeltaWithDiscontinuity(curr, prev uint64) (uint64, bool) {
 	if curr < prev {
-		return 0
+		return 0, true
 	}
-	return curr - prev
+	return curr - prev, false
 }
 
-func safeBps(deltaOctets uint64, seconds float64) int64 {
+func rawBps(deltaOctets uint64, seconds float64) int64 {
 	if seconds <= 0 {
 		return 0
 	}
@@ -639,9 +755,60 @@ func safeBps(deltaOctets uint64, seconds float64) int64 {
 	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
 		return 0
 	}
-	const maxReasonableBps = float64(9_000_000_000_000_000)
-	if v > maxReasonableBps {
+	return int64(v)
+}
+
+func clampOrKeepPrev(curr, prev int64, maxReasonableBps float64) int64 {
+	if curr <= 0 {
 		return 0
 	}
-	return int64(v)
+	if maxReasonableBps <= 0 {
+		return curr
+	}
+	if float64(curr) > maxReasonableBps {
+		// Keep last stable value instead of dropping to zero.
+		// This avoids periodic fake troughs on high-speed ports.
+		if prev > 0 {
+			return prev
+		}
+		return int64(maxReasonableBps)
+	}
+	return curr
+}
+
+func maxReasonableBpsBySpeed(speedMbps int) float64 {
+	// S12700E and high-throughput chassis may report bursty counters.
+	// Keep larger headroom before treating as anomaly.
+	if speedMbps > 0 {
+		return float64(speedMbps) * 1_000_000 * 2.0
+	}
+	// Unknown speed: fallback to 100G with headroom.
+	return 120_000_000_000
+}
+
+func smoothRate(prev, curr int64, zeroStreak int) (int64, int) {
+	if prev <= 0 {
+		if curr <= 0 {
+			return 0, 0
+		}
+		return curr, 0
+	}
+	if curr <= 0 {
+		// Avoid one-off false plunge while still allowing real fall-to-zero.
+		zeroStreak++
+		if zeroStreak <= 2 {
+			return prev, zeroStreak
+		}
+		decay := int64(float64(prev) * 0.5)
+		if decay < 1 {
+			return 0, zeroStreak
+		}
+		return decay, zeroStreak
+	}
+	// EWMA alpha=0.35
+	v := 0.65*float64(prev) + 0.35*float64(curr)
+	if v < 0 {
+		return 0, 0
+	}
+	return int64(v), 0
 }

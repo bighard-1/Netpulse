@@ -2658,6 +2658,15 @@ func decimateInterfaceHistory(in []InterfaceHistoryPoint, span time.Duration, ma
 }
 
 func resolveHistoryBucketInterval(span time.Duration, requested string, maxPoints int, useAgg bool) string {
+	if strings.HasSuffix(requested, "s") {
+		if v, err := strconv.Atoi(strings.TrimSuffix(requested, "s")); err == nil && v > 0 {
+			sec := v
+			if useAgg && sec < 60 {
+				sec = 60
+			}
+			return fmt.Sprintf("%d seconds", sec)
+		}
+	}
 	switch requested {
 	case "1m":
 		return "1 minute"

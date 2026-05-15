@@ -1,9 +1,14 @@
 <script setup>
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { api } from "../services/api";
 import { useFeedback } from "../composables/useFeedback";
+import { useAuthStore } from "../stores/auth";
+import PhaseRoadmap from "../components/dashboard/PhaseRoadmap.vue";
 
 const fb = useFeedback();
+const auth = useAuthStore();
+const isAdmin = computed(() => Boolean(auth.isAdmin));
+const editMode = ref(localStorage.getItem("np_edit_mode") === "1");
 
 const restoreLoading = ref(false);
 const drillLoading = ref(false);
@@ -33,6 +38,12 @@ const opsDetailTitle = ref("");
 const opsDetailRows = ref([]);
 const opsDetailType = ref("events");
 const slowApiLogs = ref([]);
+
+function isForbidden(err) {
+  const status = Number(err?.response?.status || 0);
+  const msg = String(err?.response?.data?.error || err?.message || "").toLowerCase();
+  return status === 401 || status === 403 || msg.includes("forbidden") || msg.includes("admin only");
+}
 
 function loadSlowApiLogs() {
   try {
@@ -74,6 +85,9 @@ const alertRuleForm = ref({
 
 const runtimeForm = ref({
   snmp_poll_interval_sec: 60,
+  poll_interval_core_sec: 60,
+  poll_interval_agg_sec: 90,
+  poll_interval_access_sec: 120,
   snmp_device_timeout_sec: 15,
   status_online_window_sec: 300,
   alert_cpu_threshold: 90,
@@ -82,11 +96,13 @@ const runtimeForm = ref({
   snmp_calibration_map: "{}",
   terminal_url_template: "ssh://{ip}"
 });
+const runtimeSnapshot = ref({});
 
 async function loadRuntimeSettings() {
   settingsLoading.value = true;
   try {
     const res = await api.getRuntimeSettings();
+    runtimeSnapshot.value = { ...(res.data || {}) };
     runtimeForm.value = {
       ...runtimeForm.value,
       ...(res.data || {})
@@ -94,6 +110,7 @@ async function loadRuntimeSettings() {
     runtimeForm.value.terminal_url_template = localStorage.getItem("np_terminal_url_template") || runtimeForm.value.terminal_url_template || "ssh://{ip}";
     hydrateCalibrationRows(runtimeForm.value.snmp_calibration_map);
   } catch (err) {
+    if (isForbidden(err)) return;
     fb.apiError(err, "加载运行参数失败");
   } finally {
     settingsLoading.value = false;
@@ -130,13 +147,28 @@ function removeCalibrationRow(i) {
 }
 
 async function saveRuntimeSettings() {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
   savingSettings.value = true;
   try {
     syncCalibrationMap();
     const raw = String(runtimeForm.value.snmp_calibration_map || "{}").trim();
     JSON.parse(raw || "{}");
     localStorage.setItem("np_terminal_url_template", runtimeForm.value.terminal_url_template || "ssh://{ip}");
-    await api.updateRuntimeSettings(runtimeForm.value);
+    const keep = runtimeSnapshot.value || {};
+    // White-list editable fields; preserve hidden fields from server snapshot.
+    const payload = {
+      snmp_poll_interval_sec: Number(keep.snmp_poll_interval_sec || runtimeForm.value.snmp_poll_interval_sec || 60),
+      poll_interval_core_sec: Number(keep.poll_interval_core_sec || runtimeForm.value.poll_interval_core_sec || 60),
+      poll_interval_agg_sec: Number(keep.poll_interval_agg_sec || runtimeForm.value.poll_interval_agg_sec || 90),
+      poll_interval_access_sec: Number(keep.poll_interval_access_sec || runtimeForm.value.poll_interval_access_sec || 120),
+      alert_cpu_threshold: Number(keep.alert_cpu_threshold || runtimeForm.value.alert_cpu_threshold || 90),
+      alert_mem_threshold: Number(keep.alert_mem_threshold || runtimeForm.value.alert_mem_threshold || 90),
+      snmp_device_timeout_sec: Number(runtimeForm.value.snmp_device_timeout_sec || keep.snmp_device_timeout_sec || 15),
+      status_online_window_sec: Number(runtimeForm.value.status_online_window_sec || keep.status_online_window_sec || 300),
+      alert_webhook_url: String(runtimeForm.value.alert_webhook_url || "").trim(),
+      snmp_calibration_map: raw
+    };
+    await api.updateRuntimeSettings(payload);
     fb.success("运行参数已保存", "采集参数将自动生效");
     await loadRuntimeSettings();
   } catch (err) {
@@ -160,7 +192,10 @@ async function onBackup() {
   }
 }
 
+const backupScopeText = "全量备份：包含资产设备、端口、历史指标(流量/CPU/内存/存储)、告警与事件、用户与权限、系统设置。";
+
 async function onRestore(file) {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
   restoreLoading.value = true;
   try {
     await api.restoreFromFile(file.raw);
@@ -173,6 +208,7 @@ async function onRestore(file) {
 }
 
 async function runBackupDrill() {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
   drillLoading.value = true;
   try {
     await api.backupDrill();
@@ -206,6 +242,7 @@ async function loadDrillReports() {
     const res = await api.listBackupDrillReports();
     drillReports.value = res.data || [];
   } catch (err) {
+    if (isForbidden(err)) return;
     fb.apiError(err, "加载演练报告失败");
   } finally {
     drillReportsLoading.value = false;
@@ -218,6 +255,7 @@ async function loadTemplates() {
     const res = await api.listTemplates();
     templates.value = res.data || [];
   } catch (err) {
+    if (isForbidden(err)) return;
     fb.apiError(err, "加载模板失败");
   } finally {
     templateLoading.value = false;
@@ -225,6 +263,7 @@ async function loadTemplates() {
 }
 
 async function saveTemplate() {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
   saveTemplateLoading.value = true;
   try {
     await api.createTemplate(templateForm.value);
@@ -243,6 +282,7 @@ async function loadAlertRules() {
     const res = await api.listAlertRules();
     alertRules.value = res.data || [];
   } catch (err) {
+    if (isForbidden(err)) return;
     fb.apiError(err, "加载告警规则失败");
   } finally {
     alertRuleLoading.value = false;
@@ -255,6 +295,7 @@ async function loadOpsSummary() {
     const res = await api.getSystemOps();
     opsSummary.value = { ...opsSummary.value, ...(res.data || {}) };
   } catch (err) {
+    if (isForbidden(err)) return;
     fb.apiError(err, "加载运维概况失败");
   } finally {
     opsLoading.value = false;
@@ -262,6 +303,7 @@ async function loadOpsSummary() {
 }
 
 async function openOpsDetail(type) {
+  if (!isAdmin.value) return fb.warn("当前账号无权限查看运行观测明细");
   try {
     opsDetailType.value = type;
     opsDetailVisible.value = true;
@@ -290,11 +332,13 @@ async function openOpsDetail(type) {
       opsDetailRows.value = res.data || [];
     }
   } catch (err) {
+    if (isForbidden(err)) return;
     fb.apiError(err, "加载运行观测明细失败");
   }
 }
 
 async function saveAlertRule() {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
   saveRuleLoading.value = true;
   try {
     await api.upsertAlertRule({
@@ -353,6 +397,7 @@ function resetAlertRuleForm() {
 }
 
 async function removeAlertRule(row) {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
   try {
     await api.deleteAlertRule(row.id);
     fb.success("告警规则已删除");
@@ -367,17 +412,31 @@ async function removeAlertRule(row) {
 
 onMounted(async () => {
   loadSlowApiLogs();
+  window.addEventListener("np-edit-mode", onEditModeEvent);
   window.addEventListener("np-slow-api-log", loadSlowApiLogs);
+  if (!isAdmin.value) return;
   await Promise.all([loadRuntimeSettings(), loadDrillReports(), loadTemplates(), loadAlertRules(), loadOpsSummary()]);
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("np-edit-mode", onEditModeEvent);
   window.removeEventListener("np-slow-api-log", loadSlowApiLogs);
 });
+
+function onEditModeEvent(e) {
+  editMode.value = Boolean(e?.detail?.enabled);
+}
 </script>
 
 <template>
   <div class="space-y-4">
+    <el-alert
+      v-if="!isAdmin"
+      title="当前账号为只读权限，系统设置仅管理员可访问。请使用管理员账号登录或联系管理员授权。"
+      type="warning"
+      show-icon
+      :closable="false"
+    />
     <el-card>
       <template #header>
         <span class="text-lg font-semibold">系统设置中心</span>
@@ -388,6 +447,7 @@ onBeforeUnmount(() => {
         <el-tab-pane label="模板中心" name="template" />
         <el-tab-pane label="备份恢复" name="backup" />
         <el-tab-pane label="运行观测" name="ops" />
+        <el-tab-pane label="系统信息" name="systemInfo" />
       </el-tabs>
     </el-card>
 
@@ -396,20 +456,18 @@ onBeforeUnmount(() => {
       <el-skeleton :loading="settingsLoading" animated :rows="6">
         <template #default>
           <el-form label-position="top" class="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <el-form-item label="轮询间隔（秒，5-3600）">
-              <el-input-number v-model="runtimeForm.snmp_poll_interval_sec" :min="5" :max="3600" :step="5" class="w-full" />
-            </el-form-item>
             <el-form-item label="设备超时（秒，2-120）">
               <el-input-number v-model="runtimeForm.snmp_device_timeout_sec" :min="2" :max="120" class="w-full" />
             </el-form-item>
             <el-form-item label="在线判定窗口（秒，30-3600）">
               <el-input-number v-model="runtimeForm.status_online_window_sec" :min="30" :max="3600" :step="30" class="w-full" />
             </el-form-item>
-            <el-form-item label="CPU告警阈值（%）">
-              <el-input-number v-model="runtimeForm.alert_cpu_threshold" :min="1" :max="100" :precision="2" class="w-full" />
-            </el-form-item>
-            <el-form-item label="内存告警阈值（%）">
-              <el-input-number v-model="runtimeForm.alert_mem_threshold" :min="1" :max="100" :precision="2" class="w-full" />
+            <el-form-item label="说明" class="md:col-span-2">
+              <el-alert
+                type="info"
+                :closable="false"
+                title="轮询间隔与CPU/内存告警阈值已迁移到资产新增/编辑页面，支持按设备单独配置。"
+              />
             </el-form-item>
             <el-form-item label="告警 Webhook（可空）" class="md:col-span-2">
               <el-input v-model="runtimeForm.alert_webhook_url" placeholder="https://example.com/webhook" />
@@ -437,7 +495,7 @@ onBeforeUnmount(() => {
             </el-form-item>
           </el-form>
           <div class="flex justify-end">
-            <el-button type="primary" :loading="savingSettings" @click="saveRuntimeSettings">保存参数</el-button>
+            <el-button type="primary" :disabled="!editMode" :loading="savingSettings" @click="saveRuntimeSettings">保存参数</el-button>
           </div>
           <div class="mt-4 rounded-lg border border-slate-200 p-3">
             <div class="mb-2 flex items-center justify-between">
@@ -499,7 +557,7 @@ onBeforeUnmount(() => {
           </el-form-item>
           <div class="flex justify-end">
             <el-button @click="resetAlertRuleForm">重置</el-button>
-            <el-button type="primary" :loading="saveRuleLoading" @click="saveAlertRule">保存规则</el-button>
+            <el-button type="primary" :disabled="!editMode" :loading="saveRuleLoading" @click="saveAlertRule">保存规则</el-button>
           </div>
         </el-form>
 
@@ -517,7 +575,7 @@ onBeforeUnmount(() => {
           <el-table-column label="操作" width="150">
             <template #default="{ row }">
               <el-button type="primary" text @click="editAlertRule(row)">编辑</el-button>
-              <el-button type="danger" text @click="removeAlertRule(row)">删除</el-button>
+              <el-button type="danger" text :disabled="!editMode" @click="removeAlertRule(row)">删除</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -545,7 +603,7 @@ onBeforeUnmount(() => {
           <el-form-item label="入方向 OID"><el-input v-model="templateForm.if_in_oid" /></el-form-item>
           <el-form-item label="出方向 OID"><el-input v-model="templateForm.if_out_oid" /></el-form-item>
           <div class="flex justify-end">
-            <el-button type="primary" :loading="saveTemplateLoading" @click="saveTemplate">保存模板</el-button>
+            <el-button type="primary" :disabled="!editMode" :loading="saveTemplateLoading" @click="saveTemplate">保存模板</el-button>
           </div>
         </el-form>
 
@@ -563,10 +621,11 @@ onBeforeUnmount(() => {
     <div v-show="activeTab === 'backup'" class="grid grid-cols-1 gap-4 xl:grid-cols-2">
       <el-card>
         <template #header><span class="text-lg font-semibold">备份与恢复</span></template>
+        <el-alert :title="backupScopeText" type="info" show-icon :closable="false" class="mb-3" />
         <div class="space-y-3">
           <el-button type="primary" @click="onBackup">下载备份</el-button>
           <el-button @click="downloadInspectionBundle">导出一键巡检包</el-button>
-          <el-upload :auto-upload="false" :show-file-list="false" accept=".gz" :on-change="onRestore" :disabled="restoreLoading">
+          <el-upload :auto-upload="false" :show-file-list="false" accept=".gz" :on-change="onRestore" :disabled="restoreLoading || !editMode">
             <el-button>恢复数据</el-button>
           </el-upload>
         </div>
@@ -575,7 +634,7 @@ onBeforeUnmount(() => {
       <el-card>
         <template #header><span class="text-lg font-semibold">备份可恢复性演练</span></template>
         <div class="space-y-3">
-          <el-button :loading="drillLoading" @click="runBackupDrill">执行备份演练</el-button>
+          <el-button :disabled="!editMode" :loading="drillLoading" @click="runBackupDrill">执行备份演练</el-button>
           <el-button :loading="drillReportsLoading" @click="loadDrillReports">刷新演练记录</el-button>
         </div>
         <el-table :data="drillReports" class="mt-3 np-borderless-table" height="260">
@@ -609,6 +668,11 @@ onBeforeUnmount(() => {
         <div class="rounded-lg bg-slate-50 p-3">最新事件时间：<b>{{ opsSummary.last_event_at || "-" }}</b></div>
         <div class="rounded-lg bg-slate-50 p-3">最新审计时间：<b>{{ opsSummary.last_audit_at || "-" }}</b></div>
       </div>
+    </el-card>
+
+    <el-card v-show="activeTab === 'systemInfo'">
+      <template #header><span class="text-lg font-semibold">系统信息</span></template>
+      <PhaseRoadmap />
     </el-card>
 
     <el-dialog v-model="opsDetailVisible" :title="opsDetailTitle" width="960">
