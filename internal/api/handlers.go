@@ -188,6 +188,9 @@ type addDeviceRequest struct {
 	V3PrivProtocol  string `json:"v3_priv_protocol"`
 	V3PrivPassword  string `json:"v3_priv_password"`
 	V3SecurityLevel string `json:"v3_security_level"`
+	PollIntervalSec int    `json:"poll_interval_sec"`
+	CPUThreshold    float64 `json:"cpu_threshold"`
+	MemThreshold    float64 `json:"mem_threshold"`
 	Remark          string `json:"remark"`
 }
 
@@ -238,6 +241,9 @@ type updateDeviceRequest struct {
 	Brand           string `json:"brand"`
 	Remark          string `json:"remark"`
 	MaintenanceMode bool   `json:"maintenance_mode"`
+	PollIntervalSec int    `json:"poll_interval_sec"`
+	CPUThreshold    float64 `json:"cpu_threshold"`
+	MemThreshold    float64 `json:"mem_threshold"`
 }
 
 type updateInterfaceRequest struct {
@@ -260,6 +266,24 @@ func (h *Handler) handlePrecheckDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.SNMPPort <= 0 {
 		req.SNMPPort = 161
+	}
+	if req.PollIntervalSec < 0 {
+		req.PollIntervalSec = 0
+	}
+	if req.PollIntervalSec > 3600 {
+		req.PollIntervalSec = 3600
+	}
+	if req.CPUThreshold < 0 {
+		req.CPUThreshold = 0
+	}
+	if req.CPUThreshold > 100 {
+		req.CPUThreshold = 100
+	}
+	if req.MemThreshold < 0 {
+		req.MemThreshold = 0
+	}
+	if req.MemThreshold > 100 {
+		req.MemThreshold = 100
 	}
 	if err := validateSNMPRequest(req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -318,7 +342,13 @@ func (h *Handler) handleListDevices(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleGlobalSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
-	items, err := h.repo.GlobalSearch(r.Context(), q, 120)
+	var ctxDeviceID int64
+	if raw := strings.TrimSpace(r.URL.Query().Get("device_id")); raw != "" {
+		if v, err := strconv.ParseInt(raw, 10, 64); err == nil && v > 0 {
+			ctxDeviceID = v
+		}
+	}
+	items, err := h.repo.GlobalSearch(r.Context(), q, 120, ctxDeviceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -362,7 +392,11 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 		V3AuthProto: req.V3AuthProtocol,
 		V3AuthPass:  req.V3AuthPassword,
 		V3PrivProto: req.V3PrivProtocol,
+		V3PrivPass:  req.V3PrivPassword,
 		V3SecLevel:  req.V3SecurityLevel,
+		PollIntervalSec: req.PollIntervalSec,
+		CPUThreshold: req.CPUThreshold,
+		MemThreshold: req.MemThreshold,
 		Remark:      req.Remark,
 	})
 	if err != nil {
@@ -463,12 +497,33 @@ func (h *Handler) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 	if brand == "" {
 		brand = item.Brand
 	}
+	if req.PollIntervalSec < 0 {
+		req.PollIntervalSec = 0
+	}
+	if req.PollIntervalSec > 3600 {
+		req.PollIntervalSec = 3600
+	}
+	if req.CPUThreshold < 0 {
+		req.CPUThreshold = 0
+	}
+	if req.CPUThreshold > 100 {
+		req.CPUThreshold = 100
+	}
+	if req.MemThreshold < 0 {
+		req.MemThreshold = 0
+	}
+	if req.MemThreshold > 100 {
+		req.MemThreshold = 100
+	}
 	if err := h.repo.UpdateDevice(r.Context(), db.Device{
 		ID:              id,
 		Name:            name,
 		Brand:           brand,
 		Remark:          req.Remark,
 		MaintenanceMode: req.MaintenanceMode,
+		PollIntervalSec: req.PollIntervalSec,
+		CPUThreshold:    req.CPUThreshold,
+		MemThreshold:    req.MemThreshold,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -60,7 +60,7 @@ export const useOpsStore = defineStore("ops", {
         this.loadingAlerts = false;
       }
     },
-    async runGlobalSearch(q) {
+    async runGlobalSearch(q, ctx = {}) {
       const kw = String(q || "").trim();
       if (!kw) {
         this.globalSearchResults = [];
@@ -68,7 +68,9 @@ export const useOpsStore = defineStore("ops", {
       }
       this.searchReqSeq += 1;
       const reqId = this.searchReqSeq;
-      const res = await api.globalSearch(kw);
+      const params = {};
+      if (Number(ctx.deviceId) > 0) params.device_id = Number(ctx.deviceId);
+      const res = await api.globalSearch(kw, { params });
       if (reqId !== this.searchReqSeq) return this.globalSearchResults;
       this.globalSearchResults = res.data || [];
       return this.globalSearchResults;

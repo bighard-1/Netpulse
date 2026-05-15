@@ -114,7 +114,8 @@ export const api = {
     return http.get("/devices");
   },
   globalSearch(q, options = {}) {
-    return http.get("/search", { params: { q }, ...options });
+    const params = { q, ...(options?.params || {}) };
+    return http.get("/search", { ...options, params });
   },
   async getDeviceById(id) {
     const res = await http.get(`/devices/${id}`);
@@ -138,9 +139,13 @@ export const api = {
   updateInterfaceProfile(id, payload) {
     return http.put(`/interfaces/${id}`, payload);
   },
-  getHistory(type, id, start, end, interval = "") {
+  getHistory(type, id, start, end, interval = "", maxPoints = 0) {
+    const params = { type, id, start, end, interval };
+    if (Number(maxPoints) > 0) {
+      params.max_points = Number(maxPoints);
+    }
     return http.get("/metrics/history", {
-      params: { type, id, start, end, interval }
+      params
     });
   },
   precheckDevice(payload) {

@@ -19,6 +19,7 @@ import (
 const bootstrapSchemaSQL = `
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version BIGINT PRIMARY KEY,
@@ -42,11 +43,17 @@ CREATE TABLE IF NOT EXISTS devices (
     v3_priv_password VARCHAR(256),
     v3_security_level VARCHAR(32),
     maintenance_mode BOOLEAN NOT NULL DEFAULT FALSE,
+    poll_interval_sec INTEGER NOT NULL DEFAULT 0,
+    cpu_threshold NUMERIC(6,2) NOT NULL DEFAULT 0,
+    mem_threshold NUMERIC(6,2) NOT NULL DEFAULT 0,
     remark TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS template_id BIGINT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS poll_interval_sec INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS cpu_threshold NUMERIC(6,2) NOT NULL DEFAULT 0;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS mem_threshold NUMERIC(6,2) NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS interfaces (
     id BIGSERIAL PRIMARY KEY,
@@ -63,6 +70,13 @@ CREATE TABLE IF NOT EXISTS interfaces (
 ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS custom_name VARCHAR(128);
 ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS speed_mbps INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS oper_status SMALLINT;
+
+CREATE INDEX IF NOT EXISTS idx_devices_name_trgm ON devices USING GIN (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_devices_ip_trgm ON devices USING GIN ((host(ip)) gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_devices_remark_trgm ON devices USING GIN (remark gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_interfaces_name_trgm ON interfaces USING GIN (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_interfaces_custom_name_trgm ON interfaces USING GIN (custom_name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_interfaces_remark_trgm ON interfaces USING GIN (remark gin_trgm_ops);
 
 CREATE TABLE IF NOT EXISTS metrics (
     ts TIMESTAMPTZ NOT NULL,
@@ -716,6 +730,9 @@ type Device struct {
 	V3PrivPass      string    `json:"-"`
 	V3SecLevel      string    `json:"v3_security_level,omitempty"`
 	MaintenanceMode bool      `json:"maintenance_mode"`
+	PollIntervalSec int       `json:"poll_interval_sec,omitempty"`
+	CPUThreshold    float64   `json:"cpu_threshold,omitempty"`
+	MemThreshold    float64   `json:"mem_threshold,omitempty"`
 	StorageUsage    float64   `json:"storage_usage,omitempty"`
 	StorageTotal    float64   `json:"storage_total,omitempty"`
 	StorageFree     float64   `json:"storage_free,omitempty"`
@@ -881,14 +898,27 @@ type BackupDrillReport struct {
 }
 
 type GlobalSearchResult struct {
-	Category string `json:"category"`
-	ID       int64  `json:"id"`
-	Title    string `json:"title"`
-	Sub      string `json:"sub"`
+	Category            string `json:"category"`
+	ID                  int64  `json:"id"`
+	Title               string `json:"title"`
+	Sub                 string `json:"sub"`
+	Type                string `json:"type"`
+	DeviceID            int64  `json:"device_id,omitempty"`
+	InterfaceID         int64  `json:"interface_id,omitempty"`
+	DeviceName          string `json:"device_name,omitempty"`
+	DeviceIP            string `json:"device_ip,omitempty"`
+	InterfaceName       string `json:"interface_name,omitempty"`
+	InterfaceCustomName string `json:"interface_custom_name,omitempty"`
+	InterfaceRemark     string `json:"interface_remark,omitempty"`
+	MatchField          string `json:"match_field,omitempty"`
+	Snippet             string `json:"snippet,omitempty"`
 }
 
 type RuntimeSettings struct {
 	SNMPPollIntervalSec   int     `json:"snmp_poll_interval_sec"`
+	PollIntervalCoreSec   int     `json:"poll_interval_core_sec"`
+	PollIntervalAggSec    int     `json:"poll_interval_agg_sec"`
+	PollIntervalAccessSec int     `json:"poll_interval_access_sec"`
 	SNMPDeviceTimeoutSec  int     `json:"snmp_device_timeout_sec"`
 	StatusOnlineWindowSec int     `json:"status_online_window_sec"`
 	AlertCPUThreshold     float64 `json:"alert_cpu_threshold"`
@@ -1086,6 +1116,9 @@ func (r *Repository) GetRuntimeSettings(ctx context.Context) (RuntimeSettings, e
 	}
 	out := RuntimeSettings{
 		SNMPPollIntervalSec:   parseIntSetting(kv["snmp_poll_interval_sec"], 60),
+		PollIntervalCoreSec:   parseIntSetting(kv["poll_interval_core_sec"], 60),
+		PollIntervalAggSec:    parseIntSetting(kv["poll_interval_agg_sec"], 90),
+		PollIntervalAccessSec: parseIntSetting(kv["poll_interval_access_sec"], 120),
 		SNMPDeviceTimeoutSec:  parseIntSetting(kv["snmp_device_timeout_sec"], 15),
 		StatusOnlineWindowSec: parseIntSetting(kv["status_online_window_sec"], 300),
 		AlertCPUThreshold:     parseFloatSetting(kv["alert_cpu_threshold"], 90),
@@ -1098,6 +1131,24 @@ func (r *Repository) GetRuntimeSettings(ctx context.Context) (RuntimeSettings, e
 	}
 	if out.SNMPPollIntervalSec > 3600 {
 		out.SNMPPollIntervalSec = 3600
+	}
+	if out.PollIntervalCoreSec < 5 {
+		out.PollIntervalCoreSec = out.SNMPPollIntervalSec
+	}
+	if out.PollIntervalCoreSec > 3600 {
+		out.PollIntervalCoreSec = 3600
+	}
+	if out.PollIntervalAggSec < 5 {
+		out.PollIntervalAggSec = out.SNMPPollIntervalSec
+	}
+	if out.PollIntervalAggSec > 3600 {
+		out.PollIntervalAggSec = 3600
+	}
+	if out.PollIntervalAccessSec < 5 {
+		out.PollIntervalAccessSec = out.SNMPPollIntervalSec
+	}
+	if out.PollIntervalAccessSec > 3600 {
+		out.PollIntervalAccessSec = 3600
 	}
 	if out.SNMPDeviceTimeoutSec < 2 {
 		out.SNMPDeviceTimeoutSec = 2
@@ -1238,6 +1289,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 		       COALESCE(d.v3_username,''), COALESCE(d.v3_auth_protocol,''), COALESCE(d.v3_auth_password,''),
 		       COALESCE(d.v3_priv_protocol,''), COALESCE(d.v3_priv_password,''), COALESCE(d.v3_security_level,''),
 		       COALESCE(d.maintenance_mode, FALSE),
+		       COALESCE(d.poll_interval_sec,0), COALESCE(d.cpu_threshold,0), COALESCE(d.mem_threshold,0),
 		       COALESCE(d.remark, ''), d.created_at, lm.last_ts, COALESCE(dl.message, ''), COALESCE(lm2.uptime_sec, 0)
 		FROM devices d
 		LEFT JOIN (
@@ -1266,6 +1318,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 		&ds.ID, &ds.IP, &ds.Name, &ds.TemplateID, &ds.Brand, &ds.Community, &ds.SNMPVersion, &ds.SNMPPort,
 		&ds.V3Username, &ds.V3AuthProto, &ds.V3AuthPass, &ds.V3PrivProto, &ds.V3PrivPass, &ds.V3SecLevel,
 		&ds.MaintenanceMode,
+		&ds.PollIntervalSec, &ds.CPUThreshold, &ds.MemThreshold,
 		&ds.Remark, &ds.CreatedAt, &ds.LastMetricAt, &ds.StatusReason, &ds.UptimeSec,
 	); err != nil {
 		if err == sql.ErrNoRows {
@@ -1334,15 +1387,15 @@ func (r *Repository) AddDevice(ctx context.Context, d Device) (int64, error) {
 		INSERT INTO devices (
 			ip, name, template_id, brand, community, snmp_version, snmp_port,
 			v3_username, v3_auth_protocol, v3_auth_password, v3_priv_protocol, v3_priv_password, v3_security_level, maintenance_mode,
-			remark
+			poll_interval_sec, cpu_threshold, mem_threshold, remark
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		RETURNING id;
 	`
 	var id int64
 	if err := r.db.QueryRowContext(
 		ctx, q, d.IP, d.Name, d.TemplateID, d.Brand, d.Community, d.SNMPVersion, d.SNMPPort, d.V3Username, d.V3AuthProto,
-		d.V3AuthPass, d.V3PrivProto, d.V3PrivPass, d.V3SecLevel, d.MaintenanceMode, d.Remark,
+		d.V3AuthPass, d.V3PrivProto, d.V3PrivPass, d.V3SecLevel, d.MaintenanceMode, d.PollIntervalSec, d.CPUThreshold, d.MemThreshold, d.Remark,
 	).Scan(&id); err != nil {
 		return 0, fmt.Errorf("add device: %w", err)
 	}
@@ -1363,6 +1416,7 @@ func (r *Repository) ListDevices(ctx context.Context) ([]Device, error) {
 		       COALESCE(v3_username,''), COALESCE(v3_auth_protocol,''), COALESCE(v3_auth_password,''),
 		       COALESCE(v3_priv_protocol,''), COALESCE(v3_priv_password,''), COALESCE(v3_security_level,''),
 		       COALESCE(maintenance_mode,FALSE),
+		       COALESCE(poll_interval_sec,0), COALESCE(cpu_threshold,0), COALESCE(mem_threshold,0),
 		       COALESCE(remark, ''), created_at
 		FROM devices
 		ORDER BY id;
@@ -1376,7 +1430,7 @@ func (r *Repository) ListDevices(ctx context.Context) ([]Device, error) {
 	out := make([]Device, 0)
 	for rows.Next() {
 		var d Device
-		if err := rows.Scan(&d.ID, &d.IP, &d.Name, &d.TemplateID, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.MaintenanceMode, &d.Remark, &d.CreatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.IP, &d.Name, &d.TemplateID, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.MaintenanceMode, &d.PollIntervalSec, &d.CPUThreshold, &d.MemThreshold, &d.Remark, &d.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan device: %w", err)
 		}
 		d.Community = r.decryptOpt(d.Community)
@@ -1683,9 +1737,9 @@ func (r *Repository) DeleteTopologyLink(ctx context.Context, id int64) error {
 }
 
 func (r *Repository) FindDeviceByIP(ctx context.Context, ip string) (*Device, error) {
-	const q = `SELECT id, host(ip), COALESCE(name, host(ip)), template_id, brand, community, snmp_version, snmp_port, COALESCE(v3_username,''), COALESCE(v3_auth_protocol,''), COALESCE(v3_auth_password,''), COALESCE(v3_priv_protocol,''), COALESCE(v3_priv_password,''), COALESCE(v3_security_level,''), COALESCE(remark,''), created_at FROM devices WHERE ip = $1::inet LIMIT 1;`
+	const q = `SELECT id, host(ip), COALESCE(name, host(ip)), template_id, brand, community, snmp_version, snmp_port, COALESCE(v3_username,''), COALESCE(v3_auth_protocol,''), COALESCE(v3_auth_password,''), COALESCE(v3_priv_protocol,''), COALESCE(v3_priv_password,''), COALESCE(v3_security_level,''), COALESCE(maintenance_mode,FALSE), COALESCE(poll_interval_sec,0), COALESCE(cpu_threshold,0), COALESCE(mem_threshold,0), COALESCE(remark,''), created_at FROM devices WHERE ip = $1::inet LIMIT 1;`
 	var d Device
-	if err := r.db.QueryRowContext(ctx, q, ip).Scan(&d.ID, &d.IP, &d.Name, &d.TemplateID, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.Remark, &d.CreatedAt); err != nil {
+	if err := r.db.QueryRowContext(ctx, q, ip).Scan(&d.ID, &d.IP, &d.Name, &d.TemplateID, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.MaintenanceMode, &d.PollIntervalSec, &d.CPUThreshold, &d.MemThreshold, &d.Remark, &d.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -1727,7 +1781,7 @@ func (r *Repository) ListBackupDrillReports(ctx context.Context, limit int) ([]B
 	return out, rows.Err()
 }
 
-func (r *Repository) GlobalSearch(ctx context.Context, q string, limit int) ([]GlobalSearchResult, error) {
+func (r *Repository) GlobalSearch(ctx context.Context, q string, limit int, ctxDeviceID int64) ([]GlobalSearchResult, error) {
 	kw := "%" + strings.TrimSpace(q) + "%"
 	if strings.TrimSpace(q) == "" {
 		return []GlobalSearchResult{}, nil
@@ -1737,15 +1791,60 @@ func (r *Repository) GlobalSearch(ctx context.Context, q string, limit int) ([]G
 	}
 	const sqlq = `
 		WITH dev AS (
-			SELECT 'device' AS category, d.id, COALESCE(d.name, host(d.ip)) AS title,
-			       ('IP='||host(d.ip)||' 品牌='||d.brand||' 备注='||COALESCE(d.remark,'')) AS sub
+			SELECT
+				'device'::text AS category,
+				d.id::bigint AS id,
+				COALESCE(d.name, host(d.ip)) AS title,
+				('IP='||host(d.ip)||' 品牌='||d.brand||' 备注='||COALESCE(d.remark,'')) AS sub,
+				'device'::text AS type,
+				d.id::bigint AS device_id,
+				NULL::bigint AS interface_id,
+				COALESCE(d.name, host(d.ip)) AS device_name,
+				host(d.ip) AS device_ip,
+				NULL::text AS interface_name,
+				NULL::text AS interface_custom_name,
+				NULL::text AS interface_remark,
+				CASE
+					WHEN COALESCE(d.name,'') ILIKE $1 THEN 'device_name'
+					WHEN host(d.ip) ILIKE $1 THEN 'device_ip'
+					WHEN COALESCE(d.remark,'') ILIKE $1 THEN 'device_remark'
+					ELSE 'device_brand'
+				END AS match_field,
+				COALESCE(d.remark,'') AS snippet,
+				CASE WHEN $3 > 0 AND d.id = $3 THEN 0 ELSE 1 END AS priority_scope,
+				similarity(COALESCE(d.name, host(d.ip)), $4) AS sim
 			FROM devices d
 			WHERE host(d.ip) ILIKE $1 OR COALESCE(d.name,'') ILIKE $1 OR d.brand ILIKE $1 OR COALESCE(d.remark,'') ILIKE $1
-			LIMIT $2
 		),
-		ifs AS (
-			SELECT 'interface' AS category, i.id, COALESCE(NULLIF(i.custom_name,''), i.name) AS title,
-			       ('设备='||COALESCE(d.name,host(d.ip))||' ifIndex='||i."index"||' 备注='||COALESCE(i.remark,'')) AS sub
+		ports AS (
+			SELECT
+				'interface'::text AS category,
+				i.id::bigint AS id,
+				COALESCE(NULLIF(i.custom_name,''), i.name) AS title,
+				('设备='||COALESCE(d.name,host(d.ip))||' ifIndex='||i."index"||' 备注='||COALESCE(i.remark,'')) AS sub,
+				'port'::text AS type,
+				d.id::bigint AS device_id,
+				i.id::bigint AS interface_id,
+				COALESCE(d.name, host(d.ip)) AS device_name,
+				host(d.ip) AS device_ip,
+				i.name AS interface_name,
+				COALESCE(i.custom_name,'') AS interface_custom_name,
+				COALESCE(i.remark,'') AS interface_remark,
+				CASE
+					WHEN COALESCE(i.custom_name,'') ILIKE $1 THEN 'port_custom_name'
+					WHEN i.name ILIKE $1 THEN 'port_name'
+					WHEN COALESCE(i.remark,'') ILIKE $1 THEN 'port_remark'
+					WHEN COALESCE(d.name,'') ILIKE $1 THEN 'device_name'
+					ELSE 'device_ip'
+				END AS match_field,
+				COALESCE(i.remark,'') AS snippet,
+				CASE WHEN $3 > 0 AND d.id = $3 THEN 0 ELSE 1 END AS priority_scope,
+				GREATEST(
+					similarity(i.name, $4),
+					similarity(COALESCE(i.custom_name,''), $4),
+					similarity(COALESCE(d.name,''), $4),
+					similarity(host(d.ip), $4)
+				) AS sim
 			FROM interfaces i
 			JOIN devices d ON d.id=i.device_id
 			WHERE i.name ILIKE $1
@@ -1753,35 +1852,20 @@ func (r *Repository) GlobalSearch(ctx context.Context, q string, limit int) ([]G
 			   OR COALESCE(i.remark,'') ILIKE $1
 			   OR host(d.ip) ILIKE $1
 			   OR COALESCE(d.name,'') ILIKE $1
-			LIMIT $2
 		),
-		logs AS (
-			SELECT 'device_log' AS category, l.id, LEFT(l.message, 64) AS title,
-			       ('设备='||COALESCE(d.name,host(d.ip))||' 时间='||to_char(l.created_at,'YYYY-MM-DD HH24:MI:SS')) AS sub
-			FROM device_logs l
-			JOIN devices d ON d.id=l.device_id
-			WHERE l.message ILIKE $1 OR l.level ILIKE $1 OR host(d.ip) ILIKE $1 OR COALESCE(d.name,'') ILIKE $1
-			ORDER BY l.created_at DESC
-			LIMIT $2
-		),
-		audits AS (
-			SELECT 'audit_log' AS category, a.id, LEFT(COALESCE(a.action,''), 64) AS title,
-			       (COALESCE(a.path,'')||' '||COALESCE(a.target,'')) AS sub
-			FROM audit_logs a
-			WHERE COALESCE(a.action,'') ILIKE $1 OR COALESCE(a.path,'') ILIKE $1 OR COALESCE(a.target,'') ILIKE $1
-			ORDER BY a.ts DESC
-			LIMIT $2
+		all_hits AS (
+			SELECT * FROM dev
+			UNION ALL
+			SELECT * FROM ports
 		)
-		SELECT category, id, title, sub FROM dev
-		UNION ALL
-		SELECT category, id, title, sub FROM ifs
-		UNION ALL
-		SELECT category, id, title, sub FROM logs
-		UNION ALL
-		SELECT category, id, title, sub FROM audits
+		SELECT
+			category, id, title, sub, type, device_id, interface_id, device_name, device_ip,
+			interface_name, interface_custom_name, interface_remark, match_field, snippet
+		FROM all_hits
+		ORDER BY priority_scope ASC, device_name ASC, category ASC, sim DESC, id DESC
 		LIMIT $2;
 	`
-	rows, err := r.db.QueryContext(ctx, sqlq, kw, limit)
+	rows, err := r.db.QueryContext(ctx, sqlq, kw, limit, ctxDeviceID, strings.TrimSpace(q))
 	if err != nil {
 		return nil, err
 	}
@@ -1789,7 +1873,11 @@ func (r *Repository) GlobalSearch(ctx context.Context, q string, limit int) ([]G
 	out := []GlobalSearchResult{}
 	for rows.Next() {
 		var x GlobalSearchResult
-		if err := rows.Scan(&x.Category, &x.ID, &x.Title, &x.Sub); err != nil {
+		if err := rows.Scan(
+			&x.Category, &x.ID, &x.Title, &x.Sub, &x.Type, &x.DeviceID, &x.InterfaceID,
+			&x.DeviceName, &x.DeviceIP, &x.InterfaceName, &x.InterfaceCustomName, &x.InterfaceRemark,
+			&x.MatchField, &x.Snippet,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, x)
@@ -1808,6 +1896,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		       COALESCE(d.v3_username,''), COALESCE(d.v3_auth_protocol,''), COALESCE(d.v3_auth_password,''),
 		       COALESCE(d.v3_priv_protocol,''), COALESCE(d.v3_priv_password,''), COALESCE(d.v3_security_level,''),
 		       COALESCE(d.maintenance_mode,FALSE),
+		       COALESCE(d.poll_interval_sec,0), COALESCE(d.cpu_threshold,0), COALESCE(d.mem_threshold,0),
 		       COALESCE(d.remark, ''), d.created_at, lm.last_ts, COALESCE(dl.message, ''),
 		       COALESCE(lm2.storage_usage, 0), COALESCE(lm2.storage_total, 0), COALESCE(lm2.storage_free, 0), COALESCE(lm2.uptime_sec, 0)
 		FROM devices d
@@ -1846,6 +1935,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 			&ds.ID, &ds.IP, &ds.Name, &ds.TemplateID, &ds.Brand, &ds.Community, &ds.SNMPVersion, &ds.SNMPPort,
 			&ds.V3Username, &ds.V3AuthProto, &ds.V3AuthPass, &ds.V3PrivProto, &ds.V3PrivPass, &ds.V3SecLevel,
 			&ds.MaintenanceMode,
+			&ds.PollIntervalSec, &ds.CPUThreshold, &ds.MemThreshold,
 			&ds.Remark, &ds.CreatedAt, &ds.LastMetricAt, &ds.StatusReason,
 			&ds.StorageUsage, &ds.StorageTotal, &ds.StorageFree, &ds.UptimeSec,
 		); err != nil {
@@ -2180,10 +2270,13 @@ func (r *Repository) UpdateDevice(ctx context.Context, d Device) error {
 		SET name = $2,
 		    brand = $3,
 		    remark = $4,
-		    maintenance_mode = $5
+		    maintenance_mode = $5,
+		    poll_interval_sec = $6,
+		    cpu_threshold = $7,
+		    mem_threshold = $8
 		WHERE id = $1;
 	`
-	if _, err := r.db.ExecContext(ctx, q, d.ID, strings.TrimSpace(d.Name), strings.TrimSpace(d.Brand), d.Remark, d.MaintenanceMode); err != nil {
+	if _, err := r.db.ExecContext(ctx, q, d.ID, strings.TrimSpace(d.Name), strings.TrimSpace(d.Brand), d.Remark, d.MaintenanceMode, d.PollIntervalSec, d.CPUThreshold, d.MemThreshold); err != nil {
 		return fmt.Errorf("update device: %w", err)
 	}
 	return nil
@@ -2568,8 +2661,14 @@ func resolveHistoryBucketInterval(span time.Duration, requested string, maxPoint
 	switch requested {
 	case "1m":
 		return "1 minute"
+	case "2m":
+		return "2 minutes"
 	case "5m":
 		return "5 minutes"
+	case "10m":
+		return "10 minutes"
+	case "30m":
+		return "30 minutes"
 	case "1h":
 		return "1 hour"
 	}

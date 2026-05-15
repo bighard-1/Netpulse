@@ -29,6 +29,12 @@ const permValues = ref([]);
 const permissionCatalog = [
   "device.read", "device.write", "metrics.read", "logs.read"
 ];
+const permissionLabels = {
+  "device.read": "资产读取",
+  "device.write": "资产编辑",
+  "metrics.read": "监控指标读取",
+  "logs.read": "日志读取"
+};
 
 const quickSearchVisible = ref(false);
 const quickSearchKeyword = ref("");
@@ -38,10 +44,17 @@ let quickSearchDebounce = null;
 let authExpiredNoticeAt = 0;
 const quickPinned = ref(JSON.parse(localStorage.getItem("np_quick_pinned") || "[]"));
 const quickRecent = ref(JSON.parse(localStorage.getItem("np_quick_recent") || "[]"));
+const editMode = ref(localStorage.getItem("np_edit_mode") === "1");
+let idleTimer = null;
+const IDLE_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 const filteredSearchResults = computed(() => {
   const list = ops.globalSearchResults || [];
   if (quickSearchCategory.value === "all") return list;
   return list.filter((x) => String(x.category || "").toLowerCase() === quickSearchCategory.value);
+});
+const quickSearchContextDeviceId = computed(() => {
+  const m = String(route.path || "").match(/^\/device\/(\d+)$/);
+  return m ? Number(m[1]) : 0;
 });
 
 const pageTitle = computed(() => String(route.meta?.title || zhCN.app.title));
@@ -108,6 +121,29 @@ function logout() {
   router.push("/dashboard");
 }
 
+function permissionLabel(key) {
+  return permissionLabels[key] || key;
+}
+
+function toggleEditMode() {
+  editMode.value = !editMode.value;
+  localStorage.setItem("np_edit_mode", editMode.value ? "1" : "0");
+  window.dispatchEvent(new CustomEvent("np-edit-mode", { detail: { enabled: editMode.value } }));
+  fb.success(editMode.value ? "已进入编辑模式" : "已退出编辑模式");
+}
+
+function resetIdleTimer() {
+  if (!auth.isAuthed) return;
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    auth.logout();
+    loginVisible.value = true;
+    loginForm.value = { username: "", password: "" };
+    router.push("/dashboard");
+    fb.warn("已超过3小时无操作，已自动退出登录");
+  }, IDLE_TIMEOUT_MS);
+}
+
 function onResize() {
   isMobile.value = window.innerWidth < 960;
   if (!isMobile.value) sidebarOpen.value = true;
@@ -129,6 +165,7 @@ async function openUsers() {
 }
 
 async function createUser() {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先开启编辑模式");
   try {
     await api.createUser(addUserForm.value);
     fb.success("用户已创建");
@@ -146,6 +183,7 @@ function openEditUser(row) {
 }
 
 async function saveEditUser() {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先开启编辑模式");
   try {
     await api.updateUser(editUserForm.value.id, {
       username: editUserForm.value.username,
@@ -162,6 +200,7 @@ async function saveEditUser() {
 }
 
 async function deleteUser(row) {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先开启编辑模式");
   try {
     await api.deleteUser(row.id);
     fb.success("用户已删除");
@@ -184,6 +223,7 @@ async function openPerms(row) {
 }
 
 async function savePerms() {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先开启编辑模式");
   try {
     if (!permUser.value?.id) return;
     await api.setUserPermissions(permUser.value.id, permValues.value);
@@ -197,7 +237,7 @@ async function savePerms() {
 async function runQuickSearch() {
   quickSearchLoading.value = true;
   try {
-    await ops.runGlobalSearch(quickSearchKeyword.value);
+    await ops.runGlobalSearch(quickSearchKeyword.value, { deviceId: quickSearchContextDeviceId.value });
   } catch (err) {
     fb.apiError(err, "全局搜索失败");
   } finally {
@@ -231,6 +271,12 @@ function goSearchResult(item) {
   quickSearchVisible.value = false;
 }
 
+function openSearchChart(item) {
+  if (item?.category !== "interface" || !item?.id) return;
+  router.push(`/port/${item.id}`);
+  quickSearchVisible.value = false;
+}
+
 function togglePin(item) {
   const exists = quickPinned.value.find((x) => x.category === item.category && x.id === item.id);
   if (exists) {
@@ -261,6 +307,10 @@ onMounted(() => {
   window.addEventListener("resize", onResize);
   window.addEventListener("keydown", onGlobalKeydown);
   window.addEventListener("netpulse-auth-expired", onAuthExpired);
+  ["mousemove", "mousedown", "keydown", "touchstart", "scroll"].forEach((evt) => {
+    window.addEventListener(evt, resetIdleTimer, { passive: true });
+  });
+  resetIdleTimer();
 });
 
 watch(quickSearchKeyword, () => {
@@ -271,11 +321,23 @@ watch(quickSearchKeyword, () => {
   }, 260);
 });
 
+watch(
+  () => auth.isAuthed,
+  (ok) => {
+    if (!ok && idleTimer) clearTimeout(idleTimer);
+    if (ok) resetIdleTimer();
+  }
+);
+
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
   window.removeEventListener("keydown", onGlobalKeydown);
   window.removeEventListener("netpulse-auth-expired", onAuthExpired);
   if (quickSearchDebounce) clearTimeout(quickSearchDebounce);
+  if (idleTimer) clearTimeout(idleTimer);
+  ["mousemove", "mousedown", "keydown", "touchstart", "scroll"].forEach((evt) => {
+    window.removeEventListener(evt, resetIdleTimer);
+  });
 });
 </script>
 
@@ -294,7 +356,10 @@ onBeforeUnmount(() => {
       <div class="mt-auto border-t border-white/10 px-4 py-4">
         <div class="text-xs text-slate-400">当前用户</div>
         <div class="mt-1 text-sm text-slate-100">{{ currentUser?.username || "未登录" }}</div>
-        <div class="mt-3 flex gap-2">
+        <div class="mt-3 grid grid-cols-2 gap-2">
+          <el-button v-if="isAdmin" size="small" :type="editMode ? 'warning' : 'primary'" plain @click="toggleEditMode">
+            {{ editMode ? "退出编辑模式" : "进入编辑模式" }}
+          </el-button>
           <el-tooltip v-if="!isAdmin" content="仅管理员可管理用户" placement="top">
             <el-button size="small" disabled>用户管理</el-button>
           </el-tooltip>
@@ -333,6 +398,9 @@ onBeforeUnmount(() => {
     </el-dialog>
 
     <el-dialog v-model="quickSearchVisible" title="全局搜索 (Ctrl+K)" width="760">
+      <div v-if="quickSearchContextDeviceId > 0" class="mb-2 text-xs text-indigo-500">
+        当前在设备详情页：已优先展示该设备下的端口结果
+      </div>
       <div class="mb-3">
         <div class="mb-1 text-xs text-slate-500">已收藏</div>
         <div class="flex flex-wrap gap-2">
@@ -373,27 +441,42 @@ onBeforeUnmount(() => {
             <el-button text @click.stop="togglePin(row)">{{ isPinned(row) ? "取消" : "收藏" }}</el-button>
           </template>
         </el-table-column>
+        <el-table-column label="快捷" width="130">
+          <template #default="{ row }">
+            <el-button
+              v-if="row.category === 'interface'"
+              type="primary"
+              link
+              @click.stop="openSearchChart(row)"
+            >
+              快速查看图表
+            </el-button>
+            <span v-else class="text-xs text-slate-400">-</span>
+          </template>
+        </el-table-column>
       </el-table>
     </el-dialog>
 
     <el-dialog v-model="usersVisible" title="用户管理" width="860">
       <div class="mb-3 grid grid-cols-3 gap-2">
-        <el-input v-model="addUserForm.username" placeholder="用户名" />
-        <el-input v-model="addUserForm.password" placeholder="密码" show-password />
+        <el-input v-model="addUserForm.username" placeholder="用户名" :disabled="!editMode" />
+        <el-input v-model="addUserForm.password" placeholder="密码" show-password :disabled="!editMode" />
         <div class="flex gap-2">
-          <el-select v-model="addUserForm.role"><el-option value="user" label="普通用户" /><el-option value="admin" label="管理员" /></el-select>
-          <el-button type="primary" @click="createUser">创建</el-button>
+          <el-select v-model="addUserForm.role" :disabled="!editMode"><el-option value="user" label="普通用户" /><el-option value="admin" label="管理员" /></el-select>
+          <el-button type="primary" :disabled="!editMode" @click="createUser">创建</el-button>
         </div>
       </div>
       <el-table :data="users">
         <el-table-column prop="id" label="ID" width="80" />
         <el-table-column prop="username" label="用户名" />
-        <el-table-column prop="role" label="角色" width="120" />
+        <el-table-column label="角色" width="120">
+          <template #default="{ row }">{{ row.role === "admin" ? "管理员" : "普通用户" }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="260">
           <template #default="{ row }">
-            <el-button type="primary" text @click="openEditUser(row)">编辑</el-button>
-            <el-button type="warning" text @click="openPerms(row)">权限</el-button>
-            <el-button type="danger" text @click="deleteUser(row)">删除</el-button>
+            <el-button type="primary" text :disabled="!editMode" @click="openEditUser(row)">编辑</el-button>
+            <el-button type="warning" text :disabled="!editMode" @click="openPerms(row)">权限</el-button>
+            <el-button type="danger" text :disabled="!editMode" @click="deleteUser(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -401,10 +484,10 @@ onBeforeUnmount(() => {
 
     <el-dialog v-model="editUserVisible" title="编辑用户" width="480">
       <el-form label-position="top">
-        <el-form-item label="用户名"><el-input v-model="editUserForm.username" /></el-form-item>
-        <el-form-item label="新密码（可空）"><el-input v-model="editUserForm.password" show-password /></el-form-item>
+        <el-form-item label="用户名"><el-input v-model="editUserForm.username" :disabled="!editMode" /></el-form-item>
+        <el-form-item label="新密码（可空）"><el-input v-model="editUserForm.password" show-password :disabled="!editMode" /></el-form-item>
         <el-form-item label="角色">
-          <el-select v-model="editUserForm.role" class="w-full">
+          <el-select v-model="editUserForm.role" class="w-full" :disabled="!editMode">
             <el-option value="user" label="普通用户" />
             <el-option value="admin" label="管理员" />
           </el-select>
@@ -412,17 +495,20 @@ onBeforeUnmount(() => {
       </el-form>
       <template #footer>
         <el-button @click="editUserVisible = false">取消</el-button>
-        <el-button type="primary" @click="saveEditUser">保存</el-button>
+        <el-button type="primary" :disabled="!editMode" @click="saveEditUser">保存</el-button>
       </template>
     </el-dialog>
 
     <el-dialog v-model="permVisible" :title="`权限配置 - ${permUser?.username || ''}`" width="520">
       <el-checkbox-group v-model="permValues" class="grid grid-cols-2 gap-2">
-        <el-checkbox v-for="p in permissionCatalog" :key="p" :label="p">{{ p }}</el-checkbox>
+        <el-checkbox v-for="p in permissionCatalog" :key="p" :label="p" :disabled="!editMode">{{ permissionLabel(p) }}</el-checkbox>
       </el-checkbox-group>
+      <div class="mt-3 grid grid-cols-1 gap-1 text-xs text-slate-500">
+        <div v-for="p in permissionCatalog" :key="`hint-${p}`">{{ permissionLabel(p) }}：{{ p }}</div>
+      </div>
       <template #footer>
         <el-button @click="permVisible = false">取消</el-button>
-        <el-button type="primary" @click="savePerms">保存</el-button>
+        <el-button type="primary" :disabled="!editMode" @click="savePerms">保存</el-button>
       </template>
     </el-dialog>
   </div>
