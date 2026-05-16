@@ -58,9 +58,6 @@ type Worker struct {
 
 	lastHealthSnapshot time.Time
 	lastPolled         map[int64]time.Time
-	counterSource      map[string]string
-	hcNoProgress       map[string]int
-	legacyNoProgress   map[string]int
 }
 
 type alertPolicy struct {
@@ -98,28 +95,25 @@ func NewWorker(repo *db.Repository, collector *Collector, interval time.Duration
 		}
 	}
 	return &Worker{
-		repo:             repo,
-		collector:        collector,
-		interval:         interval,
-		pollCore:         interval,
-		pollAgg:          interval,
-		pollAccess:       interval,
-		parallel:         p,
-		deviceTimeout:    time.Duration(timeoutSec) * time.Second,
-		alertWebhook:     os.Getenv("ALERT_WEBHOOK_URL"),
-		cpuThreshold:     cpuTh,
-		memThreshold:     memTh,
-		last:             make(map[string]counterState),
-		ifs:              make(map[int64]string),
-		devUp:            make(map[int64]bool),
-		portUp:           make(map[string]bool),
-		evts:             make(map[string]time.Time),
-		alertMgr:         NewAlertManager(repo, os.Getenv("ALERT_WEBHOOK_URL")),
-		calibration:      loadCalibrationMap(os.Getenv("SNMP_CALIBRATION_MAP")),
-		lastPolled:       make(map[int64]time.Time),
-		counterSource:    make(map[string]string),
-		hcNoProgress:     make(map[string]int),
-		legacyNoProgress: make(map[string]int),
+		repo:          repo,
+		collector:     collector,
+		interval:      interval,
+		pollCore:      interval,
+		pollAgg:       interval,
+		pollAccess:    interval,
+		parallel:      p,
+		deviceTimeout: time.Duration(timeoutSec) * time.Second,
+		alertWebhook:  os.Getenv("ALERT_WEBHOOK_URL"),
+		cpuThreshold:  cpuTh,
+		memThreshold:  memTh,
+		last:          make(map[string]counterState),
+		ifs:           make(map[int64]string),
+		devUp:         make(map[int64]bool),
+		portUp:        make(map[string]bool),
+		evts:          make(map[string]time.Time),
+		alertMgr:      NewAlertManager(repo, os.Getenv("ALERT_WEBHOOK_URL")),
+		calibration:   loadCalibrationMap(os.Getenv("SNMP_CALIBRATION_MAP")),
+		lastPolled:    make(map[int64]time.Time),
 	}
 }
 
@@ -323,8 +317,7 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 
 	mList := make([]db.InterfaceMetric, 0, len(result.Interfaces))
 	for _, itf := range result.Interfaces {
-		inOct, outOct := w.pickCounterSource(d.ID, itf.IfIndex, itf.SpeedMbps, itf.HCInOctets, itf.HCOutOctets, itf.LegacyInOctets, itf.LegacyOutOctets)
-		inBps, outBps := w.calcBps(d.ID, itf.IfIndex, inOct, outOct, result.PolledAt, itf.SpeedMbps, w.pollIntervalForDevice(d))
+		inBps, outBps := w.calcBps(d.ID, itf.IfIndex, itf.InOctets, itf.OutOctets, result.PolledAt, itf.SpeedMbps, w.pollIntervalForDevice(d))
 		w.trackPortState(ctx, d, itf.IfIndex, itf.IfName, itf.OperUp)
 		mList = append(mList, db.InterfaceMetric{
 			IfIndex:       itf.IfIndex,
@@ -771,58 +764,6 @@ func (w *Worker) calcBps(deviceID int64, ifIndex int, inOctets, outOctets uint64
 }
 
 func interfaceKey(deviceID int64, ifIndex int) string { return fmt.Sprintf("%d:%d", deviceID, ifIndex) }
-
-func (w *Worker) pickCounterSource(deviceID int64, ifIndex int, speedMbps int, hcIn, hcOut, legacyIn, legacyOut uint64) (uint64, uint64) {
-	key := interfaceKey(deviceID, ifIndex)
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	src := w.counterSource[key]
-	if src == "" {
-		if speedMbps >= 10000 {
-			src = "hc"
-		} else {
-			src = "auto"
-		}
-	}
-	hcProgress := hcIn > 0 || hcOut > 0
-	legacyProgress := legacyIn > 0 || legacyOut > 0
-	if !hcProgress {
-		w.hcNoProgress[key]++
-	} else {
-		w.hcNoProgress[key] = 0
-	}
-	if !legacyProgress {
-		w.legacyNoProgress[key]++
-	} else {
-		w.legacyNoProgress[key] = 0
-	}
-
-	// High-speed ports: prefer HC, but auto-fallback when HC remains silent while legacy has data.
-	if speedMbps >= 10000 {
-		if src == "hc" && w.hcNoProgress[key] >= 3 && legacyProgress {
-			src = "legacy"
-			delete(w.last, key)
-			log.Printf("counter source switch device=%d ifIndex=%d hc->legacy", deviceID, ifIndex)
-		}
-		if src == "legacy" && hcProgress && w.legacyNoProgress[key] >= 3 {
-			src = "hc"
-			delete(w.last, key)
-			log.Printf("counter source switch device=%d ifIndex=%d legacy->hc", deviceID, ifIndex)
-		}
-		w.counterSource[key] = src
-		if src == "legacy" {
-			return legacyIn, legacyOut
-		}
-		return hcIn, hcOut
-	}
-
-	// Low-speed ports: keep existing near-2x compatibility fallback.
-	in := selectCounterForRate(hcIn, legacyIn, speedMbps)
-	out := selectCounterForRate(hcOut, legacyOut, speedMbps)
-	w.counterSource[key] = "auto"
-	return in, out
-}
 
 func safeDeltaWithDiscontinuity(curr, prev uint64) (uint64, bool) {
 	if curr < prev {

@@ -358,19 +358,21 @@ func (c *Collector) fetchInterfaceMetrics(client *gosnmp.GoSNMP, ifNames map[int
 	merged := make([]InterfaceCounters, 0, len(ifNames))
 	for idx, name := range ifNames {
 		speed := speedMap[idx]
-		hcIn := hcInMap[idx]
-		hcOut := hcOutMap[idx]
-		legacyIn := legacyInMap[idx]
-		legacyOut := legacyOutMap[idx]
+		hcIn, hcInOK := hcInMap[idx]
+		hcOut, hcOutOK := hcOutMap[idx]
+		legacyIn, legacyInOK := legacyInMap[idx]
+		legacyOut, legacyOutOK := legacyOutMap[idx]
+		hcPairOK := hcInOK && hcOutOK
+		legacyPairOK := legacyInOK && legacyOutOK
 
 		var inOct, outOct uint64
 		switch {
 		case speed >= 1000:
-			// High-speed ports: HC is mandatory when available.
-			if hcIn > 0 || hcOut > 0 {
+			// High-speed ports: use HC Counter64 pair whenever available.
+			if hcPairOK {
 				inOct = hcIn
 				outOct = hcOut
-			} else {
+			} else if legacyPairOK {
 				if isV1 {
 					log.Printf("snmp warning device version=v1 ifIndex=%d ifName=%s speed=%dMbps: Counter64 unavailable on SNMP v1, fallback to legacy", idx, name, speed)
 				} else {
@@ -378,15 +380,19 @@ func (c *Collector) fetchInterfaceMetrics(client *gosnmp.GoSNMP, ifNames map[int
 				}
 				inOct = legacyIn
 				outOct = legacyOut
+			} else {
+				inOct, outOct = 0, 0
 			}
 		default:
-			// Low-speed ports: prefer HC on v2c/v3, fallback to legacy.
-			if hcIn > 0 || hcOut > 0 {
+			// Low-speed ports: still prefer HC when pair is available; fallback to legacy pair.
+			if hcPairOK {
 				inOct = hcIn
 				outOct = hcOut
-			} else {
+			} else if legacyPairOK {
 				inOct = legacyIn
 				outOct = legacyOut
+			} else {
+				inOct, outOct = 0, 0
 			}
 		}
 
@@ -405,30 +411,6 @@ func (c *Collector) fetchInterfaceMetrics(client *gosnmp.GoSNMP, ifNames map[int
 	}
 
 	return merged, nil
-}
-
-func selectCounterForRate(hc, legacy uint64, speedMbps int) uint64 {
-	// High-speed ports must trust HC(64-bit). Legacy(32-bit) wraps too fast and
-	// introduces huge bias in ratio-based fallback decisions.
-	if speedMbps >= 1000 {
-		if hc > 0 {
-			return hc
-		}
-		return legacy
-	}
-	if hc == 0 {
-		return legacy
-	}
-	if legacy == 0 {
-		return hc
-	}
-	// For low-speed ports, only switch when we see a stable near-2x signature.
-	// This avoids overreacting to random jitters.
-	ratio := float64(hc) / float64(legacy)
-	if ratio > 1.90 && ratio < 2.10 {
-		return legacy
-	}
-	return hc
 }
 
 func (c *Collector) fetchSysUptimeSec(client *gosnmp.GoSNMP) int64 {
@@ -704,47 +686,6 @@ func (c *Collector) fetchCounterMapStrict(client *gosnmp.GoSNMP, oid string) (ma
 		m[idx] = toUint64(p.Value)
 	}
 	return m, nil
-}
-
-// fetchCounterMapAuto prefers HC(64-bit) counters, but auto-corrects known
-// vendor anomalies where HC values are consistently ~2x of legacy counters.
-func (c *Collector) fetchCounterMapAuto(client *gosnmp.GoSNMP, hcOID, legacyOID string) (map[int]uint64, error) {
-	hc, hcErr := c.fetchCounterMap(client, hcOID)
-	legacy, legacyErr := c.fetchCounterMap(client, legacyOID)
-
-	if hcErr != nil && legacyErr != nil {
-		return nil, fmt.Errorf("walk counter auto failed hc=%s legacy=%s hcErr=%v legacyErr=%v", hcOID, legacyOID, hcErr, legacyErr)
-	}
-	if hcErr != nil {
-		return legacy, nil
-	}
-	if legacyErr != nil || len(legacy) == 0 {
-		return hc, nil
-	}
-
-	out := make(map[int]uint64, len(hc))
-	for idx, hv := range hc {
-		lv, ok := legacy[idx]
-		if !ok || lv == 0 {
-			out[idx] = hv
-			continue
-		}
-		// A few devices expose HC counters with stable 2x inflation.
-		// If HC/legacy ~= 2.0, trust legacy to keep traffic values consistent.
-		ratio := float64(hv) / float64(lv)
-		if hv > 0 && lv > 0 && ratio > 1.85 && ratio < 2.15 {
-			out[idx] = lv
-			continue
-		}
-		out[idx] = hv
-	}
-	// Include indices only seen in legacy map.
-	for idx, lv := range legacy {
-		if _, ok := out[idx]; !ok {
-			out[idx] = lv
-		}
-	}
-	return out, nil
 }
 
 func averageNumeric(pdus []gosnmp.SnmpPDU) float64 {
