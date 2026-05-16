@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS devices (
     v3_priv_password VARCHAR(256),
     v3_security_level VARCHAR(32),
     maintenance_mode BOOLEAN NOT NULL DEFAULT FALSE,
+    device_tier VARCHAR(16) NOT NULL DEFAULT 'access',
     poll_interval_sec INTEGER NOT NULL DEFAULT 0,
     cpu_threshold NUMERIC(6,2) NOT NULL DEFAULT 0,
     mem_threshold NUMERIC(6,2) NOT NULL DEFAULT 0,
@@ -54,6 +55,7 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS template_id BIGINT;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS poll_interval_sec INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS cpu_threshold NUMERIC(6,2) NOT NULL DEFAULT 0;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS mem_threshold NUMERIC(6,2) NOT NULL DEFAULT 0;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS device_tier VARCHAR(16) NOT NULL DEFAULT 'access';
 
 CREATE TABLE IF NOT EXISTS interfaces (
     id BIGSERIAL PRIMARY KEY,
@@ -335,6 +337,10 @@ CREATE TABLE IF NOT EXISTS device_templates (
     name VARCHAR(128) NOT NULL UNIQUE,
     brand VARCHAR(32) NOT NULL,
     description TEXT,
+    match_sysobjectid TEXT,
+    match_sysdescr TEXT,
+    priority INTEGER NOT NULL DEFAULT 100,
+    auto_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     snmp_version VARCHAR(8) NOT NULL DEFAULT '2c',
     snmp_port INTEGER NOT NULL DEFAULT 161,
     community VARCHAR(128),
@@ -352,6 +358,10 @@ CREATE TABLE IF NOT EXISTS device_templates (
 );
 
 ALTER TABLE device_templates ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE device_templates ADD COLUMN IF NOT EXISTS match_sysobjectid TEXT;
+ALTER TABLE device_templates ADD COLUMN IF NOT EXISTS match_sysdescr TEXT;
+ALTER TABLE device_templates ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 100;
+ALTER TABLE device_templates ADD COLUMN IF NOT EXISTS auto_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE device_templates ADD COLUMN IF NOT EXISTS cpu_oid TEXT;
 ALTER TABLE device_templates ADD COLUMN IF NOT EXISTS mem_oid TEXT;
 ALTER TABLE device_templates ADD COLUMN IF NOT EXISTS if_in_oid TEXT;
@@ -730,6 +740,7 @@ type Device struct {
 	V3PrivPass      string    `json:"-"`
 	V3SecLevel      string    `json:"v3_security_level,omitempty"`
 	MaintenanceMode bool      `json:"maintenance_mode"`
+	DeviceTier      string    `json:"device_tier,omitempty"`
 	PollIntervalSec int       `json:"poll_interval_sec,omitempty"`
 	CPUThreshold    float64   `json:"cpu_threshold,omitempty"`
 	MemThreshold    float64   `json:"mem_threshold,omitempty"`
@@ -743,16 +754,16 @@ type Device struct {
 }
 
 type Interface struct {
-	ID       int64  `json:"id"`
-	DeviceID int64  `json:"device_id,omitempty"`
-	Index    int    `json:"index"`
-	Name     string `json:"name"`
-	RawName  string `json:"raw_name,omitempty"`
-	Remark   string `json:"remark"`
-	SpeedMbps int   `json:"speed_mbps,omitempty"`
-	OperStatus int  `json:"oper_status,omitempty"`
-	TrafficInBps  int64 `json:"traffic_in_bps,omitempty"`
-	TrafficOutBps int64 `json:"traffic_out_bps,omitempty"`
+	ID            int64  `json:"id"`
+	DeviceID      int64  `json:"device_id,omitempty"`
+	Index         int    `json:"index"`
+	Name          string `json:"name"`
+	RawName       string `json:"raw_name,omitempty"`
+	Remark        string `json:"remark"`
+	SpeedMbps     int    `json:"speed_mbps,omitempty"`
+	OperStatus    int    `json:"oper_status,omitempty"`
+	TrafficInBps  int64  `json:"traffic_in_bps,omitempty"`
+	TrafficOutBps int64  `json:"traffic_out_bps,omitempty"`
 }
 
 type InterfaceMetric struct {
@@ -843,24 +854,28 @@ type Repository struct {
 }
 
 type DeviceTemplate struct {
-	ID              int64     `json:"id"`
-	Name            string    `json:"name"`
-	Brand           string    `json:"brand"`
-	Description     string    `json:"description,omitempty"`
-	SNMPVersion     string    `json:"snmp_version"`
-	SNMPPort        int       `json:"snmp_port"`
-	Community       string    `json:"community,omitempty"`
-	V3Username      string    `json:"v3_username,omitempty"`
-	V3AuthProtocol  string    `json:"v3_auth_protocol,omitempty"`
-	V3AuthPassword  string    `json:"-"`
-	V3PrivProtocol  string    `json:"v3_priv_protocol,omitempty"`
-	V3PrivPassword  string    `json:"-"`
-	V3SecurityLevel string    `json:"v3_security_level,omitempty"`
-	CPUOID          string    `json:"cpu_oid,omitempty"`
-	MemOID          string    `json:"mem_oid,omitempty"`
-	IfInOID         string    `json:"if_in_oid,omitempty"`
-	IfOutOID        string    `json:"if_out_oid,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID               int64     `json:"id"`
+	Name             string    `json:"name"`
+	Brand            string    `json:"brand"`
+	Description      string    `json:"description,omitempty"`
+	MatchSysObjectID string    `json:"match_sysobjectid,omitempty"`
+	MatchSysDescr    string    `json:"match_sysdescr,omitempty"`
+	Priority         int       `json:"priority"`
+	AutoEnabled      bool      `json:"auto_enabled"`
+	SNMPVersion      string    `json:"snmp_version"`
+	SNMPPort         int       `json:"snmp_port"`
+	Community        string    `json:"community,omitempty"`
+	V3Username       string    `json:"v3_username,omitempty"`
+	V3AuthProtocol   string    `json:"v3_auth_protocol,omitempty"`
+	V3AuthPassword   string    `json:"-"`
+	V3PrivProtocol   string    `json:"v3_priv_protocol,omitempty"`
+	V3PrivPassword   string    `json:"-"`
+	V3SecurityLevel  string    `json:"v3_security_level,omitempty"`
+	CPUOID           string    `json:"cpu_oid,omitempty"`
+	MemOID           string    `json:"mem_oid,omitempty"`
+	IfInOID          string    `json:"if_in_oid,omitempty"`
+	IfOutOID         string    `json:"if_out_oid,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 type TopologyLink struct {
@@ -1289,6 +1304,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 		       COALESCE(d.v3_username,''), COALESCE(d.v3_auth_protocol,''), COALESCE(d.v3_auth_password,''),
 		       COALESCE(d.v3_priv_protocol,''), COALESCE(d.v3_priv_password,''), COALESCE(d.v3_security_level,''),
 		       COALESCE(d.maintenance_mode, FALSE),
+		       COALESCE(NULLIF(d.device_tier,''), 'access'),
 		       COALESCE(d.poll_interval_sec,0), COALESCE(d.cpu_threshold,0), COALESCE(d.mem_threshold,0),
 		       COALESCE(d.remark, ''), d.created_at, lm.last_ts, COALESCE(dl.message, ''), COALESCE(lm2.uptime_sec, 0)
 		FROM devices d
@@ -1318,6 +1334,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 		&ds.ID, &ds.IP, &ds.Name, &ds.TemplateID, &ds.Brand, &ds.Community, &ds.SNMPVersion, &ds.SNMPPort,
 		&ds.V3Username, &ds.V3AuthProto, &ds.V3AuthPass, &ds.V3PrivProto, &ds.V3PrivPass, &ds.V3SecLevel,
 		&ds.MaintenanceMode,
+		&ds.DeviceTier,
 		&ds.PollIntervalSec, &ds.CPUThreshold, &ds.MemThreshold,
 		&ds.Remark, &ds.CreatedAt, &ds.LastMetricAt, &ds.StatusReason, &ds.UptimeSec,
 	); err != nil {
@@ -1387,15 +1404,15 @@ func (r *Repository) AddDevice(ctx context.Context, d Device) (int64, error) {
 		INSERT INTO devices (
 			ip, name, template_id, brand, community, snmp_version, snmp_port,
 			v3_username, v3_auth_protocol, v3_auth_password, v3_priv_protocol, v3_priv_password, v3_security_level, maintenance_mode,
-			poll_interval_sec, cpu_threshold, mem_threshold, remark
+			device_tier, poll_interval_sec, cpu_threshold, mem_threshold, remark
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 		RETURNING id;
 	`
 	var id int64
 	if err := r.db.QueryRowContext(
 		ctx, q, d.IP, d.Name, d.TemplateID, d.Brand, d.Community, d.SNMPVersion, d.SNMPPort, d.V3Username, d.V3AuthProto,
-		d.V3AuthPass, d.V3PrivProto, d.V3PrivPass, d.V3SecLevel, d.MaintenanceMode, d.PollIntervalSec, d.CPUThreshold, d.MemThreshold, d.Remark,
+		d.V3AuthPass, d.V3PrivProto, d.V3PrivPass, d.V3SecLevel, d.MaintenanceMode, d.DeviceTier, d.PollIntervalSec, d.CPUThreshold, d.MemThreshold, d.Remark,
 	).Scan(&id); err != nil {
 		return 0, fmt.Errorf("add device: %w", err)
 	}
@@ -1416,6 +1433,7 @@ func (r *Repository) ListDevices(ctx context.Context) ([]Device, error) {
 		       COALESCE(v3_username,''), COALESCE(v3_auth_protocol,''), COALESCE(v3_auth_password,''),
 		       COALESCE(v3_priv_protocol,''), COALESCE(v3_priv_password,''), COALESCE(v3_security_level,''),
 		       COALESCE(maintenance_mode,FALSE),
+		       COALESCE(NULLIF(device_tier,''), 'access'),
 		       COALESCE(poll_interval_sec,0), COALESCE(cpu_threshold,0), COALESCE(mem_threshold,0),
 		       COALESCE(remark, ''), created_at
 		FROM devices
@@ -1430,7 +1448,7 @@ func (r *Repository) ListDevices(ctx context.Context) ([]Device, error) {
 	out := make([]Device, 0)
 	for rows.Next() {
 		var d Device
-		if err := rows.Scan(&d.ID, &d.IP, &d.Name, &d.TemplateID, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.MaintenanceMode, &d.PollIntervalSec, &d.CPUThreshold, &d.MemThreshold, &d.Remark, &d.CreatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.IP, &d.Name, &d.TemplateID, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.MaintenanceMode, &d.DeviceTier, &d.PollIntervalSec, &d.CPUThreshold, &d.MemThreshold, &d.Remark, &d.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan device: %w", err)
 		}
 		d.Community = r.decryptOpt(d.Community)
@@ -1565,16 +1583,19 @@ func (r *Repository) CreateTemplate(ctx context.Context, t DeviceTemplate) (int6
 	t.Community = r.encryptOpt(t.Community)
 	t.V3AuthPassword = r.encryptOpt(t.V3AuthPassword)
 	t.V3PrivPassword = r.encryptOpt(t.V3PrivPassword)
-	const q = `INSERT INTO device_templates(name,brand,description,snmp_version,snmp_port,community,v3_username,v3_auth_protocol,v3_auth_password,v3_priv_protocol,v3_priv_password,v3_security_level,cpu_oid,mem_oid,if_in_oid,if_out_oid) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id;`
+	const q = `INSERT INTO device_templates(name,brand,description,match_sysobjectid,match_sysdescr,priority,auto_enabled,snmp_version,snmp_port,community,v3_username,v3_auth_protocol,v3_auth_password,v3_priv_protocol,v3_priv_password,v3_security_level,cpu_oid,mem_oid,if_in_oid,if_out_oid) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id;`
 	var id int64
-	if err := r.db.QueryRowContext(ctx, q, t.Name, t.Brand, t.Description, t.SNMPVersion, t.SNMPPort, t.Community, t.V3Username, t.V3AuthProtocol, t.V3AuthPassword, t.V3PrivProtocol, t.V3PrivPassword, t.V3SecurityLevel, t.CPUOID, t.MemOID, t.IfInOID, t.IfOutOID).Scan(&id); err != nil {
+	if t.Priority <= 0 {
+		t.Priority = 100
+	}
+	if err := r.db.QueryRowContext(ctx, q, t.Name, t.Brand, t.Description, t.MatchSysObjectID, t.MatchSysDescr, t.Priority, t.AutoEnabled, t.SNMPVersion, t.SNMPPort, t.Community, t.V3Username, t.V3AuthProtocol, t.V3AuthPassword, t.V3PrivProtocol, t.V3PrivPassword, t.V3SecurityLevel, t.CPUOID, t.MemOID, t.IfInOID, t.IfOutOID).Scan(&id); err != nil {
 		return 0, err
 	}
 	return id, nil
 }
 
 func (r *Repository) ListTemplates(ctx context.Context) ([]DeviceTemplate, error) {
-	const q = `SELECT id,name,brand,COALESCE(description,''),snmp_version,snmp_port,COALESCE(community,''),COALESCE(v3_username,''),COALESCE(v3_auth_protocol,''),COALESCE(v3_auth_password,''),COALESCE(v3_priv_protocol,''),COALESCE(v3_priv_password,''),COALESCE(v3_security_level,''),COALESCE(cpu_oid,''),COALESCE(mem_oid,''),COALESCE(if_in_oid,''),COALESCE(if_out_oid,''),created_at FROM device_templates ORDER BY id DESC;`
+	const q = `SELECT id,name,brand,COALESCE(description,''),COALESCE(match_sysobjectid,''),COALESCE(match_sysdescr,''),COALESCE(priority,100),COALESCE(auto_enabled,TRUE),snmp_version,snmp_port,COALESCE(community,''),COALESCE(v3_username,''),COALESCE(v3_auth_protocol,''),COALESCE(v3_auth_password,''),COALESCE(v3_priv_protocol,''),COALESCE(v3_priv_password,''),COALESCE(v3_security_level,''),COALESCE(cpu_oid,''),COALESCE(mem_oid,''),COALESCE(if_in_oid,''),COALESCE(if_out_oid,''),created_at FROM device_templates ORDER BY priority ASC, id DESC;`
 	rows, err := r.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, err
@@ -1583,15 +1604,100 @@ func (r *Repository) ListTemplates(ctx context.Context) ([]DeviceTemplate, error
 	out := []DeviceTemplate{}
 	for rows.Next() {
 		var t DeviceTemplate
-		if err := rows.Scan(&t.ID, &t.Name, &t.Brand, &t.Description, &t.SNMPVersion, &t.SNMPPort, &t.Community, &t.V3Username, &t.V3AuthProtocol, &t.V3AuthPassword, &t.V3PrivProtocol, &t.V3PrivPassword, &t.V3SecurityLevel, &t.CPUOID, &t.MemOID, &t.IfInOID, &t.IfOutOID, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Brand, &t.Description, &t.MatchSysObjectID, &t.MatchSysDescr, &t.Priority, &t.AutoEnabled, &t.SNMPVersion, &t.SNMPPort, &t.Community, &t.V3Username, &t.V3AuthProtocol, &t.V3AuthPassword, &t.V3PrivProtocol, &t.V3PrivPassword, &t.V3SecurityLevel, &t.CPUOID, &t.MemOID, &t.IfInOID, &t.IfOutOID, &t.CreatedAt); err != nil {
 			return nil, err
 		}
-		t.Community = r.decryptOpt(t.Community)
-		t.V3AuthPassword = r.decryptOpt(t.V3AuthPassword)
-		t.V3PrivPassword = r.decryptOpt(t.V3PrivPassword)
+		// Do not expose template credentials to frontend list API.
+		t.Community = ""
+		t.V3AuthPassword = ""
+		t.V3PrivPassword = ""
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+func (r *Repository) GetTemplateByID(ctx context.Context, id int64) (*DeviceTemplate, error) {
+	if id <= 0 {
+		return nil, nil
+	}
+	const q = `SELECT id,name,brand,COALESCE(description,''),COALESCE(match_sysobjectid,''),COALESCE(match_sysdescr,''),COALESCE(priority,100),COALESCE(auto_enabled,TRUE),snmp_version,snmp_port,COALESCE(community,''),COALESCE(v3_username,''),COALESCE(v3_auth_protocol,''),COALESCE(v3_auth_password,''),COALESCE(v3_priv_protocol,''),COALESCE(v3_priv_password,''),COALESCE(v3_security_level,''),COALESCE(cpu_oid,''),COALESCE(mem_oid,''),COALESCE(if_in_oid,''),COALESCE(if_out_oid,''),created_at FROM device_templates WHERE id=$1 LIMIT 1;`
+	var t DeviceTemplate
+	if err := r.db.QueryRowContext(ctx, q, id).Scan(&t.ID, &t.Name, &t.Brand, &t.Description, &t.MatchSysObjectID, &t.MatchSysDescr, &t.Priority, &t.AutoEnabled, &t.SNMPVersion, &t.SNMPPort, &t.Community, &t.V3Username, &t.V3AuthProtocol, &t.V3AuthPassword, &t.V3PrivProtocol, &t.V3PrivPassword, &t.V3SecurityLevel, &t.CPUOID, &t.MemOID, &t.IfInOID, &t.IfOutOID, &t.CreatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	t.Community = r.decryptOpt(t.Community)
+	t.V3AuthPassword = r.decryptOpt(t.V3AuthPassword)
+	t.V3PrivPassword = r.decryptOpt(t.V3PrivPassword)
+	return &t, nil
+}
+
+func (r *Repository) MatchTemplateByFingerprint(ctx context.Context, brand, sysObjectID, sysDescr string) (*DeviceTemplate, int, error) {
+	templates, err := r.ListTemplates(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	br := strings.ToLower(strings.TrimSpace(brand))
+	oid := strings.ToLower(strings.TrimSpace(sysObjectID))
+	desc := strings.ToLower(strings.TrimSpace(sysDescr))
+	bestScore := -1
+	var best *DeviceTemplate
+	for i := range templates {
+		t := templates[i]
+		if !t.AutoEnabled {
+			continue
+		}
+		score := 0
+		tb := strings.ToLower(strings.TrimSpace(t.Brand))
+		if br != "" && tb != "" {
+			if br == tb {
+				score += 30
+			} else {
+				continue
+			}
+		}
+		matchOID := strings.ToLower(strings.TrimSpace(t.MatchSysObjectID))
+		matchDesc := strings.ToLower(strings.TrimSpace(t.MatchSysDescr))
+		if matchOID != "" && oid != "" {
+			for _, part := range strings.Split(matchOID, ",") {
+				p := strings.TrimSpace(part)
+				if p == "" {
+					continue
+				}
+				if strings.Contains(oid, p) {
+					score += 60
+					break
+				}
+			}
+		}
+		if matchDesc != "" && desc != "" {
+			for _, part := range strings.Split(matchDesc, ",") {
+				p := strings.TrimSpace(part)
+				if p == "" {
+					continue
+				}
+				if strings.Contains(desc, p) {
+					score += 40
+					break
+				}
+			}
+		}
+		if matchOID == "" && matchDesc == "" {
+			score += 10
+		}
+		score += int(math.Max(0, float64(200-t.Priority))) / 10
+		if score > bestScore {
+			bestScore = score
+			cp := t
+			best = &cp
+		}
+	}
+	if bestScore < 40 {
+		return nil, 0, nil
+	}
+	return best, bestScore, nil
 }
 
 func (r *Repository) SaveAlertEvent(ctx context.Context, ruleID *int64, deviceID int64, level, code, message string) error {
@@ -1737,9 +1843,9 @@ func (r *Repository) DeleteTopologyLink(ctx context.Context, id int64) error {
 }
 
 func (r *Repository) FindDeviceByIP(ctx context.Context, ip string) (*Device, error) {
-	const q = `SELECT id, host(ip), COALESCE(name, host(ip)), template_id, brand, community, snmp_version, snmp_port, COALESCE(v3_username,''), COALESCE(v3_auth_protocol,''), COALESCE(v3_auth_password,''), COALESCE(v3_priv_protocol,''), COALESCE(v3_priv_password,''), COALESCE(v3_security_level,''), COALESCE(maintenance_mode,FALSE), COALESCE(poll_interval_sec,0), COALESCE(cpu_threshold,0), COALESCE(mem_threshold,0), COALESCE(remark,''), created_at FROM devices WHERE ip = $1::inet LIMIT 1;`
+	const q = `SELECT id, host(ip), COALESCE(name, host(ip)), template_id, brand, community, snmp_version, snmp_port, COALESCE(v3_username,''), COALESCE(v3_auth_protocol,''), COALESCE(v3_auth_password,''), COALESCE(v3_priv_protocol,''), COALESCE(v3_priv_password,''), COALESCE(v3_security_level,''), COALESCE(maintenance_mode,FALSE), COALESCE(NULLIF(device_tier,''),'access'), COALESCE(poll_interval_sec,0), COALESCE(cpu_threshold,0), COALESCE(mem_threshold,0), COALESCE(remark,''), created_at FROM devices WHERE ip = $1::inet LIMIT 1;`
 	var d Device
-	if err := r.db.QueryRowContext(ctx, q, ip).Scan(&d.ID, &d.IP, &d.Name, &d.TemplateID, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.MaintenanceMode, &d.PollIntervalSec, &d.CPUThreshold, &d.MemThreshold, &d.Remark, &d.CreatedAt); err != nil {
+	if err := r.db.QueryRowContext(ctx, q, ip).Scan(&d.ID, &d.IP, &d.Name, &d.TemplateID, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.MaintenanceMode, &d.DeviceTier, &d.PollIntervalSec, &d.CPUThreshold, &d.MemThreshold, &d.Remark, &d.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -1896,6 +2002,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		       COALESCE(d.v3_username,''), COALESCE(d.v3_auth_protocol,''), COALESCE(d.v3_auth_password,''),
 		       COALESCE(d.v3_priv_protocol,''), COALESCE(d.v3_priv_password,''), COALESCE(d.v3_security_level,''),
 		       COALESCE(d.maintenance_mode,FALSE),
+		       COALESCE(NULLIF(d.device_tier,''), 'access'),
 		       COALESCE(d.poll_interval_sec,0), COALESCE(d.cpu_threshold,0), COALESCE(d.mem_threshold,0),
 		       COALESCE(d.remark, ''), d.created_at, lm.last_ts, COALESCE(dl.message, ''),
 		       COALESCE(lm2.storage_usage, 0), COALESCE(lm2.storage_total, 0), COALESCE(lm2.storage_free, 0), COALESCE(lm2.uptime_sec, 0)
@@ -1935,6 +2042,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 			&ds.ID, &ds.IP, &ds.Name, &ds.TemplateID, &ds.Brand, &ds.Community, &ds.SNMPVersion, &ds.SNMPPort,
 			&ds.V3Username, &ds.V3AuthProto, &ds.V3AuthPass, &ds.V3PrivProto, &ds.V3PrivPass, &ds.V3SecLevel,
 			&ds.MaintenanceMode,
+			&ds.DeviceTier,
 			&ds.PollIntervalSec, &ds.CPUThreshold, &ds.MemThreshold,
 			&ds.Remark, &ds.CreatedAt, &ds.LastMetricAt, &ds.StatusReason,
 			&ds.StorageUsage, &ds.StorageTotal, &ds.StorageFree, &ds.UptimeSec,
@@ -2271,12 +2379,13 @@ func (r *Repository) UpdateDevice(ctx context.Context, d Device) error {
 		    brand = $3,
 		    remark = $4,
 		    maintenance_mode = $5,
-		    poll_interval_sec = $6,
-		    cpu_threshold = $7,
-		    mem_threshold = $8
+		    device_tier = $6,
+		    poll_interval_sec = $7,
+		    cpu_threshold = $8,
+		    mem_threshold = $9
 		WHERE id = $1;
 	`
-	if _, err := r.db.ExecContext(ctx, q, d.ID, strings.TrimSpace(d.Name), strings.TrimSpace(d.Brand), d.Remark, d.MaintenanceMode, d.PollIntervalSec, d.CPUThreshold, d.MemThreshold); err != nil {
+	if _, err := r.db.ExecContext(ctx, q, d.ID, strings.TrimSpace(d.Name), strings.TrimSpace(d.Brand), d.Remark, d.MaintenanceMode, strings.TrimSpace(d.DeviceTier), d.PollIntervalSec, d.CPUThreshold, d.MemThreshold); err != nil {
 		return fmt.Errorf("update device: %w", err)
 	}
 	return nil
@@ -2342,13 +2451,13 @@ func (r *Repository) GetRecentEvents(ctx context.Context, limit int) ([]RecentEv
 			       l.level AS level,
 			       l.message AS message,
 			       l.created_at AS created_at
-			FROM device_logs l
+			FROM (
+				SELECT id, device_id, level, message, created_at
+				FROM device_logs
+				ORDER BY created_at DESC
+				LIMIT GREATEST($1 * 4, 200)
+			) l
 			JOIN devices d ON d.id = l.device_id
-			WHERE l.message ILIKE '%DEVICE_UP%'
-			   OR l.message ILIKE '%DEVICE_DOWN%'
-			   OR l.message ILIKE '%PORT_UP%'
-			   OR l.message ILIKE '%PORT_DOWN%'
-			   OR l.level IN ('ERROR','WARNING')
 			UNION ALL
 			SELECT (ae.id + 1000000000) AS id,
 			       ae.device_id AS device_id,
@@ -2464,7 +2573,8 @@ func (r *Repository) GetInterfaceHistory(
 
 	q := fmt.Sprintf(`
 		WITH buckets AS (
-			SELECT generate_series($2::timestamptz, $3::timestamptz, '%[1]s'::interval) AS ts
+			SELECT DISTINCT time_bucket('%[1]s', gs) AS ts
+			FROM generate_series($2::timestamptz, $3::timestamptz, '%[1]s'::interval) AS gs
 		),
 		raw AS (
 			SELECT time_bucket('%[1]s', ts) AS ts,
@@ -2482,7 +2592,8 @@ func (r *Repository) GetInterfaceHistory(
 	if useAgg {
 		q = fmt.Sprintf(`
 			WITH buckets AS (
-				SELECT generate_series($2::timestamptz, $3::timestamptz, '%[1]s'::interval) AS ts
+				SELECT DISTINCT time_bucket('%[1]s', gs) AS ts
+				FROM generate_series($2::timestamptz, $3::timestamptz, '%[1]s'::interval) AS gs
 			),
 			raw AS (
 				SELECT time_bucket('%[1]s', bucket) AS ts,

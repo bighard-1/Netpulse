@@ -18,6 +18,7 @@ const globalKeyword = ref("");
 const groupBy = ref("brand");
 const statusFilter = ref("all");
 const manageMode = ref(false);
+const editMode = ref(localStorage.getItem("np_edit_mode") === "1");
 const selectedRows = ref([]);
 const visibleCols = ref({
   status: true, name: true, ip: true, brand: true, type: true, cpu: true, uptime: true, remark: true
@@ -25,6 +26,11 @@ const visibleCols = ref({
 const templates = ref([]);
 const selectedTemplateId = ref(null);
 const brandOptions = ["Huawei", "H3C", "Cisco", "Ruijie", "Juniper", "Other"];
+const tierOptions = [
+  { label: "核心层", value: "core" },
+  { label: "汇聚层", value: "aggregation" },
+  { label: "接入层", value: "access" }
+];
 const viewPresetName = ref("");
 const viewPresets = ref(JSON.parse(localStorage.getItem("np_asset_view_presets") || "[]"));
 const activePreset = ref("");
@@ -33,9 +39,21 @@ let pendingDeleteTimer = null;
 
 const addVisible = ref(false);
 const addLoading = ref(false);
+const importVisible = ref(false);
+const importLoading = ref(false);
+const importCSV = ref("ip,name,brand,community,snmp_version,remark,snmp_port,poll_interval_sec,cpu_threshold,mem_threshold\n172.24.1.10,Core-SW-A,H3C,public,2c,核心交换机A,161,60,90,90");
 const editVisible = ref(false);
 const editLoading = ref(false);
-const editForm = ref({ id: null, name: "", brand: "", remark: "", maintenance_mode: false });
+const runtimeDefaults = ref({
+  poll_interval_sec: 60,
+  alert_cpu_threshold: 90,
+  alert_mem_threshold: 90
+});
+const editForm = ref({
+  id: null, name: "", brand: "", remark: "", maintenance_mode: false,
+  device_tier: "access",
+  poll_interval_sec: 60, cpu_threshold: 90, mem_threshold: 90
+});
 const defaultAddForm = () => ({
   ip: "",
   name: "",
@@ -50,10 +68,15 @@ const defaultAddForm = () => ({
   v3_auth_protocol: "SHA",
   v3_auth_password: "",
   v3_priv_protocol: "AES",
-  v3_priv_password: ""
+  v3_priv_password: "",
+  device_tier: "access",
+  poll_interval_sec: Number(runtimeDefaults.value.poll_interval_sec || 60),
+  cpu_threshold: Number(runtimeDefaults.value.alert_cpu_threshold || 90),
+  mem_threshold: Number(runtimeDefaults.value.alert_mem_threshold || 90)
 });
 const addForm = ref(defaultAddForm());
 const isSnmpV3 = computed(() => String(addForm.value.snmp_version) === "3");
+const autoTemplateHint = ref(null);
 
 const drawerLoading = ref(false);
 const drawerDevice = ref(null);
@@ -114,6 +137,20 @@ async function loadTemplates() {
   }
 }
 
+async function loadRuntimeDefaults() {
+  try {
+    const res = await api.getRuntimeSettings();
+    const x = res?.data || {};
+    runtimeDefaults.value = {
+      poll_interval_sec: Math.max(5, Number(x.poll_interval_access_sec || 120)),
+      alert_cpu_threshold: Math.max(1, Math.min(100, Number(x.alert_cpu_threshold || 90))),
+      alert_mem_threshold: Math.max(1, Math.min(100, Number(x.alert_mem_threshold || 90)))
+    };
+  } catch {
+    runtimeDefaults.value = { poll_interval_sec: 60, alert_cpu_threshold: 90, alert_mem_threshold: 90 };
+  }
+}
+
 function applyTemplateById() {
   const id = Number(selectedTemplateId.value || 0);
   if (!id) return;
@@ -131,6 +168,7 @@ function applyTemplateById() {
 }
 
 async function addDevice() {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
   if (isSnmpV3.value) {
     if (!addForm.value.v3_username) return fb.warn("参数不完整", "SNMP v3 需要填写用户名");
     if (addForm.value.v3_security_level !== "noAuthNoPriv" && !addForm.value.v3_auth_password) return fb.warn("参数不完整", "SNMP v3 需要填写认证密码");
@@ -140,12 +178,28 @@ async function addDevice() {
   }
   addLoading.value = true;
   try {
-    await api.precheckDevice(addForm.value);
-    await api.addDevice(addForm.value);
-    fb.success("资产添加成功");
+    const pre = await api.precheckDevice(addForm.value);
+    const suggested = pre?.data?.suggested_template || null;
+    if ((!addForm.value.template_id || Number(addForm.value.template_id) <= 0) && suggested?.id) {
+      addForm.value.template_id = Number(suggested.id);
+      selectedTemplateId.value = Number(suggested.id);
+      applyTemplateById();
+      autoTemplateHint.value = suggested;
+      fb.info(`已自动匹配模板：${suggested.name}（匹配分 ${suggested.matchScore}）`);
+      // Re-run precheck with applied template params to ensure final submit consistency.
+      await api.precheckDevice(addForm.value);
+    }
+    const addRes = await api.addDevice(addForm.value);
+    const applied = addRes?.data?.auto_template;
+    if (applied?.name) {
+      fb.success(`资产添加成功（自动套用模板：${applied.name}）`);
+    } else {
+      fb.success("资产添加成功");
+    }
     addVisible.value = false;
     addForm.value = defaultAddForm();
     selectedTemplateId.value = null;
+    autoTemplateHint.value = null;
     await loadDevices();
   } catch (err) {
     fb.apiError(err, "添加资产失败");
@@ -155,6 +209,7 @@ async function addDevice() {
 }
 
 async function removeDevice(row) {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
   try {
     await ElMessageBox.confirm(`确认删除资产 ${row.name || row.ip} 吗？`, "删除确认", { type: "warning" });
     scheduleDelete(row);
@@ -189,6 +244,7 @@ function undoDelete() {
 }
 
 async function bulkRemove() {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
   if (!selectedRows.value.length) return fb.warn("请先选择资产");
   let ok = 0;
   for (const row of selectedRows.value) {
@@ -210,12 +266,17 @@ function openEditDevice(row) {
     name: row.name || "",
     brand: row.brand || "",
     remark: row.remark || "",
-    maintenance_mode: Boolean(row.maintenance_mode)
+    maintenance_mode: Boolean(row.maintenance_mode),
+    device_tier: row.device_tier || "access",
+    poll_interval_sec: Math.max(0, Number(row.poll_interval_sec || runtimeDefaults.value.poll_interval_sec || 60)),
+    cpu_threshold: Math.max(0, Number(row.cpu_threshold || runtimeDefaults.value.alert_cpu_threshold || 90)),
+    mem_threshold: Math.max(0, Number(row.mem_threshold || runtimeDefaults.value.alert_mem_threshold || 90))
   };
   editVisible.value = true;
 }
 
 async function saveEditDevice() {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
   if (!editForm.value.id) return;
   editLoading.value = true;
   try {
@@ -223,7 +284,11 @@ async function saveEditDevice() {
       name: editForm.value.name || "",
       brand: editForm.value.brand || "",
       remark: editForm.value.remark || "",
-      maintenance_mode: Boolean(editForm.value.maintenance_mode)
+      maintenance_mode: Boolean(editForm.value.maintenance_mode),
+      device_tier: editForm.value.device_tier || "access",
+      poll_interval_sec: Math.max(0, Number(editForm.value.poll_interval_sec || 0)),
+      cpu_threshold: Math.max(0, Number(editForm.value.cpu_threshold || 0)),
+      mem_threshold: Math.max(0, Number(editForm.value.mem_threshold || 0))
     });
     fb.success("资产信息已更新");
     editVisible.value = false;
@@ -233,6 +298,37 @@ async function saveEditDevice() {
   } finally {
     editLoading.value = false;
   }
+}
+
+async function importDevices() {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
+  importLoading.value = true;
+  try {
+    const txt = String(importCSV.value || "").trim();
+    if (!txt) return fb.warn("请先粘贴CSV内容");
+    const res = await api.importDevicesCSV(txt);
+    fb.success("批量导入完成", `成功导入 ${Number(res?.data?.created || 0)} 台`);
+    importVisible.value = false;
+    await loadDevices();
+  } catch (err) {
+    fb.apiError(err, "批量导入失败");
+  } finally {
+    importLoading.value = false;
+  }
+}
+
+function downloadImportTemplate() {
+  const sample = [
+    "ip,name,brand,community,snmp_version,remark,snmp_port,poll_interval_sec,cpu_threshold,mem_threshold",
+    "172.24.1.10,Core-SW-A,H3C,public,2c,核心交换机A,161,60,90,90",
+    "172.24.1.11,Agg-SW-B,Huawei,public,2c,汇聚交换机B,161,120,85,88"
+  ].join("\n");
+  const blob = new Blob([sample], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "netpulse_devices_import_template.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 function openDeviceDetail(row) {
@@ -307,6 +403,7 @@ function openPortTraffic(port) {
       deviceId: String(drawerDevice.value.id),
       deviceIp: drawerDevice.value.ip,
       portName: port.name,
+      portBaseName: port.raw_name || port.name,
       portRemark: port.remark || ""
     }
   });
@@ -334,21 +431,32 @@ function onResize() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadDevices(), loadTemplates()]);
+  await Promise.all([loadRuntimeDefaults(), loadDevices(), loadTemplates()]);
+  addForm.value = defaultAddForm();
+  window.addEventListener("np-edit-mode", onEditModeEvent);
   window.addEventListener("resize", onResize);
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("np-edit-mode", onEditModeEvent);
   window.removeEventListener("resize", onResize);
   cpuMemChart?.dispose();
   if (pendingDeleteTimer) clearTimeout(pendingDeleteTimer);
 });
+
+function onEditModeEvent(e) {
+  editMode.value = Boolean(e?.detail?.enabled);
+  if (!editMode.value) manageMode.value = false;
+}
 
 watch(() => ops.isDrawerOpen, async (v) => {
   if (v) {
     await nextTick();
     cpuMemChart?.resize();
   }
+});
+watch(editMode, (v) => {
+  if (!v) manageMode.value = false;
 });
 </script>
 
@@ -392,11 +500,13 @@ watch(() => ops.isDrawerOpen, async (v) => {
             </el-popover>
             <el-segmented
               v-model="manageMode"
+              :disabled="!editMode"
               :options="[
                 { label: '查看模式', value: false },
                 { label: '管理模式', value: true }
               ]"
             />
+            <el-button v-if="editMode" plain @click="importVisible = true">批量导入</el-button>
             <el-button v-if="manageMode" type="danger" plain @click="bulkRemove">批量删除</el-button>
             <el-button v-if="manageMode" type="primary" @click="addVisible = true">添加资产</el-button>
             <el-button class="np-primary-soft" @click="loadDevices">刷新</el-button>
@@ -429,7 +539,9 @@ watch(() => ops.isDrawerOpen, async (v) => {
               <el-table-column v-if="visibleCols.ip" prop="ip" label="IP" min-width="160" />
               <el-table-column v-if="visibleCols.brand" prop="brand" label="品牌" width="120" />
               <el-table-column v-if="visibleCols.type" label="类型" width="140">
-                <template #default="{ row }">{{ row.device_type || row.type || "-" }}</template>
+                <template #default="{ row }">
+                  {{ row.device_tier === "core" ? "核心层" : row.device_tier === "aggregation" ? "汇聚层" : "接入层" }}
+                </template>
               </el-table-column>
               <el-table-column v-if="visibleCols.cpu" label="CPU快照" width="120">
                 <template #default="{ row }">{{ Number.isFinite(Number(row.cpu_usage)) ? `${Number(row.cpu_usage).toFixed(1)}%` : "-" }}</template>
@@ -497,12 +609,20 @@ watch(() => ops.isDrawerOpen, async (v) => {
           <el-select v-model="selectedTemplateId" class="w-full" clearable placeholder="可选：按模板自动填充SNMP参数" @change="applyTemplateById">
             <el-option v-for="t in templates" :key="t.id" :label="`${t.name} (${t.brand})`" :value="t.id" />
           </el-select>
+          <div v-if="autoTemplateHint" class="mt-1 text-xs text-emerald-600">
+            自动识别建议：{{ autoTemplateHint.name }}（分值 {{ autoTemplateHint.matchScore }}）
+          </div>
         </el-form-item>
         <el-form-item label="设备IP"><el-input v-model="addForm.ip" /></el-form-item>
         <el-form-item label="资产名称"><el-input v-model="addForm.name" /></el-form-item>
         <el-form-item label="品牌">
           <el-select v-model="addForm.brand" class="w-full" filterable allow-create default-first-option>
             <el-option v-for="b in brandOptions" :key="b" :label="b" :value="b" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="设备层级">
+          <el-select v-model="addForm.device_tier" class="w-full">
+            <el-option v-for="t in tierOptions" :key="`add-tier-${t.value}`" :label="t.label" :value="t.value" />
           </el-select>
         </el-form-item>
         <el-form-item label="SNMP版本">
@@ -538,11 +658,36 @@ watch(() => ops.isDrawerOpen, async (v) => {
           </el-form-item>
           <el-form-item v-if="addForm.v3_security_level === 'authPriv'" label="加密密码"><el-input v-model="addForm.v3_priv_password" show-password /></el-form-item>
         </template>
+        <el-form-item label="轮询间隔（秒）">
+          <el-input-number v-model="addForm.poll_interval_sec" :min="0" :max="3600" :step="5" class="w-full" />
+          <div class="text-xs text-slate-500">0 表示跟随系统默认（当前默认 {{ runtimeDefaults.poll_interval_sec }} 秒）</div>
+          <div class="text-xs text-slate-500">推荐范围：核心层 30-60 秒；汇聚层 60-120 秒；接入层 120-300 秒</div>
+        </el-form-item>
+        <el-form-item label="CPU告警阈值（%）">
+          <el-input-number v-model="addForm.cpu_threshold" :min="0" :max="100" :step="1" :precision="2" class="w-full" />
+          <div class="text-xs text-slate-500">0 表示跟随系统默认（当前默认 {{ runtimeDefaults.alert_cpu_threshold }}%）</div>
+        </el-form-item>
+        <el-form-item label="内存告警阈值（%）">
+          <el-input-number v-model="addForm.mem_threshold" :min="0" :max="100" :step="1" :precision="2" class="w-full" />
+          <div class="text-xs text-slate-500">0 表示跟随系统默认（当前默认 {{ runtimeDefaults.alert_mem_threshold }}%）</div>
+        </el-form-item>
         <el-form-item label="备注"><el-input v-model="addForm.remark" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="addVisible = false">取消</el-button>
         <el-button type="primary" :loading="addLoading" @click="addDevice">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="importVisible" title="批量导入资产" width="760">
+      <div class="mb-2 flex items-center justify-between">
+        <div class="text-xs text-slate-500">格式：ip,name,brand,community,snmp_version,remark,snmp_port,poll_interval_sec,cpu_threshold,mem_threshold（首行为表头）</div>
+        <el-button size="small" @click="downloadImportTemplate">下载模板</el-button>
+      </div>
+      <el-input v-model="importCSV" type="textarea" :rows="14" placeholder="粘贴CSV内容" />
+      <template #footer>
+        <el-button @click="importVisible = false">取消</el-button>
+        <el-button type="primary" :loading="importLoading" @click="importDevices">开始导入</el-button>
       </template>
     </el-dialog>
 
@@ -554,7 +699,25 @@ watch(() => ops.isDrawerOpen, async (v) => {
             <el-option v-for="b in brandOptions" :key="`edit-${b}`" :label="b" :value="b" />
           </el-select>
         </el-form-item>
+        <el-form-item label="设备层级">
+          <el-select v-model="editForm.device_tier" class="w-full">
+            <el-option v-for="t in tierOptions" :key="`edit-tier-${t.value}`" :label="t.label" :value="t.value" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="备注"><el-input v-model="editForm.remark" type="textarea" :rows="3" /></el-form-item>
+        <el-form-item label="轮询间隔（秒）">
+          <el-input-number v-model="editForm.poll_interval_sec" :min="0" :max="3600" :step="5" class="w-full" />
+          <div class="text-xs text-slate-500">0 表示跟随系统默认（当前默认 {{ runtimeDefaults.poll_interval_sec }} 秒）</div>
+          <div class="text-xs text-slate-500">推荐范围：核心层 30-60 秒；汇聚层 60-120 秒；接入层 120-300 秒</div>
+        </el-form-item>
+        <el-form-item label="CPU告警阈值（%）">
+          <el-input-number v-model="editForm.cpu_threshold" :min="0" :max="100" :step="1" :precision="2" class="w-full" />
+          <div class="text-xs text-slate-500">0 表示跟随系统默认（当前默认 {{ runtimeDefaults.alert_cpu_threshold }}%）</div>
+        </el-form-item>
+        <el-form-item label="内存告警阈值（%）">
+          <el-input-number v-model="editForm.mem_threshold" :min="0" :max="100" :step="1" :precision="2" class="w-full" />
+          <div class="text-xs text-slate-500">0 表示跟随系统默认（当前默认 {{ runtimeDefaults.alert_mem_threshold }}%）</div>
+        </el-form-item>
         <el-form-item label="维护模式">
           <el-switch v-model="editForm.maintenance_mode" />
         </el-form-item>

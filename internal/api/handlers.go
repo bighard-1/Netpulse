@@ -55,6 +55,7 @@ func (h *Handler) Router() http.Handler {
 		pr.Get("/api/devices/{id}", h.handleGetDevice)
 		pr.Get("/api/devices/{id}/capabilities", h.handleGetDeviceCapabilities)
 		pr.With(h.requirePermission("device.read")).Get("/api/devices/{id}/diagnose", h.handleDiagnoseDevice)
+		pr.With(h.requirePermission("device.read")).Get("/api/devices/{id}/diagnose/traffic-bias", h.handleDiagnoseTrafficBias)
 		pr.With(h.requirePermission("device.write")).Post("/api/devices/precheck", h.handlePrecheckDevice)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("ADD_DEVICE")).Post("/api/devices", h.handleAddDevice)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("UPDATE_DEVICE")).Put("/api/devices/{id}", h.handleUpdateDevice)
@@ -175,23 +176,24 @@ func (h *Handler) handleGetDeviceCapabilities(w http.ResponseWriter, r *http.Req
 }
 
 type addDeviceRequest struct {
-	IP              string `json:"ip"`
-	Name            string `json:"name"`
-	TemplateID      *int64 `json:"template_id,omitempty"`
-	Brand           string `json:"brand"`
-	Community       string `json:"community"`
-	SNMPVersion     string `json:"snmp_version"`
-	SNMPPort        int    `json:"snmp_port"`
-	V3Username      string `json:"v3_username"`
-	V3AuthProtocol  string `json:"v3_auth_protocol"`
-	V3AuthPassword  string `json:"v3_auth_password"`
-	V3PrivProtocol  string `json:"v3_priv_protocol"`
-	V3PrivPassword  string `json:"v3_priv_password"`
-	V3SecurityLevel string `json:"v3_security_level"`
-	PollIntervalSec int    `json:"poll_interval_sec"`
+	IP              string  `json:"ip"`
+	Name            string  `json:"name"`
+	TemplateID      *int64  `json:"template_id,omitempty"`
+	Brand           string  `json:"brand"`
+	Community       string  `json:"community"`
+	SNMPVersion     string  `json:"snmp_version"`
+	SNMPPort        int     `json:"snmp_port"`
+	V3Username      string  `json:"v3_username"`
+	V3AuthProtocol  string  `json:"v3_auth_protocol"`
+	V3AuthPassword  string  `json:"v3_auth_password"`
+	V3PrivProtocol  string  `json:"v3_priv_protocol"`
+	V3PrivPassword  string  `json:"v3_priv_password"`
+	V3SecurityLevel string  `json:"v3_security_level"`
+	DeviceTier      string  `json:"device_tier"`
+	PollIntervalSec int     `json:"poll_interval_sec"`
 	CPUThreshold    float64 `json:"cpu_threshold"`
 	MemThreshold    float64 `json:"mem_threshold"`
-	Remark          string `json:"remark"`
+	Remark          string  `json:"remark"`
 }
 
 func validateSNMPRequest(req addDeviceRequest) error {
@@ -237,11 +239,12 @@ type updateRemarkRequest struct {
 }
 
 type updateDeviceRequest struct {
-	Name            string `json:"name"`
-	Brand           string `json:"brand"`
-	Remark          string `json:"remark"`
-	MaintenanceMode bool   `json:"maintenance_mode"`
-	PollIntervalSec int    `json:"poll_interval_sec"`
+	Name            string  `json:"name"`
+	Brand           string  `json:"brand"`
+	Remark          string  `json:"remark"`
+	MaintenanceMode bool    `json:"maintenance_mode"`
+	DeviceTier      string  `json:"device_tier"`
+	PollIntervalSec int     `json:"poll_interval_sec"`
 	CPUThreshold    float64 `json:"cpu_threshold"`
 	MemThreshold    float64 `json:"mem_threshold"`
 }
@@ -267,6 +270,7 @@ func (h *Handler) handlePrecheckDevice(w http.ResponseWriter, r *http.Request) {
 	if req.SNMPPort <= 0 {
 		req.SNMPPort = 161
 	}
+	req.DeviceTier = normalizeDeviceTier(req.DeviceTier)
 	if req.PollIntervalSec < 0 {
 		req.PollIntervalSec = 0
 	}
@@ -323,11 +327,25 @@ func (h *Handler) handlePrecheckDevice(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	identity, _ := h.collector.DetectSystemIdentity(req.IP, opt)
+	var suggested map[string]any
+	if t, score, _ := h.repo.MatchTemplateByFingerprint(r.Context(), req.Brand, identity.SysObjectID, identity.SysDescr); t != nil {
+		suggested = map[string]any{
+			"id":         t.ID,
+			"name":       t.Name,
+			"brand":      t.Brand,
+			"priority":   t.Priority,
+			"matchScore": score,
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"message":    "snmp precheck ok",
-		"cpu_usage":  poll.CPUUsage,
-		"mem_usage":  poll.MemoryUsage,
-		"interfaces": len(poll.Interfaces),
+		"message":            "snmp precheck ok",
+		"cpu_usage":          poll.CPUUsage,
+		"mem_usage":          poll.MemoryUsage,
+		"interfaces":         len(poll.Interfaces),
+		"sys_objectid":       identity.SysObjectID,
+		"sys_descr":          identity.SysDescr,
+		"suggested_template": suggested,
 	})
 }
 
@@ -375,36 +393,50 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 	if req.SNMPPort <= 0 {
 		req.SNMPPort = 161
 	}
+	applyTemplateIfNeeded := func(t *db.DeviceTemplate) {
+		if t == nil {
+			return
+		}
+		if strings.TrimSpace(req.Brand) == "" {
+			req.Brand = t.Brand
+		}
+		if strings.TrimSpace(req.SNMPVersion) == "" {
+			req.SNMPVersion = t.SNMPVersion
+		}
+		if req.SNMPPort <= 0 {
+			req.SNMPPort = t.SNMPPort
+		}
+		if strings.TrimSpace(req.Community) == "" {
+			req.Community = t.Community
+		}
+		if strings.TrimSpace(req.V3Username) == "" {
+			req.V3Username = t.V3Username
+		}
+		if strings.TrimSpace(req.V3SecurityLevel) == "" {
+			req.V3SecurityLevel = t.V3SecurityLevel
+		}
+		if strings.TrimSpace(req.V3AuthProtocol) == "" {
+			req.V3AuthProtocol = t.V3AuthProtocol
+		}
+		if strings.TrimSpace(req.V3AuthPassword) == "" {
+			req.V3AuthPassword = t.V3AuthPassword
+		}
+		if strings.TrimSpace(req.V3PrivProtocol) == "" {
+			req.V3PrivProtocol = t.V3PrivProtocol
+		}
+		if strings.TrimSpace(req.V3PrivPassword) == "" {
+			req.V3PrivPassword = t.V3PrivPassword
+		}
+	}
+	if req.TemplateID != nil && *req.TemplateID > 0 {
+		if t, err := h.repo.GetTemplateByID(r.Context(), *req.TemplateID); err == nil && t != nil {
+			applyTemplateIfNeeded(t)
+		}
+	}
 	if err := validateSNMPRequest(req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	deviceID, err := h.repo.AddDevice(r.Context(), db.Device{
-		IP:          req.IP,
-		Name:        req.Name,
-		TemplateID:  req.TemplateID,
-		Brand:       req.Brand,
-		Community:   req.Community,
-		SNMPVersion: req.SNMPVersion,
-		SNMPPort:    req.SNMPPort,
-		V3Username:  req.V3Username,
-		V3AuthProto: req.V3AuthProtocol,
-		V3AuthPass:  req.V3AuthPassword,
-		V3PrivProto: req.V3PrivProtocol,
-		V3PrivPass:  req.V3PrivPassword,
-		V3SecLevel:  req.V3SecurityLevel,
-		PollIntervalSec: req.PollIntervalSec,
-		CPUThreshold: req.CPUThreshold,
-		MemThreshold: req.MemThreshold,
-		Remark:      req.Remark,
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	// Trigger immediate SNMP interface discovery.
 	opt := snmp.PollOptions{
 		Brand:       req.Brand,
 		SNMPVersion: req.SNMPVersion,
@@ -417,6 +449,50 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 		V3PrivPass:  req.V3PrivPassword,
 		V3SecLevel:  req.V3SecurityLevel,
 	}
+	var autoTemplate map[string]any
+	if req.TemplateID == nil || *req.TemplateID <= 0 {
+		if identity, err := h.collector.DetectSystemIdentity(req.IP, opt); err == nil {
+			if t, score, _ := h.repo.MatchTemplateByFingerprint(r.Context(), req.Brand, identity.SysObjectID, identity.SysDescr); t != nil {
+				req.TemplateID = &t.ID
+				applyTemplateIfNeeded(t)
+				autoTemplate = map[string]any{
+					"id":          t.ID,
+					"name":        t.Name,
+					"brand":       t.Brand,
+					"priority":    t.Priority,
+					"matchScore":  score,
+					"sysObjectID": identity.SysObjectID,
+				}
+			}
+		}
+	}
+
+	deviceID, err := h.repo.AddDevice(r.Context(), db.Device{
+		IP:              req.IP,
+		Name:            req.Name,
+		TemplateID:      req.TemplateID,
+		Brand:           req.Brand,
+		Community:       req.Community,
+		SNMPVersion:     req.SNMPVersion,
+		SNMPPort:        req.SNMPPort,
+		V3Username:      req.V3Username,
+		V3AuthProto:     req.V3AuthProtocol,
+		V3AuthPass:      req.V3AuthPassword,
+		V3PrivProto:     req.V3PrivProtocol,
+		V3PrivPass:      req.V3PrivPassword,
+		V3SecLevel:      req.V3SecurityLevel,
+		DeviceTier:      normalizeDeviceTier(req.DeviceTier),
+		PollIntervalSec: req.PollIntervalSec,
+		CPUThreshold:    req.CPUThreshold,
+		MemThreshold:    req.MemThreshold,
+		Remark:          req.Remark,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Trigger immediate SNMP interface discovery.
 	ifs, err := h.collector.FetchInterfacesWithOptions(req.IP, opt)
 	if err == nil {
 		list := make([]db.Interface, 0, len(ifs))
@@ -451,8 +527,10 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"id":      deviceID,
-		"message": "device created",
+		"id":               deviceID,
+		"message":          "device created",
+		"auto_template":    autoTemplate,
+		"template_applied": req.TemplateID,
 	})
 }
 
@@ -503,6 +581,7 @@ func (h *Handler) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 	if req.PollIntervalSec > 3600 {
 		req.PollIntervalSec = 3600
 	}
+	req.DeviceTier = normalizeDeviceTier(req.DeviceTier)
 	if req.CPUThreshold < 0 {
 		req.CPUThreshold = 0
 	}
@@ -521,6 +600,7 @@ func (h *Handler) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		Brand:           brand,
 		Remark:          req.Remark,
 		MaintenanceMode: req.MaintenanceMode,
+		DeviceTier:      req.DeviceTier,
 		PollIntervalSec: req.PollIntervalSec,
 		CPUThreshold:    req.CPUThreshold,
 		MemThreshold:    req.MemThreshold,
@@ -529,6 +609,20 @@ func (h *Handler) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"message": "device updated"})
+}
+
+func normalizeDeviceTier(raw string) string {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	switch v {
+	case "core", "核心":
+		return "core"
+	case "aggregation", "agg", "汇聚":
+		return "aggregation"
+	case "access", "接入", "":
+		return "access"
+	default:
+		return "access"
+	}
 }
 
 func (h *Handler) handleUpdateDeviceRemark(w http.ResponseWriter, r *http.Request) {
@@ -646,11 +740,11 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"type":     metricType,
-			"id":       id,
-			"start":    start,
-			"end":      end,
-			"interval": interval,
+			"type":      metricType,
+			"id":        id,
+			"start":     start,
+			"end":       end,
+			"interval":  interval,
 			"maxPoints": maxPoints,
 			"data":      items,
 		})
@@ -661,11 +755,11 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"type":     metricType,
-			"id":       id,
-			"start":    start,
-			"end":      end,
-			"interval": interval,
+			"type":      metricType,
+			"id":        id,
+			"start":     start,
+			"end":       end,
+			"interval":  interval,
 			"maxPoints": maxPoints,
 			"data":      items,
 		})
@@ -676,11 +770,11 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"type":     metricType,
-			"id":       id,
-			"start":    start,
-			"end":      end,
-			"interval": interval,
+			"type":      metricType,
+			"id":        id,
+			"start":     start,
+			"end":       end,
+			"interval":  interval,
 			"maxPoints": maxPoints,
 			"data":      items,
 		})

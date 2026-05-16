@@ -21,11 +21,15 @@ import (
 )
 
 type counterState struct {
-	inOctets  uint64
-	outOctets uint64
-	at        time.Time
-	inBps     int64
-	outBps    int64
+	inOctets      uint64
+	outOctets     uint64
+	at            time.Time
+	inBps         int64
+	outBps        int64
+	inRaw1        int64
+	inRaw2        int64
+	outRaw1       int64
+	outRaw2       int64
 	inZeroStreak  int
 	outZeroStreak int
 }
@@ -54,6 +58,9 @@ type Worker struct {
 
 	lastHealthSnapshot time.Time
 	lastPolled         map[int64]time.Time
+	counterSource      map[string]string
+	hcNoProgress       map[string]int
+	legacyNoProgress   map[string]int
 }
 
 type alertPolicy struct {
@@ -91,25 +98,28 @@ func NewWorker(repo *db.Repository, collector *Collector, interval time.Duration
 		}
 	}
 	return &Worker{
-		repo:          repo,
-		collector:     collector,
-		interval:      interval,
-		pollCore:      interval,
-		pollAgg:       interval,
-		pollAccess:    interval,
-		parallel:      p,
-		deviceTimeout: time.Duration(timeoutSec) * time.Second,
-		alertWebhook:  os.Getenv("ALERT_WEBHOOK_URL"),
-		cpuThreshold:  cpuTh,
-		memThreshold:  memTh,
-		last:          make(map[string]counterState),
-		ifs:           make(map[int64]string),
-		devUp:         make(map[int64]bool),
-		portUp:        make(map[string]bool),
-		evts:          make(map[string]time.Time),
-		alertMgr:      NewAlertManager(repo, os.Getenv("ALERT_WEBHOOK_URL")),
-		calibration:   loadCalibrationMap(os.Getenv("SNMP_CALIBRATION_MAP")),
-		lastPolled:    make(map[int64]time.Time),
+		repo:             repo,
+		collector:        collector,
+		interval:         interval,
+		pollCore:         interval,
+		pollAgg:          interval,
+		pollAccess:       interval,
+		parallel:         p,
+		deviceTimeout:    time.Duration(timeoutSec) * time.Second,
+		alertWebhook:     os.Getenv("ALERT_WEBHOOK_URL"),
+		cpuThreshold:     cpuTh,
+		memThreshold:     memTh,
+		last:             make(map[string]counterState),
+		ifs:              make(map[int64]string),
+		devUp:            make(map[int64]bool),
+		portUp:           make(map[string]bool),
+		evts:             make(map[string]time.Time),
+		alertMgr:         NewAlertManager(repo, os.Getenv("ALERT_WEBHOOK_URL")),
+		calibration:      loadCalibrationMap(os.Getenv("SNMP_CALIBRATION_MAP")),
+		lastPolled:       make(map[int64]time.Time),
+		counterSource:    make(map[string]string),
+		hcNoProgress:     make(map[string]int),
+		legacyNoProgress: make(map[string]int),
 	}
 }
 
@@ -198,7 +208,7 @@ func (w *Worker) runOnce(ctx context.Context) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			w.pollOne(ctx, device)
-			w.markPolled(device.ID, now)
+			w.markPolled(device.ID, time.Now())
 		}()
 	}
 	wg.Wait()
@@ -239,6 +249,15 @@ func (w *Worker) pollIntervalForDevice(d db.Device) time.Duration {
 	if d.PollIntervalSec > 0 {
 		return time.Duration(d.PollIntervalSec) * time.Second
 	}
+	switch strings.ToLower(strings.TrimSpace(d.DeviceTier)) {
+	case "core":
+		return w.pollCore
+	case "aggregation", "agg":
+		return w.pollAgg
+	case "access":
+		return w.pollAccess
+	}
+	// Backward compatibility for old data without explicit tier.
 	text := strings.ToLower(strings.TrimSpace(d.Name + " " + d.Remark))
 	switch {
 	case strings.Contains(text, "核心") || strings.Contains(text, "core"):
@@ -304,7 +323,8 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 
 	mList := make([]db.InterfaceMetric, 0, len(result.Interfaces))
 	for _, itf := range result.Interfaces {
-		inBps, outBps := w.calcBps(d.ID, itf.IfIndex, itf.InOctets, itf.OutOctets, result.PolledAt, itf.SpeedMbps, w.pollIntervalForDevice(d))
+		inOct, outOct := w.pickCounterSource(d.ID, itf.IfIndex, itf.SpeedMbps, itf.HCInOctets, itf.HCOutOctets, itf.LegacyInOctets, itf.LegacyOutOctets)
+		inBps, outBps := w.calcBps(d.ID, itf.IfIndex, inOct, outOct, result.PolledAt, itf.SpeedMbps, w.pollIntervalForDevice(d))
 		w.trackPortState(ctx, d, itf.IfIndex, itf.IfName, itf.OperUp)
 		mList = append(mList, db.InterfaceMetric{
 			IfIndex:       itf.IfIndex,
@@ -686,7 +706,9 @@ func (w *Worker) calcBps(deviceID int64, ifIndex int, inOctets, outOctets uint64
 	if !ok {
 		w.last[key] = counterState{
 			inOctets: inOctets, outOctets: outOctets, at: now,
-			inBps: 0, outBps: 0, inZeroStreak: 0, outZeroStreak: 0,
+			inBps: 0, outBps: 0,
+			inRaw1: 0, inRaw2: 0, outRaw1: 0, outRaw2: 0,
+			inZeroStreak: 0, outZeroStreak: 0,
 		}
 		return 0, 0
 	}
@@ -700,10 +722,12 @@ func (w *Worker) calcBps(deviceID int64, ifIndex int, inOctets, outOctets uint64
 	// keep the previous stable value when deltaTs is far from expected.
 	if expectedInterval > 0 {
 		exp := expectedInterval.Seconds()
-		if seconds < exp*0.4 || seconds > exp*3.5 {
+		if seconds < exp*0.2 || seconds > exp*6.0 {
 			w.last[key] = counterState{
 				inOctets: inOctets, outOctets: outOctets, at: now,
 				inBps: prev.inBps, outBps: prev.outBps,
+				inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
+				outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
 				inZeroStreak: prev.inZeroStreak, outZeroStreak: prev.outZeroStreak,
 			}
 			return prev.inBps, prev.outBps
@@ -717,6 +741,8 @@ func (w *Worker) calcBps(deviceID int64, ifIndex int, inOctets, outOctets uint64
 		w.last[key] = counterState{
 			inOctets: inOctets, outOctets: outOctets, at: now,
 			inBps: prev.inBps, outBps: prev.outBps,
+			inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
+			outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
 			inZeroStreak: prev.inZeroStreak, outZeroStreak: prev.outZeroStreak,
 		}
 		return prev.inBps, prev.outBps
@@ -725,6 +751,10 @@ func (w *Worker) calcBps(deviceID int64, ifIndex int, inOctets, outOctets uint64
 	maxBps := maxReasonableBpsBySpeed(speedMbps)
 	rawIn := rawBps(inDelta, seconds)
 	rawOut := rawBps(outDelta, seconds)
+	if speedMbps >= 10000 {
+		rawIn = median3(rawIn, prev.inRaw1, prev.inRaw2)
+		rawOut = median3(rawOut, prev.outRaw1, prev.outRaw2)
+	}
 	inBps := clampOrKeepPrev(rawIn, prev.inBps, maxBps)
 	outBps := clampOrKeepPrev(rawOut, prev.outBps, maxBps)
 	// lightweight EWMA smoothing, reduces aliasing when polling interval changes.
@@ -733,12 +763,66 @@ func (w *Worker) calcBps(deviceID int64, ifIndex int, inOctets, outOctets uint64
 	w.last[key] = counterState{
 		inOctets: inOctets, outOctets: outOctets, at: now,
 		inBps: inBps, outBps: outBps,
+		inRaw1: rawIn, inRaw2: prev.inRaw1,
+		outRaw1: rawOut, outRaw2: prev.outRaw1,
 		inZeroStreak: inZeroStreak, outZeroStreak: outZeroStreak,
 	}
 	return inBps, outBps
 }
 
 func interfaceKey(deviceID int64, ifIndex int) string { return fmt.Sprintf("%d:%d", deviceID, ifIndex) }
+
+func (w *Worker) pickCounterSource(deviceID int64, ifIndex int, speedMbps int, hcIn, hcOut, legacyIn, legacyOut uint64) (uint64, uint64) {
+	key := interfaceKey(deviceID, ifIndex)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	src := w.counterSource[key]
+	if src == "" {
+		if speedMbps >= 10000 {
+			src = "hc"
+		} else {
+			src = "auto"
+		}
+	}
+	hcProgress := hcIn > 0 || hcOut > 0
+	legacyProgress := legacyIn > 0 || legacyOut > 0
+	if !hcProgress {
+		w.hcNoProgress[key]++
+	} else {
+		w.hcNoProgress[key] = 0
+	}
+	if !legacyProgress {
+		w.legacyNoProgress[key]++
+	} else {
+		w.legacyNoProgress[key] = 0
+	}
+
+	// High-speed ports: prefer HC, but auto-fallback when HC remains silent while legacy has data.
+	if speedMbps >= 10000 {
+		if src == "hc" && w.hcNoProgress[key] >= 3 && legacyProgress {
+			src = "legacy"
+			delete(w.last, key)
+			log.Printf("counter source switch device=%d ifIndex=%d hc->legacy", deviceID, ifIndex)
+		}
+		if src == "legacy" && hcProgress && w.legacyNoProgress[key] >= 3 {
+			src = "hc"
+			delete(w.last, key)
+			log.Printf("counter source switch device=%d ifIndex=%d legacy->hc", deviceID, ifIndex)
+		}
+		w.counterSource[key] = src
+		if src == "legacy" {
+			return legacyIn, legacyOut
+		}
+		return hcIn, hcOut
+	}
+
+	// Low-speed ports: keep existing near-2x compatibility fallback.
+	in := selectCounterForRate(hcIn, legacyIn, speedMbps)
+	out := selectCounterForRate(hcOut, legacyOut, speedMbps)
+	w.counterSource[key] = "auto"
+	return in, out
+}
 
 func safeDeltaWithDiscontinuity(curr, prev uint64) (uint64, bool) {
 	if curr < prev {
@@ -777,13 +861,24 @@ func clampOrKeepPrev(curr, prev int64, maxReasonableBps float64) int64 {
 }
 
 func maxReasonableBpsBySpeed(speedMbps int) float64 {
-	// S12700E and high-throughput chassis may report bursty counters.
-	// Keep larger headroom before treating as anomaly.
 	if speedMbps > 0 {
-		return float64(speedMbps) * 1_000_000 * 2.0
+		return float64(speedMbps) * 1_000_000 * 1.10
 	}
-	// Unknown speed: fallback to 100G with headroom.
-	return 120_000_000_000
+	return 110_000_000_000
+}
+
+func median3(a, b, c int64) int64 {
+	x := []int64{a, b, c}
+	if x[0] > x[1] {
+		x[0], x[1] = x[1], x[0]
+	}
+	if x[1] > x[2] {
+		x[1], x[2] = x[2], x[1]
+	}
+	if x[0] > x[1] {
+		x[0], x[1] = x[1], x[0]
+	}
+	return x[1]
 }
 
 func smoothRate(prev, curr int64, zeroStreak int) (int64, int) {
