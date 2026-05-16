@@ -2,6 +2,7 @@ package snmp
 
 import (
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +20,7 @@ const (
 	OIDCPU1MinH3C     = ".1.3.6.1.4.1.25506.2.6.1.1.1.1.33"
 	OIDIfName         = ".1.3.6.1.2.1.31.1.1.1.1"
 	OIDIfHCInOctets   = ".1.3.6.1.2.1.31.1.1.1.6"
-	OIDIfHCOutOctets  = ".1.3.6.1.2.1.31.1.1.1.10"
+	OIDIfHCOutOctets  = ".1.3.6.1.2.1.31.1.1.1.11"
 	OIDIfInOctets     = ".1.3.6.1.2.1.2.2.1.10"
 	OIDIfOutOctets    = ".1.3.6.1.2.1.2.2.1.16"
 	OIDIfOperStatus   = ".1.3.6.1.2.1.2.2.1.8"
@@ -29,6 +30,8 @@ const (
 	OIDHrStorageAlloc = ".1.3.6.1.2.1.25.2.3.1.4"
 	OIDHrStorageSize  = ".1.3.6.1.2.1.25.2.3.1.5"
 	OIDHrStorageUsed  = ".1.3.6.1.2.1.25.2.3.1.6"
+	OIDSysDescr       = ".1.3.6.1.2.1.1.1.0"
+	OIDSysObjectID    = ".1.3.6.1.2.1.1.2.0"
 )
 
 type InterfaceInfo struct {
@@ -37,12 +40,16 @@ type InterfaceInfo struct {
 }
 
 type InterfaceCounters struct {
-	IfIndex   int
-	IfName    string
-	InOctets  uint64
-	OutOctets uint64
-	OperUp    bool
-	SpeedMbps int
+	IfIndex         int
+	IfName          string
+	InOctets        uint64
+	OutOctets       uint64
+	HCInOctets      uint64
+	HCOutOctets     uint64
+	LegacyInOctets  uint64
+	LegacyOutOctets uint64
+	OperUp          bool
+	SpeedMbps       int
 }
 
 type PollResult struct {
@@ -54,6 +61,27 @@ type PollResult struct {
 	UptimeSec    int64
 	Interfaces   []InterfaceCounters
 	PolledAt     time.Time
+}
+
+type CounterCompareItem struct {
+	IfIndex         int     `json:"if_index"`
+	IfName          string  `json:"if_name"`
+	HCInOctets      uint64  `json:"hc_in_octets"`
+	LegacyInOctets  uint64  `json:"legacy_in_octets"`
+	HCOutOctets     uint64  `json:"hc_out_octets"`
+	LegacyOutOctets uint64  `json:"legacy_out_octets"`
+	InRatio         float64 `json:"in_ratio"`
+	OutRatio        float64 `json:"out_ratio"`
+}
+
+type CounterCompareResult struct {
+	PolledAt   time.Time            `json:"polled_at"`
+	Interfaces []CounterCompareItem `json:"interfaces"`
+}
+
+type SystemIdentity struct {
+	SysObjectID string
+	SysDescr    string
 }
 
 type OIDProfile struct {
@@ -181,6 +209,83 @@ func (c *Collector) FetchInterfacesWithOptions(ip string, opt PollOptions) ([]In
 	return out, nil
 }
 
+func (c *Collector) DetectSystemIdentity(ip string, opt PollOptions) (SystemIdentity, error) {
+	client := c.newClient(ip, opt)
+	if err := client.Connect(); err != nil {
+		return SystemIdentity{}, fmt.Errorf("snmp connect: %w", err)
+	}
+	defer client.Conn.Close()
+	resp, err := client.Get([]string{OIDSysObjectID, OIDSysDescr})
+	if err != nil {
+		return SystemIdentity{}, fmt.Errorf("get system identity: %w", err)
+	}
+	out := SystemIdentity{}
+	for _, v := range resp.Variables {
+		switch v.Name {
+		case OIDSysObjectID:
+			out.SysObjectID = pduToString(v)
+		case OIDSysDescr:
+			out.SysDescr = pduToString(v)
+		}
+	}
+	return out, nil
+}
+
+func (c *Collector) CompareInterfaceCounters(ip string, opt PollOptions, limit int) (CounterCompareResult, error) {
+	client := c.newClient(ip, opt)
+	if err := client.Connect(); err != nil {
+		return CounterCompareResult{}, fmt.Errorf("snmp connect: %w", err)
+	}
+	defer client.Conn.Close()
+
+	ifNames, err := c.fetchIfNames(client)
+	if err != nil {
+		return CounterCompareResult{}, err
+	}
+	hcIn, err := c.fetchCounterMap(client, OIDIfHCInOctets)
+	if err != nil {
+		return CounterCompareResult{}, err
+	}
+	hcOut, err := c.fetchCounterMap(client, OIDIfHCOutOctets)
+	if err != nil {
+		return CounterCompareResult{}, err
+	}
+	legacyIn, err := c.fetchCounterMap(client, OIDIfInOctets)
+	if err != nil {
+		return CounterCompareResult{}, err
+	}
+	legacyOut, err := c.fetchCounterMap(client, OIDIfOutOctets)
+	if err != nil {
+		return CounterCompareResult{}, err
+	}
+
+	out := make([]CounterCompareItem, 0, len(ifNames))
+	for ifIndex, ifName := range ifNames {
+		item := CounterCompareItem{
+			IfIndex:         ifIndex,
+			IfName:          ifName,
+			HCInOctets:      hcIn[ifIndex],
+			LegacyInOctets:  legacyIn[ifIndex],
+			HCOutOctets:     hcOut[ifIndex],
+			LegacyOutOctets: legacyOut[ifIndex],
+		}
+		if item.LegacyInOctets > 0 {
+			item.InRatio = float64(item.HCInOctets) / float64(item.LegacyInOctets)
+		}
+		if item.LegacyOutOctets > 0 {
+			item.OutRatio = float64(item.HCOutOctets) / float64(item.LegacyOutOctets)
+		}
+		out = append(out, item)
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return CounterCompareResult{
+		PolledAt:   time.Now(),
+		Interfaces: out,
+	}, nil
+}
+
 func (c *Collector) PollDevice(ip string, opt PollOptions) (PollResult, error) {
 	client := c.newClient(ip, opt)
 	if err := client.Connect(); err != nil {
@@ -196,27 +301,9 @@ func (c *Collector) PollDevice(ip string, opt PollOptions) (PollResult, error) {
 	if err != nil {
 		return PollResult{}, err
 	}
-	inMap, err := c.fetchCounterMap(client, OIDIfHCInOctets)
+	merged, err := c.fetchInterfaceMetrics(client, ifNames, opt)
 	if err != nil {
 		return PollResult{}, err
-	}
-	outMap, err := c.fetchCounterMap(client, OIDIfHCOutOctets)
-	if err != nil {
-		return PollResult{}, err
-	}
-	statusMap, _ := c.fetchIfOperStatus(client)
-	speedMap, _ := c.fetchIfSpeedMbps(client)
-
-	merged := make([]InterfaceCounters, 0, len(ifNames))
-	for idx, name := range ifNames {
-		merged = append(merged, InterfaceCounters{
-			IfIndex:   idx,
-			IfName:    name,
-			InOctets:  inMap[idx],
-			OutOctets: outMap[idx],
-			OperUp:    statusMap[idx],
-			SpeedMbps: speedMap[idx],
-		})
 	}
 
 	stUsage, stTotal, stFree := c.fetchStorageSummary(client)
@@ -232,6 +319,116 @@ func (c *Collector) PollDevice(ip string, opt PollOptions) (PollResult, error) {
 		Interfaces:   merged,
 		PolledAt:     time.Now(),
 	}, nil
+}
+
+// fetchInterfaceMetrics decides whether each port should use HC(64-bit) or legacy(32-bit)
+// counters by speed and SNMP version:
+// 1) ifHighSpeed/ifSpeed >= 1000Mbps: MUST use HC when available.
+// 2) <=100Mbps: prefer HC on v2c/v3, fallback to legacy.
+// 3) SNMP v1 on high-speed ports: warn because Counter64 is not supported.
+func (c *Collector) fetchInterfaceMetrics(client *gosnmp.GoSNMP, ifNames map[int]string, opt PollOptions) ([]InterfaceCounters, error) {
+	hcInMap, err := c.fetchCounterMapStrict(client, OIDIfHCInOctets)
+	if err != nil {
+		hcInMap = map[int]uint64{}
+	}
+	hcOutMap, err := c.fetchCounterMapStrict(client, OIDIfHCOutOctets)
+	if err != nil {
+		hcOutMap = map[int]uint64{}
+	}
+	legacyInMap, err := c.fetchCounterMapStrict(client, OIDIfInOctets)
+	if err != nil {
+		legacyInMap = map[int]uint64{}
+	}
+	legacyOutMap, err := c.fetchCounterMapStrict(client, OIDIfOutOctets)
+	if err != nil {
+		legacyOutMap = map[int]uint64{}
+	}
+
+	if len(hcInMap) == 0 && len(legacyInMap) == 0 {
+		return nil, fmt.Errorf("walk counter failed: inbound counters unavailable")
+	}
+	if len(hcOutMap) == 0 && len(legacyOutMap) == 0 {
+		return nil, fmt.Errorf("walk counter failed: outbound counters unavailable")
+	}
+
+	statusMap, _ := c.fetchIfOperStatus(client)
+	speedMap, _ := c.fetchIfSpeedMbps(client)
+	isV1 := strings.EqualFold(strings.TrimSpace(opt.SNMPVersion), "1") || strings.EqualFold(strings.TrimSpace(opt.SNMPVersion), "v1")
+
+	merged := make([]InterfaceCounters, 0, len(ifNames))
+	for idx, name := range ifNames {
+		speed := speedMap[idx]
+		hcIn := hcInMap[idx]
+		hcOut := hcOutMap[idx]
+		legacyIn := legacyInMap[idx]
+		legacyOut := legacyOutMap[idx]
+
+		var inOct, outOct uint64
+		switch {
+		case speed >= 1000:
+			// High-speed ports: HC is mandatory when available.
+			if hcIn > 0 || hcOut > 0 {
+				inOct = hcIn
+				outOct = hcOut
+			} else {
+				if isV1 {
+					log.Printf("snmp warning device version=v1 ifIndex=%d ifName=%s speed=%dMbps: Counter64 unavailable on SNMP v1, fallback to legacy", idx, name, speed)
+				} else {
+					log.Printf("snmp warning ifIndex=%d ifName=%s speed=%dMbps: HC counter missing, fallback to legacy", idx, name, speed)
+				}
+				inOct = legacyIn
+				outOct = legacyOut
+			}
+		default:
+			// Low-speed ports: prefer HC on v2c/v3, fallback to legacy.
+			if hcIn > 0 || hcOut > 0 {
+				inOct = hcIn
+				outOct = hcOut
+			} else {
+				inOct = legacyIn
+				outOct = legacyOut
+			}
+		}
+
+		merged = append(merged, InterfaceCounters{
+			IfIndex:         idx,
+			IfName:          name,
+			InOctets:        inOct,
+			OutOctets:       outOct,
+			HCInOctets:      hcIn,
+			HCOutOctets:     hcOut,
+			LegacyInOctets:  legacyIn,
+			LegacyOutOctets: legacyOut,
+			OperUp:          statusMap[idx],
+			SpeedMbps:       speed,
+		})
+	}
+
+	return merged, nil
+}
+
+func selectCounterForRate(hc, legacy uint64, speedMbps int) uint64 {
+	// High-speed ports must trust HC(64-bit). Legacy(32-bit) wraps too fast and
+	// introduces huge bias in ratio-based fallback decisions.
+	if speedMbps >= 1000 {
+		if hc > 0 {
+			return hc
+		}
+		return legacy
+	}
+	if hc == 0 {
+		return legacy
+	}
+	if legacy == 0 {
+		return hc
+	}
+	// For low-speed ports, only switch when we see a stable near-2x signature.
+	// This avoids overreacting to random jitters.
+	ratio := float64(hc) / float64(legacy)
+	if ratio > 1.90 && ratio < 2.10 {
+		return legacy
+	}
+	return hc
 }
 
 func (c *Collector) fetchSysUptimeSec(client *gosnmp.GoSNMP) int64 {
@@ -491,6 +688,63 @@ func (c *Collector) fetchCounterMap(client *gosnmp.GoSNMP, oid string) (map[int]
 		m[idx] = toUint64(p.Value)
 	}
 	return m, nil
+}
+
+func (c *Collector) fetchCounterMapStrict(client *gosnmp.GoSNMP, oid string) (map[int]uint64, error) {
+	pdus, err := client.BulkWalkAll(oid)
+	if err != nil {
+		return nil, fmt.Errorf("walk counter oid=%s failed: %w", oid, err)
+	}
+	m := make(map[int]uint64, len(pdus))
+	for _, p := range pdus {
+		idx, err := oidIndex(p.Name)
+		if err != nil {
+			continue
+		}
+		m[idx] = toUint64(p.Value)
+	}
+	return m, nil
+}
+
+// fetchCounterMapAuto prefers HC(64-bit) counters, but auto-corrects known
+// vendor anomalies where HC values are consistently ~2x of legacy counters.
+func (c *Collector) fetchCounterMapAuto(client *gosnmp.GoSNMP, hcOID, legacyOID string) (map[int]uint64, error) {
+	hc, hcErr := c.fetchCounterMap(client, hcOID)
+	legacy, legacyErr := c.fetchCounterMap(client, legacyOID)
+
+	if hcErr != nil && legacyErr != nil {
+		return nil, fmt.Errorf("walk counter auto failed hc=%s legacy=%s hcErr=%v legacyErr=%v", hcOID, legacyOID, hcErr, legacyErr)
+	}
+	if hcErr != nil {
+		return legacy, nil
+	}
+	if legacyErr != nil || len(legacy) == 0 {
+		return hc, nil
+	}
+
+	out := make(map[int]uint64, len(hc))
+	for idx, hv := range hc {
+		lv, ok := legacy[idx]
+		if !ok || lv == 0 {
+			out[idx] = hv
+			continue
+		}
+		// A few devices expose HC counters with stable 2x inflation.
+		// If HC/legacy ~= 2.0, trust legacy to keep traffic values consistent.
+		ratio := float64(hv) / float64(lv)
+		if hv > 0 && lv > 0 && ratio > 1.85 && ratio < 2.15 {
+			out[idx] = lv
+			continue
+		}
+		out[idx] = hv
+	}
+	// Include indices only seen in legacy map.
+	for idx, lv := range legacy {
+		if _, ok := out[idx]; !ok {
+			out[idx] = lv
+		}
+	}
+	return out, nil
 }
 
 func averageNumeric(pdus []gosnmp.SnmpPDU) float64 {
