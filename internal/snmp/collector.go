@@ -20,7 +20,7 @@ const (
 	OIDCPU1MinH3C     = ".1.3.6.1.4.1.25506.2.6.1.1.1.1.33"
 	OIDIfName         = ".1.3.6.1.2.1.31.1.1.1.1"
 	OIDIfHCInOctets   = ".1.3.6.1.2.1.31.1.1.1.6"
-	OIDIfHCOutOctets  = ".1.3.6.1.2.1.31.1.1.1.11"
+	OIDIfHCOutOctets  = ".1.3.6.1.2.1.31.1.1.1.10"
 	OIDIfInOctets     = ".1.3.6.1.2.1.2.2.1.10"
 	OIDIfOutOctets    = ".1.3.6.1.2.1.2.2.1.16"
 	OIDIfOperStatus   = ".1.3.6.1.2.1.2.2.1.8"
