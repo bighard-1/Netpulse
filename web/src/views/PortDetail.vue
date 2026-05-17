@@ -254,6 +254,31 @@ function calcGapAreas(points, maxGap = 2) {
   return areas;
 }
 
+function fillShortNullGaps(points, maxGap = 1) {
+  const arr = (points || []).slice();
+  if (!arr.length) return arr;
+  let i = 0;
+  while (i < arr.length) {
+    if (arr[i][1] != null) {
+      i += 1;
+      continue;
+    }
+    const gapStart = i;
+    while (i < arr.length && arr[i][1] == null) i += 1;
+    const gapEnd = i - 1;
+    const gapLen = gapEnd - gapStart + 1;
+    const prev = gapStart - 1 >= 0 ? arr[gapStart - 1][1] : null;
+    const next = i < arr.length ? arr[i][1] : null;
+    if (gapLen <= maxGap && prev != null && next != null) {
+      for (let k = gapStart; k <= gapEnd; k++) {
+        const ratio = (k - gapStart + 1) / (gapLen + 1);
+        arr[k][1] = Number(prev) + (Number(next) - Number(prev)) * ratio;
+      }
+    }
+  }
+  return arr;
+}
+
 function decimatePoints(points, maxPoints = 2200) {
   const arr = points || [];
   if (arr.length <= maxPoints) return arr;
@@ -393,8 +418,12 @@ function applyChart(chart, title, data, metaKey = "today") {
   const intervalSwitch = detectIntervalSwitchPoints(data);
   const hasIntervalSwitch = intervalSwitch.length > 0;
   const smoothEnabled = !showRawSeries.value && !hasIntervalSwitch;
-  const inView = decimatePoints(inbound);
-  const outView = decimatePoints(outbound);
+  // Bridge only tiny one-sample holes to avoid "dashed" appearance while
+  // keeping real outages/gaps visible.
+  const inBase = fillShortNullGaps(inbound, 1);
+  const outBase = fillShortNullGaps(outbound, 1);
+  const inView = decimatePoints(inBase);
+  const outView = decimatePoints(outBase);
   const hasData = inView.some((x) => x[1] != null) || outView.some((x) => x[1] != null);
   const nonNil = [
     ...inView.map((x) => x[1]).filter((v) => v != null),
