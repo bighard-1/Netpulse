@@ -46,6 +46,8 @@ type counterState struct {
 	outRaw2           int64
 	inZeroStreak      int
 	outZeroStreak     int
+	inNear2Streak     int
+	outNear2Streak    int
 }
 
 type Worker struct {
@@ -737,6 +739,7 @@ func (w *Worker) calcBps(
 	defer w.mu.Unlock()
 
 	mode := w.pickCounterMode(key, speedMbps, snmpVersion, hcPresent, legacyPresent)
+	highSpeedHC := speedMbps >= 1000 && hcPresent && mode == "hc"
 	inOctets, outOctets := pickCounterPair(mode, hcInOctets, hcOutOctets, legacyInOctets, legacyOutOctets)
 
 	prev, ok := w.last[key]
@@ -751,6 +754,7 @@ func (w *Worker) calcBps(
 			inBps: 0, outBps: 0,
 			inRaw1: 0, inRaw2: 0, outRaw1: 0, outRaw2: 0,
 			inZeroStreak: 0, outZeroStreak: 0,
+			inNear2Streak: 0, outNear2Streak: 0,
 			uptimeSec: uptimeSec,
 		}
 		return nil, nil, "INITIALIZING", "INITIALIZING"
@@ -772,6 +776,7 @@ func (w *Worker) calcBps(
 			inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 			outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
 			inZeroStreak: 0, outZeroStreak: 0,
+			inNear2Streak: 0, outNear2Streak: 0,
 			uptimeSec: uptimeSec,
 		}
 		return nil, nil, "COUNTER_SOURCE_SWITCH", "COUNTER_SOURCE_SWITCH"
@@ -787,6 +792,7 @@ func (w *Worker) calcBps(
 			inBps: 0, outBps: 0,
 			inRaw1: 0, inRaw2: 0, outRaw1: 0, outRaw2: 0,
 			inZeroStreak: 0, outZeroStreak: 0,
+			inNear2Streak: 0, outNear2Streak: 0,
 			uptimeSec: uptimeSec,
 		}
 		return nil, nil, "DEVICE_REBOOT", "DEVICE_REBOOT"
@@ -811,6 +817,7 @@ func (w *Worker) calcBps(
 				inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 				outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
 				inZeroStreak: prev.inZeroStreak, outZeroStreak: prev.outZeroStreak,
+				inNear2Streak: prev.inNear2Streak, outNear2Streak: prev.outNear2Streak,
 				uptimeSec: uptimeSec,
 			}
 			return nil, nil, "WINDOW_GAP", "WINDOW_GAP"
@@ -846,7 +853,7 @@ func (w *Worker) calcBps(
 		} else {
 			hcDiscStreak = 0
 		}
-		if hcDiscStreak >= 3 && legacyPresent {
+		if hcDiscStreak >= 3 && legacyPresent && !highSpeedHC {
 			w.modes[key] = "legacy"
 			w.last[key] = counterState{
 				inOctets: legacyInOctets, outOctets: legacyOutOctets, at: now,
@@ -859,14 +866,16 @@ func (w *Worker) calcBps(
 				inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 				outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
 				inZeroStreak: 0, outZeroStreak: 0,
+				inNear2Streak: 0, outNear2Streak: 0,
 				uptimeSec: uptimeSec,
 			}
 			return nil, nil, "COUNTER_SOURCE_SWITCH", "COUNTER_SOURCE_SWITCH"
 		}
-		if legacyPresent {
-			// Some devices expose unstable HC counters on high-speed ports.
-			// If HC delta keeps diverging heavily from legacy delta for several
-			// consecutive polls, demote this interface to legacy mode only.
+		if legacyPresent && !highSpeedHC {
+			// Legacy Counter32 is only safe as an auto-fallback for low/medium
+			// speed ports. On >=1G ports it may wrap repeatedly between polls,
+			// so HC/legacy divergence is diagnostic noise rather than a safe
+			// reason to switch sources.
 			if legacyInDeltaRaw > 0 && hcInDeltaRaw > 0 && legacyOutDeltaRaw > 0 && hcOutDeltaRaw > 0 {
 				inRatio := float64(hcInDeltaRaw) / float64(legacyInDeltaRaw)
 				outRatio := float64(hcOutDeltaRaw) / float64(legacyOutDeltaRaw)
@@ -893,6 +902,7 @@ func (w *Worker) calcBps(
 					inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 					outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
 					inZeroStreak: prev.inZeroStreak, outZeroStreak: prev.outZeroStreak,
+					inNear2Streak: prev.inNear2Streak, outNear2Streak: prev.outNear2Streak,
 					uptimeSec: uptimeSec,
 				}
 				return nil, nil, "COUNTER_SOURCE_SWITCH", "COUNTER_SOURCE_SWITCH"
@@ -902,7 +912,7 @@ func (w *Worker) calcBps(
 			} else {
 				hcStaleStreak = 0
 			}
-			if hcStaleStreak >= 3 {
+			if hcStaleStreak >= 3 && !highSpeedHC {
 				w.modes[key] = "legacy"
 				w.last[key] = counterState{
 					inOctets: legacyInOctets, outOctets: legacyOutOctets, at: now,
@@ -915,6 +925,7 @@ func (w *Worker) calcBps(
 					inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 					outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
 					inZeroStreak: 0, outZeroStreak: 0,
+					inNear2Streak: 0, outNear2Streak: 0,
 					uptimeSec: uptimeSec,
 				}
 				return nil, nil, "COUNTER_SOURCE_SWITCH", "COUNTER_SOURCE_SWITCH"
@@ -939,6 +950,7 @@ func (w *Worker) calcBps(
 				inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 				outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
 				inZeroStreak: 0, outZeroStreak: 0,
+				inNear2Streak: 0, outNear2Streak: 0,
 				uptimeSec: uptimeSec,
 			}
 			return nil, nil, "COUNTER_SOURCE_SWITCH", "COUNTER_SOURCE_SWITCH"
@@ -1006,7 +1018,7 @@ func (w *Worker) calcBps(
 	// Directional fallback: on some distributed chassis, one direction may have
 	// stale/abnormal counter while the other direction is fine in the same poll.
 	// Fallback per direction instead of forcing whole-interface switch.
-	if mode == "hc" && legacyPresent && seconds > 0 {
+	if mode == "hc" && legacyPresent && seconds > 0 && !highSpeedHC {
 		hcInRate := rawBps(hcInDeltaRaw, seconds)
 		hcOutRate := rawBps(hcOutDeltaRaw, seconds)
 		legacyInRate := rawBps(legacyInDeltaRaw, seconds)
@@ -1062,10 +1074,32 @@ func (w *Worker) calcBps(
 			}
 		}
 	}
-	inBps := clampOrKeepPrev(rawIn, prev.inBps, maxBps)
-	outBps := clampOrKeepPrev(rawOut, prev.outBps, maxBps)
 	inZeroStreak := prev.inZeroStreak
 	outZeroStreak := prev.outZeroStreak
+	inNear2Streak := prev.inNear2Streak
+	outNear2Streak := prev.outNear2Streak
+	if highSpeedHC && legacyPresent && seconds > 0 {
+		if shouldApplyHalfScale(hcInDeltaRaw, legacyInDeltaRaw, rawIn, maxBps) {
+			inNear2Streak++
+		} else {
+			inNear2Streak = 0
+		}
+		if shouldApplyHalfScale(hcOutDeltaRaw, legacyOutDeltaRaw, rawOut, maxBps) {
+			outNear2Streak++
+		} else {
+			outNear2Streak = 0
+		}
+		if inNear2Streak >= 3 {
+			rawIn = rawIn / 2
+			inStat = "HC_SCALE_HALF"
+		}
+		if outNear2Streak >= 3 {
+			rawOut = rawOut / 2
+			outStat = "HC_SCALE_HALF"
+		}
+	}
+	inBps := clampOrKeepPrev(rawIn, prev.inBps, maxBps)
+	outBps := clampOrKeepPrev(rawOut, prev.outBps, maxBps)
 	// Accuracy first: on discontinuity/reset, mark as invalid sample instead of
 	// carrying previous value which may bias comparison against external NMS.
 	if inDis {
@@ -1091,18 +1125,37 @@ func (w *Worker) calcBps(
 		inRaw1: rawIn, inRaw2: prev.inRaw1,
 		outRaw1: rawOut, outRaw2: prev.outRaw1,
 		inZeroStreak: inZeroStreak, outZeroStreak: outZeroStreak,
+		inNear2Streak: inNear2Streak, outNear2Streak: outNear2Streak,
 		uptimeSec: uptimeSec,
 	}
 	var inPtr, outPtr *int64
-	if inStat == "VALID" {
+	if isPersistableTrafficStatus(inStat) {
 		v := inBps
 		inPtr = &v
 	}
-	if outStat == "VALID" {
+	if isPersistableTrafficStatus(outStat) {
 		v := outBps
 		outPtr = &v
 	}
 	return inPtr, outPtr, inStat, outStat
+}
+
+func isPersistableTrafficStatus(status string) bool {
+	return status == "VALID" || strings.HasPrefix(status, "DIR_") || status == "HC_SCALE_HALF"
+}
+
+func shouldApplyHalfScale(hcDelta, legacyDelta uint64, hcRate int64, maxReasonableBps float64) bool {
+	if hcDelta == 0 || legacyDelta == 0 || hcRate <= 0 {
+		return false
+	}
+	ratio := float64(hcDelta) / float64(legacyDelta)
+	if ratio < 1.85 || ratio > 2.15 {
+		return false
+	}
+	if maxReasonableBps <= 0 {
+		return true
+	}
+	return float64(hcRate) <= maxReasonableBps
 }
 
 func chooseCloserToPrev(prev, a, b int64) int64 {
@@ -1136,13 +1189,6 @@ func abs64(x int64) int64 {
 func interfaceKey(deviceID int64, ifIndex int) string { return fmt.Sprintf("%d:%d", deviceID, ifIndex) }
 
 func (w *Worker) pickCounterMode(key string, speedMbps int, snmpVersion string, hcPresent, legacyPresent bool) string {
-	current := w.modes[key]
-	if current == "hc" && hcPresent {
-		return "hc"
-	}
-	if current == "legacy" && legacyPresent {
-		return "legacy"
-	}
 	isV1 := strings.EqualFold(strings.TrimSpace(snmpVersion), "1") || strings.EqualFold(strings.TrimSpace(snmpVersion), "v1")
 	if isV1 {
 		if legacyPresent {
@@ -1154,6 +1200,19 @@ func (w *Worker) pickCounterMode(key string, speedMbps int, snmpVersion string, 
 			return "hc"
 		}
 		w.modes[key] = "legacy"
+		return "legacy"
+	}
+	if speedMbps >= 1000 && hcPresent {
+		// For high-speed interfaces, Counter32/legacy can wrap too frequently
+		// to be a reliable source. Pin v2c/v3 high-speed ports to Counter64.
+		w.modes[key] = "hc"
+		return "hc"
+	}
+	current := w.modes[key]
+	if current == "hc" && hcPresent {
+		return "hc"
+	}
+	if current == "legacy" && legacyPresent {
 		return "legacy"
 	}
 	// For >=20Mbps ports, strongly prefer HC; keep same rule for low-speed when HC is available.
