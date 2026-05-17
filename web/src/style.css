@@ -87,6 +87,9 @@ body,
 .np-main {
   flex: 1;
   min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 .np-topbar {
@@ -101,7 +104,19 @@ body,
 
 .np-content {
   padding: 24px;
-  overflow-x: auto;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.np-content > *,
+.el-card,
+.el-card__body,
+.el-tabs,
+.el-table,
+.el-table__inner-wrapper {
+  min-width: 0;
 }
 
 .el-card {
@@ -391,7 +406,7 @@ body,
   }
 }
 
-@media (max-width: 959px) {
+@media (max-width: 1199px) {
   .sidebar.mobile {
     position: fixed;
     left: 0;

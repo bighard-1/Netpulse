@@ -91,13 +91,17 @@ CREATE TABLE IF NOT EXISTS metrics (
     storage_free NUMERIC(20,2),
     uptime_sec BIGINT,
     traffic_in_bps BIGINT,
-    traffic_out_bps BIGINT
+    traffic_out_bps BIGINT,
+    traffic_in_status VARCHAR(32),
+    traffic_out_status VARCHAR(32)
 );
 
 ALTER TABLE metrics ADD COLUMN IF NOT EXISTS storage_usage NUMERIC(5,2);
 ALTER TABLE metrics ADD COLUMN IF NOT EXISTS storage_total NUMERIC(20,2);
 ALTER TABLE metrics ADD COLUMN IF NOT EXISTS storage_free NUMERIC(20,2);
 ALTER TABLE metrics ADD COLUMN IF NOT EXISTS uptime_sec BIGINT;
+ALTER TABLE metrics ADD COLUMN IF NOT EXISTS traffic_in_status VARCHAR(32);
+ALTER TABLE metrics ADD COLUMN IF NOT EXISTS traffic_out_status VARCHAR(32);
 
 DO $$
 BEGIN
@@ -767,18 +771,20 @@ type Interface struct {
 }
 
 type InterfaceMetric struct {
-	IfIndex       int
-	IfName        string
-	CPUUsage      float64
-	MemoryUsage   float64
-	StorageUsage  float64
-	StorageTotal  float64
-	StorageFree   float64
-	UptimeSec     int64
-	SpeedMbps     int
-	OperStatus    int
-	TrafficInBps  int64
-	TrafficOutBps int64
+	IfIndex        int
+	IfName         string
+	CPUUsage       float64
+	MemoryUsage    float64
+	StorageUsage   float64
+	StorageTotal   float64
+	StorageFree    float64
+	UptimeSec      int64
+	SpeedMbps      int
+	OperStatus     int
+	TrafficInBps   *int64
+	TrafficOutBps  *int64
+	TrafficInStat  string
+	TrafficOutStat string
 }
 
 type DeviceStatus struct {
@@ -2214,9 +2220,9 @@ func (r *Repository) SaveMetrics(
 			RETURNING id
 		)
 		INSERT INTO metrics (
-			ts, device_id, interface_id, cpu_usage, memory_usage, storage_usage, storage_total, storage_free, uptime_sec, traffic_in_bps, traffic_out_bps
+			ts, device_id, interface_id, cpu_usage, memory_usage, storage_usage, storage_total, storage_free, uptime_sec, traffic_in_bps, traffic_out_bps, traffic_in_status, traffic_out_status
 		)
-		VALUES ($1, $2, (SELECT id FROM upsert_if LIMIT 1), $5, $6, $7, $8, $9, $10, $11, $12);
+		VALUES ($1, $2, (SELECT id FROM upsert_if LIMIT 1), $5, $6, $7, $8, $9, $10, $11, $12, $15, $16);
 	`
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2229,11 +2235,11 @@ func (r *Repository) SaveMetrics(
 	for _, m := range metrics {
 		cpu := clampPercent(m.CPUUsage)
 		mem := clampPercent(m.MemoryUsage)
-		inBps := clampTrafficBps(m.TrafficInBps)
-		outBps := clampTrafficBps(m.TrafficOutBps)
+		inBps := clampTrafficBpsNullable(m.TrafficInBps)
+		outBps := clampTrafficBpsNullable(m.TrafficOutBps)
 
 		if _, err := tx.ExecContext(
-			ctx, q, ts, deviceID, m.IfIndex, m.IfName, cpu, mem, clampPercent(m.StorageUsage), clampNonNegative(m.StorageTotal), clampNonNegative(m.StorageFree), m.UptimeSec, inBps, outBps, m.SpeedMbps, m.OperStatus,
+			ctx, q, ts, deviceID, m.IfIndex, m.IfName, cpu, mem, clampPercent(m.StorageUsage), clampNonNegative(m.StorageTotal), clampNonNegative(m.StorageFree), m.UptimeSec, inBps, outBps, m.SpeedMbps, m.OperStatus, strings.TrimSpace(m.TrafficInStat), strings.TrimSpace(m.TrafficOutStat),
 		); err != nil {
 			return fmt.Errorf("insert metric ifIndex=%d: %w", m.IfIndex, err)
 		}
@@ -2258,15 +2264,19 @@ func clampPercent(v float64) float64 {
 	return v
 }
 
-func clampTrafficBps(v int64) int64 {
-	if v < 0 {
-		return 0
+func clampTrafficBpsNullable(v *int64) sql.NullInt64 {
+	if v == nil {
+		return sql.NullInt64{Valid: false}
+	}
+	n := *v
+	if n < 0 {
+		return sql.NullInt64{Valid: false}
 	}
 	const maxReasonableBps int64 = 9_000_000_000_000_000
-	if v > maxReasonableBps {
-		return 0
+	if n > maxReasonableBps {
+		return sql.NullInt64{Valid: false}
 	}
-	return v
+	return sql.NullInt64{Int64: n, Valid: true}
 }
 
 func clampNonNegative(v float64) float64 {
@@ -2497,7 +2507,10 @@ func (r *Repository) GetDeviceHistory(
 ) ([]DeviceHistoryPoint, error) {
 	useAgg := end.Sub(start) > 7*24*time.Hour
 	interval = strings.TrimSpace(strings.ToLower(interval))
-	bucketInterval := resolveHistoryBucketInterval(end.Sub(start), interval, maxPoints, useAgg)
+	bucketInterval := ""
+	if interval != "" || useAgg {
+		bucketInterval = resolveHistoryBucketInterval(end.Sub(start), interval, maxPoints, useAgg)
+	}
 	q := `
 		SELECT ts,
 		       AVG(COALESCE(cpu_usage, 0)) AS cpu_usage,
@@ -2567,29 +2580,33 @@ func (r *Repository) GetInterfaceHistory(
 	useAgg := end.Sub(start) > 7*24*time.Hour
 	interval = strings.TrimSpace(strings.ToLower(interval))
 	bucketInterval := resolveHistoryBucketInterval(end.Sub(start), interval, maxPoints, useAgg)
-	if bucketInterval == "" {
-		bucketInterval = "1 minute"
-	}
 
-	q := fmt.Sprintf(`
-		WITH buckets AS (
-			SELECT DISTINCT time_bucket('%[1]s', gs) AS ts
-			FROM generate_series($2::timestamptz, $3::timestamptz, '%[1]s'::interval) AS gs
-		),
-		raw AS (
+	q := `
+		SELECT ts, traffic_in_bps, traffic_out_bps
+		FROM metrics
+		WHERE interface_id = $1 AND ts >= $2 AND ts <= $3
+		ORDER BY ts;
+	`
+	if bucketInterval != "" {
+		q = fmt.Sprintf(`
 			SELECT time_bucket('%[1]s', ts) AS ts,
 			       AVG(traffic_in_bps) AS traffic_in_bps,
 			       AVG(traffic_out_bps) AS traffic_out_bps
 			FROM metrics
 			WHERE interface_id = $1 AND ts >= $2 AND ts <= $3
 			GROUP BY 1
-		)
-		SELECT b.ts, r.traffic_in_bps, r.traffic_out_bps
-		FROM buckets b
-		LEFT JOIN raw r ON r.ts = b.ts
-		ORDER BY b.ts;
-	`, bucketInterval)
-	if useAgg {
+			ORDER BY 1;
+		`, bucketInterval)
+	}
+	if useAgg && bucketInterval == "" {
+		q = `
+			SELECT bucket AS ts, avg_traffic_in_bps AS traffic_in_bps, avg_traffic_out_bps AS traffic_out_bps
+			FROM metrics_1m
+			WHERE interface_id = $1 AND bucket >= $2 AND bucket <= $3
+			ORDER BY bucket;
+		`
+	}
+	if useAgg && bucketInterval != "" {
 		q = fmt.Sprintf(`
 			WITH buckets AS (
 				SELECT DISTINCT time_bucket('%[1]s', gs) AS ts

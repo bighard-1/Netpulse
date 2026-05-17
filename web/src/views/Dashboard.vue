@@ -10,7 +10,6 @@ import StatsCards from "../components/dashboard/StatsCards.vue";
 import LiveEventFeed from "../components/dashboard/LiveEventFeed.vue";
 import HealthTrendArea from "../components/dashboard/HealthTrendArea.vue";
 import TrafficTopBar from "../components/dashboard/TrafficTopBar.vue";
-import PhaseRoadmap from "../components/dashboard/PhaseRoadmap.vue";
 
 const ops = useOpsStore();
 const router = useRouter();
@@ -26,9 +25,13 @@ const healthTrend = ref([]);
 const healthExplainVisible = ref(false);
 const eventDetailVisible = ref(false);
 const eventDetail = ref(null);
+const eventPage = ref(1);
+const eventPageSize = ref(20);
 const statusQuickFilter = ref("all");
 const healthRef = ref(null);
 const hotspotRef = ref(null);
+const chartRefreshKey = ref(0);
+const topTab = ref("100m");
 const todoActions = computed(() => {
   const out = [];
   if (devices.value.length === 0) out.push({ key: "add", title: "添加首台资产", action: () => router.push("/assets") });
@@ -59,8 +62,23 @@ const trafficHotspots = computed(() => {
   const points = [];
   for (const d of devices.value) {
     for (const p of d.interfaces || []) {
-      const heat = Number(p.traffic_in_bps || 0) + Number(p.traffic_out_bps || 0);
-      if (heat > 0) points.push({ deviceName: d.name || d.ip, interfaceName: p.name, interfaceId: p.id, bps: heat });
+      const inBps = Number(p.traffic_in_bps || 0);
+      const outBps = Number(p.traffic_out_bps || 0);
+      const heat = inBps + outBps;
+      if (heat > 0) {
+        points.push({
+          deviceName: d.name || d.ip,
+          deviceId: d.id,
+          deviceIp: d.ip,
+          interfaceName: p.name || `ifIndex-${p.index}`,
+          interfaceIndex: Number(p.index || 0),
+          interfaceId: p.id,
+          inBps,
+          outBps,
+          bps: heat,
+          remark: p.remark || ""
+        });
+      }
     }
   }
   points.sort((a, b) => b.bps - a.bps);
@@ -70,11 +88,10 @@ const top100M = computed(() => rankedPortsBySpeed(95, 1000));
 const top1G = computed(() => rankedPortsBySpeed(1000, 10000));
 const top10G = computed(() => rankedPortsBySpeed(10000, 0));
 
-const storageRiskCount = computed(() => {
-  return devices.value.filter((d) => {
-    const v = Number(d.storage_usage ?? d.disk_usage ?? d.flash_usage ?? NaN);
-    return Number.isFinite(v) && v >= 85;
-  }).length;
+const pagedAlerts = computed(() => {
+  const list = (ops.realtimeAlerts || []).slice(0, 100);
+  const start = (eventPage.value - 1) * eventPageSize.value;
+  return list.slice(start, start + eventPageSize.value);
 });
 
 const filteredDevices = computed(() => {
@@ -142,16 +159,25 @@ function openAvailabilityDetail() {
   statusQuickFilter.value = "online";
 }
 
-function openAlertsDetail() {
-  router.push("/alerts");
+function openAlertsDetail(level = "") {
+  router.push({ path: "/alerts", query: level ? { level } : {} });
 }
 
 function openHotspotsDetail() {
   scrollToRef(hotspotRef);
 }
 
-function openStorageDetail() {
-  router.push("/assets");
+function openHotspotPort(item) {
+  const id = Number(item?.interfaceId || 0);
+  if (!id) return;
+  const q = {
+    deviceId: String(item?.deviceId || ""),
+    deviceIp: String(item?.deviceIp || ""),
+    portName: String(item?.interfaceName || item?.portName || ""),
+    portBaseName: String(item?.interfaceName || item?.portName || ""),
+    portRemark: String(item?.remark || "")
+  };
+  router.push({ path: `/port/${id}`, query: q });
 }
 
 function severityTag(sev) {
@@ -177,7 +203,8 @@ async function loadAlerts(opts = {}) {
   const silent = Boolean(opts.silent);
   if (!silent) feedLoading.value = true;
   try {
-    await ops.refreshRealtimeAlerts(20);
+    // 事件流支持 20 条/页，共 5 页，需要拉取 100 条
+    await ops.refreshRealtimeAlerts(100);
   } catch (err) {
     if (!silent) fb.apiError(err, "加载事件流失败");
   } finally {
@@ -192,6 +219,9 @@ async function refreshAll(opts = {}) {
   const silent = Boolean(opts.silent);
   try {
     await Promise.all([loadDevices({ silent }), loadAlerts({ silent }), loadHealthTrend({ silent })]);
+    chartRefreshKey.value += 1;
+    const totalPages = Math.max(1, Math.ceil(Math.min((ops.realtimeAlerts || []).length, 100) / eventPageSize.value));
+    if (eventPage.value > totalPages) eventPage.value = 1;
   } finally {
     refreshInFlight = false;
   }
@@ -230,19 +260,32 @@ function rankedPortsBySpeed(min, max) {
       const speed = Number(p.speed_mbps || 0);
       if (speed < min) continue;
       if (max > 0 && speed >= max) continue;
-      const heat = Number(p.traffic_in_bps || 0) + Number(p.traffic_out_bps || 0);
+      const inBps = Number(p.traffic_in_bps || 0);
+      const outBps = Number(p.traffic_out_bps || 0);
+      const heat = Math.max(inBps, outBps);
       if (heat <= 0) continue;
       points.push({
         deviceName: d.name || d.ip,
+        deviceId: d.id,
+        deviceIp: d.ip,
         interfaceName: p.name || `ifIndex-${p.index}`,
+        interfaceIndex: Number(p.index || 0),
         interfaceId: p.id,
-        bps: heat
+        inBps,
+        outBps,
+        bps: inBps + outBps
       });
     }
   }
   points.sort((a, b) => b.bps - a.bps);
   return points.slice(0, 5);
 }
+
+const activeTopHotspots = computed(() => {
+  if (topTab.value === "1g") return top1G.value;
+  if (topTab.value === "10g") return top10G.value;
+  return top100M.value;
+});
 
 function openEventDetail(event) {
   if (!event) return;
@@ -286,6 +329,24 @@ function onVisibilityChange() {
 
 <template>
   <div class="space-y-5">
+    <el-card class="np-search-hero">
+      <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <div class="text-lg font-semibold text-slate-900">全局搜索</div>
+          <div class="text-xs text-slate-500">快速定位设备、端口、备注并直达详情</div>
+        </div>
+        <div class="flex w-full flex-wrap items-center gap-2 lg:w-auto">
+          <el-input v-model="globalKeyword" placeholder="搜索 IP / 名称 / 备注 / 端口名" clearable class="w-full lg:w-[420px]" />
+          <el-select v-model="statusQuickFilter" class="w-full lg:w-[130px]">
+            <el-option label="全部状态" value="all" />
+            <el-option label="仅在线" value="online" />
+            <el-option label="仅离线" value="offline" />
+          </el-select>
+          <el-button type="primary" @click="refreshAll">刷新</el-button>
+        </div>
+      </div>
+    </el-card>
+
     <el-card v-if="showOnboarding">
       <template #header><span class="text-lg font-semibold">首次引导</span></template>
       <el-steps :active="1" finish-status="success" align-center>
@@ -307,12 +368,11 @@ function onVisibilityChange() {
       :active-alerts="activeAlerts"
       :alert-breakdown="alertBreakdown"
       :traffic-hotspots="trafficHotspots"
-      :storage-risk-count="storageRiskCount"
       @open-health="openHealthDetail"
       @open-availability="openAvailabilityDetail"
       @open-alerts="openAlertsDetail"
       @open-hotspots="openHotspotsDetail"
-      @open-storage="openStorageDetail"
+      @open-hotspot-port="openHotspotPort"
     />
 
     <el-card v-if="todoActions.length">
@@ -330,38 +390,23 @@ function onVisibilityChange() {
       </div>
     </el-card>
 
-    <section ref="healthRef" class="grid grid-cols-1 gap-5">
-      <HealthTrendArea :trend="healthTrend" />
-      <div ref="hotspotRef" class="grid grid-cols-1 gap-5 xl:grid-cols-3">
-        <TrafficTopBar title="百兆口 Top N（100M）" :hotspots="top100M" />
-        <TrafficTopBar title="千兆口 Top N（1G）" :hotspots="top1G" />
-        <TrafficTopBar title="万兆口 Top N（10G）" :hotspots="top10G" />
-      </div>
-    </section>
-
-    <section class="grid grid-cols-1 gap-5 2xl:grid-cols-[2fr,1fr]">
-      <el-card>
+    <section class="grid min-w-0 grid-cols-1 gap-5 xl:grid-cols-[minmax(0,3fr),minmax(280px,1fr)]">
+      <div class="min-w-0 space-y-5" ref="healthRef">
+        <HealthTrendArea :trend="healthTrend" :refresh-key="chartRefreshKey" :loading="loading" />
+        <el-card class="min-w-0">
         <template #header>
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <div class="flex items-center gap-2">
+            <div class="flex flex-wrap items-center gap-2 w-full md:w-auto">
               <span class="text-lg font-semibold">资产总览（只读）</span>
               <el-button text type="primary" @click="healthExplainVisible = true">指标口径说明</el-button>
             </div>
-            <div class="flex items-center gap-2">
-              <el-input v-model="globalKeyword" placeholder="搜索 IP / 名称 / 备注 / 端口名" clearable class="w-[320px]" />
-              <el-select v-model="statusQuickFilter" class="w-[130px]">
-                <el-option label="全部状态" value="all" />
-                <el-option label="仅在线" value="online" />
-                <el-option label="仅离线" value="offline" />
-              </el-select>
-              <el-button @click="refreshAll">刷新</el-button>
-            </div>
+            <div class="text-xs text-slate-500">可点击设备或端口名称直达详情</div>
           </div>
         </template>
 
         <el-skeleton :loading="loading" animated :rows="10">
           <template #default>
-            <el-table :data="filteredDevices" class="np-borderless-table" size="large">
+            <el-table :data="filteredDevices" class="np-borderless-table np-sticky-table" size="large" max-height="520" @row-click="openDeviceDetail">
               <el-table-column label="状态" width="90">
                 <template #default="{ row }">
                   <el-tooltip :content="statusLabel(row)">
@@ -391,7 +436,7 @@ function onVisibilityChange() {
               <el-table-column prop="remark" label="备注" min-width="220" />
             </el-table>
             <el-divider v-if="filteredPorts.length">端口命中结果（可直接点击进入）</el-divider>
-            <el-table v-if="filteredPorts.length" :data="filteredPorts" class="np-borderless-table" size="small">
+            <el-table v-if="filteredPorts.length" :data="filteredPorts" class="np-borderless-table np-sticky-table" size="small" max-height="320" @row-click="openPortDetail">
               <el-table-column label="端口" min-width="200">
                 <template #default="{ row }">
                   <el-button link type="primary" @click="openPortDetail(row)">{{ row.portName }}</el-button>
@@ -410,18 +455,43 @@ function onVisibilityChange() {
             </el-table>
           </template>
         </el-skeleton>
-      </el-card>
+        </el-card>
+      </div>
 
-      <LiveEventFeed
-        :loading="feedLoading"
-        :alerts="ops.realtimeAlerts"
-        :severity-tag="severityTag"
-        @open-event="openEventDetail"
-      />
+      <div ref="hotspotRef" class="min-w-0 space-y-5">
+        <LiveEventFeed
+          :loading="feedLoading"
+          :alerts="pagedAlerts"
+          :severity-tag="severityTag"
+          :page="eventPage"
+          :page-size="eventPageSize"
+          :total="Math.min((ops.realtimeAlerts || []).length, 100)"
+          @update:page="(p) => (eventPage = p)"
+          @open-event="openEventDetail"
+        />
+
+        <el-card class="min-w-0">
+          <template #header>
+            <div class="flex items-center justify-between">
+              <span class="text-lg font-semibold">Top N 端口流量</span>
+              <el-button link type="primary" @click="openHotspotsDetail">查看全部定位</el-button>
+            </div>
+          </template>
+          <el-tabs v-model="topTab">
+            <el-tab-pane label="100M" name="100m" />
+            <el-tab-pane label="1G" name="1g" />
+            <el-tab-pane label="10G" name="10g" />
+          </el-tabs>
+          <TrafficTopBar
+            :title="topTab === '100m' ? '百兆口 Top N（100M）' : (topTab === '1g' ? '千兆口 Top N（1G）' : '万兆口 Top N（10G）')"
+            :hotspots="activeTopHotspots"
+            :refresh-key="chartRefreshKey"
+            :loading="loading"
+            @open-port="openHotspotPort"
+          />
+        </el-card>
+      </div>
     </section>
-
-    <PhaseRoadmap />
-
     <el-drawer v-model="eventDetailVisible" title="事件详情" size="520px">
       <div class="space-y-3" v-if="eventDetail">
         <div class="rounded-lg border border-slate-200 bg-slate-50 p-3">
@@ -466,3 +536,16 @@ function onVisibilityChange() {
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+:deep(.np-search-hero .el-card__body) {
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+
+:deep(.np-sticky-table .el-table__header-wrapper) {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+</style>
