@@ -42,6 +42,7 @@ func NewHandler(repo *db.Repository, collector *snmp.Collector, system *SystemSe
 
 func (h *Handler) Router() http.Handler {
 	r := chi.NewRouter()
+	r.Use(h.serverTimeZoneHeaderMiddleware())
 
 	r.Post("/api/login", h.rateLimit("login", 20, time.Minute, h.handleLogin("web")))
 	r.Post("/api/auth/login", h.rateLimit("login", 20, time.Minute, h.handleLogin("web")))
@@ -99,6 +100,19 @@ func (h *Handler) Router() http.Handler {
 	})
 
 	return r
+}
+
+func (h *Handler) serverTimeZoneHeaderMiddleware() func(http.Handler) http.Handler {
+	tz := strings.TrimSpace(os.Getenv("TZ"))
+	if tz == "" {
+		tz = "Asia/Shanghai"
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Server-Timezone", tz)
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func (h *Handler) slowRequestMiddleware(threshold time.Duration) func(http.Handler) http.Handler {
@@ -510,12 +524,14 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 		metrics := make([]db.InterfaceMetric, 0, len(poll.Interfaces))
 		for _, itf := range poll.Interfaces {
 			metrics = append(metrics, db.InterfaceMetric{
-				IfIndex:       itf.IfIndex,
-				IfName:        itf.IfName,
-				CPUUsage:      poll.CPUUsage,
-				MemoryUsage:   poll.MemoryUsage,
-				TrafficInBps:  0,
-				TrafficOutBps: 0,
+				IfIndex:        itf.IfIndex,
+				IfName:         itf.IfName,
+				CPUUsage:       poll.CPUUsage,
+				MemoryUsage:    poll.MemoryUsage,
+				TrafficInBps:   nil,
+				TrafficOutBps:  nil,
+				TrafficInStat:  "INITIALIZING",
+				TrafficOutStat: "INITIALIZING",
 			})
 		}
 		if len(metrics) > 0 {
@@ -754,14 +770,28 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		sourceTable := "metrics"
+		if end.Sub(start) > 7*24*time.Hour {
+			sourceTable = "metrics_1m"
+		}
+		sampledInterval := strings.TrimSpace(interval)
+		if sampledInterval == "" {
+			if sourceTable == "metrics_1m" {
+				sampledInterval = "1m(自动)"
+			} else {
+				sampledInterval = "原始(自动)"
+			}
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"type":      metricType,
-			"id":        id,
-			"start":     start,
-			"end":       end,
-			"interval":  interval,
-			"maxPoints": maxPoints,
-			"data":      items,
+			"type":             metricType,
+			"id":               id,
+			"start":            start,
+			"end":              end,
+			"interval":         interval,
+			"sampled_interval": sampledInterval,
+			"source_table":     sourceTable,
+			"maxPoints":        maxPoints,
+			"data":             items,
 		})
 	case "storage":
 		items, err := h.repo.GetDeviceStorageHistory(r.Context(), id, start, end, interval, maxPoints)

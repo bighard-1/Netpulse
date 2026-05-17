@@ -6,6 +6,13 @@ import { formatBps } from "../utils/format";
 import { zhCN } from "../i18n/zhCN";
 import { useFeedback } from "../composables/useFeedback";
 import { npAxisLabel, npAxisLine, npChartGrid, npSplitLine, npTooltip } from "../utils/chartTheme";
+import {
+  formatServerTime,
+  startOfServerDay,
+  startOfServerMonth,
+  startOfServerWeek,
+  startOfServerYear
+} from "../utils/serverTime";
 
 const props = defineProps({ id: { type: [String, Number], required: true } });
 const route = useRoute();
@@ -30,65 +37,56 @@ const customChartAnchorRef = ref(null);
 const trafficThresholdBps = ref(0);
 const chartCardActive = ref("today");
 const siblingPorts = ref([]);
+const currentPortSpeedMbps = ref(0);
+const showRawSeries = ref(true);
 const lastSeriesCache = ref({
   today: [],
   d7: [],
   d30: [],
   custom: []
 });
+const chartMeta = ref({
+  today: { interval: "-", agg: "-" },
+  d7: { interval: "-", agg: "-" },
+  d30: { interval: "-", agg: "-" },
+  custom: { interval: "-", agg: "-" }
+});
+const chartSource = ref({
+  today: "metrics",
+  d7: "metrics",
+  d30: "metrics_1m",
+  custom: "metrics"
+});
 const runtimePollSec = ref(60);
 let charts = { today: null, d7: null, d30: null, custom: null };
 
-function startOfDay(d = new Date()) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-
-function startOfMonth(d = new Date()) {
-  const x = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
-  return x;
-}
-
-function startOfWeek(d = new Date()) {
-  const x = new Date(d);
-  const day = x.getDay();
-  const delta = day === 0 ? 6 : day - 1;
-  x.setDate(x.getDate() - delta);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-
-function startOfYear(d = new Date()) {
-  return new Date(d.getFullYear(), 0, 1, 0, 0, 0, 0);
-}
-
 const pickerShortcuts = [
-  { text: "本周", value: () => [startOfWeek(new Date()), new Date()] },
+  { text: "本周", value: () => [startOfServerWeek(new Date()), new Date()] },
   {
     text: "上周",
     value: () => {
-      const thisWeek = startOfWeek(new Date());
+      const thisWeek = startOfServerWeek(new Date());
       const lastWeekStart = new Date(thisWeek);
       lastWeekStart.setDate(lastWeekStart.getDate() - 7);
       return [lastWeekStart, new Date(thisWeek.getTime() - 1000)];
     }
   },
-  { text: "本月", value: () => [startOfMonth(new Date()), new Date()] },
+  { text: "本月", value: () => [startOfServerMonth(new Date()), new Date()] },
   {
     text: "上月",
     value: () => {
-      const now = new Date();
-      const thisMonth = startOfMonth(now);
-      return [new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0), new Date(thisMonth.getTime() - 1000)];
+      const thisMonth = startOfServerMonth(new Date());
+      const lastMonthAnchor = new Date(thisMonth.getTime() - 1000);
+      return [startOfServerMonth(lastMonthAnchor), new Date(thisMonth.getTime() - 1000)];
     }
   },
-  { text: "本年", value: () => [startOfYear(new Date()), new Date()] },
+  { text: "本年", value: () => [startOfServerYear(new Date()), new Date()] },
   {
     text: "上年",
     value: () => {
-      const thisYear = startOfYear(new Date());
-      return [new Date(thisYear.getFullYear() - 1, 0, 1, 0, 0, 0, 0), new Date(thisYear.getTime() - 1000)];
+      const thisYear = startOfServerYear(new Date());
+      const lastYearAnchor = new Date(thisYear.getTime() - 1000);
+      return [startOfServerYear(lastYearAnchor), new Date(thisYear.getTime() - 1000)];
     }
   }
 ];
@@ -104,13 +102,25 @@ function pickUnit(maxVal) {
   return { unit: "bps", div: 1 };
 }
 
-function baseOption(title, unitInfo) {
+function roundUpNice(v) {
+  if (!Number.isFinite(v) || v <= 0) return 10;
+  const exp = Math.floor(Math.log10(v));
+  const base = 10 ** exp;
+  const n = v / base;
+  let step = 10;
+  if (n <= 1) step = 1;
+  else if (n <= 2) step = 2;
+  else if (n <= 5) step = 5;
+  return step * base;
+}
+
+function baseOption(title, unitInfo, planText = "") {
   return {
     animation: false,
     grid: npChartGrid,
     title: {
       text: title,
-      subtext: `单位: ${unitInfo.unit}`,
+      subtext: `单位: ${unitInfo.unit}${planText ? ` · ${planText}` : ""}`,
       left: 10,
       top: 8,
       textStyle: { fontSize: 14, fontWeight: 600 },
@@ -120,7 +130,14 @@ function baseOption(title, unitInfo) {
       axisPointer: { type: "line", animation: false },
       formatter(params) {
         if (!params?.length) return "";
-        const ts = new Date(params[0].data[0]).toLocaleString();
+        const ts = formatServerTime(new Date(params[0].data[0]), {
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit"
+        });
         const lines = [ts];
         for (const p of params) {
           lines.push(`${p.marker}${p.seriesName}: ${bpsLabel(p.data[1])}`);
@@ -135,7 +152,18 @@ function baseOption(title, unitInfo) {
     ],
     xAxis: {
       type: "time",
-      axisLabel: { ...npAxisLabel, hideOverlap: true, rotate: 45 },
+      axisLabel: {
+        ...npAxisLabel,
+        hideOverlap: true,
+        rotate: 45,
+        formatter: (value) => {
+          const hhmm = formatServerTime(new Date(value), { hour: "2-digit", minute: "2-digit" });
+          if (hhmm === "00:00") {
+            return formatServerTime(new Date(value), { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+          }
+          return hhmm;
+        }
+      },
       axisLine: npAxisLine
     },
     yAxis: {
@@ -152,7 +180,7 @@ function baseOption(title, unitInfo) {
         name: "入方向",
         type: "line",
         showSymbol: false,
-        smooth: false,
+        smooth: !showRawSeries.value,
         step: false,
         connectNulls: false,
         sampling: "lttb",
@@ -171,7 +199,7 @@ function baseOption(title, unitInfo) {
         name: "出方向",
         type: "line",
         showSymbol: false,
-        smooth: false,
+        smooth: !showRawSeries.value,
         step: false,
         connectNulls: false,
         sampling: "lttb",
@@ -204,6 +232,28 @@ function toSeriesData(data) {
   return { inbound, outbound };
 }
 
+function calcGapAreas(points, maxGap = 2) {
+  const arr = points || [];
+  const areas = [];
+  let i = 0;
+  while (i < arr.length) {
+    if (arr[i][1] != null) {
+      i += 1;
+      continue;
+    }
+    const start = i;
+    while (i < arr.length && arr[i][1] == null) i += 1;
+    const end = i - 1;
+    if (end - start + 1 > maxGap) {
+      areas.push([
+        { xAxis: arr[start][0] },
+        { xAxis: arr[end][0] }
+      ]);
+    }
+  }
+  return areas;
+}
+
 function decimatePoints(points, maxPoints = 2200) {
   const arr = points || [];
   if (arr.length <= maxPoints) return arr;
@@ -218,16 +268,51 @@ function decimatePoints(points, maxPoints = 2200) {
   return out;
 }
 
-async function fetchRange(start, end) {
+function calcFetchPlan(start, end) {
   const spanMs = end.getTime() - start.getTime();
   const pollSec = Math.max(5, Number(runtimePollSec.value || 60));
-  let interval = `${Math.max(10, Math.round(pollSec / 5) * 5)}s`;
+  let interval = "";
   if (spanMs > 180 * 24 * 3600 * 1000) interval = "1h";
   else if (spanMs > 30 * 24 * 3600 * 1000) interval = "5m";
   else if (spanMs > 7 * 24 * 3600 * 1000) interval = "2m";
+  // Keep <=7 days on raw points to ensure tail alignment with "today" chart.
+  else interval = "";
+  const agg = interval ? "time_bucket聚合" : "原始采样点";
+  return { interval, agg };
+}
+
+function xAxisLabelFormatter(value, metaKey) {
+  const dt = new Date(value);
+  const hhmm = formatServerTime(dt, { hour: "2-digit", minute: "2-digit" });
+  const day = Number(formatServerTime(dt, { day: "2-digit" }));
+  const md = formatServerTime(dt, { month: "2-digit", day: "2-digit" });
+  if (metaKey === "today") {
+    return hhmm;
+  }
+  if (metaKey === "d7") {
+    if (hhmm === "00:00") return md;
+    return hhmm;
+  }
+  if (metaKey === "d30") {
+    // Show explicit day marks like 1日/5日/10日/15日...
+    if (hhmm === "00:00" && (day === 1 || day % 5 === 0)) return `${day}日`;
+    return "";
+  }
+  if (hhmm === "00:00") return md;
+  return hhmm;
+}
+
+async function fetchRange(start, end) {
+  const plan = calcFetchPlan(start, end);
+  const spanMs = end.getTime() - start.getTime();
   const maxPoints = spanMs > 365 * 24 * 3600 * 1000 ? 1500 : 2500;
-  const res = await api.getHistory("traffic", props.id, start.toISOString(), end.toISOString(), interval, maxPoints);
-  return res.data.data || [];
+  const res = await api.getHistory("traffic", props.id, start.toISOString(), end.toISOString(), plan.interval, maxPoints);
+  return {
+    data: res.data.data || [],
+    plan,
+    source: String(res?.data?.source_table || ""),
+    sampledInterval: String(res?.data?.sampled_interval || "")
+  };
 }
 
 async function loadRuntimePollSec() {
@@ -238,7 +323,6 @@ async function loadRuntimePollSec() {
     const core = Math.max(5, Number(runtime?.poll_interval_core_sec || 60));
     const agg = Math.max(5, Number(runtime?.poll_interval_agg_sec || 90));
     const access = Math.max(5, Number(runtime?.poll_interval_access_sec || 120));
-    const globalPoll = Math.max(5, Number(runtime?.snmp_poll_interval_sec || 60));
     if (deviceID > 0) {
       const d = await api.getDeviceById(deviceID);
       const perDevice = Number(d?.poll_interval_sec || 0);
@@ -258,7 +342,7 @@ async function loadRuntimePollSec() {
       runtimePollSec.value = access;
       return;
     }
-    runtimePollSec.value = globalPoll;
+    runtimePollSec.value = access;
   } catch {
     runtimePollSec.value = 60;
   }
@@ -276,7 +360,8 @@ async function loadSiblingPorts() {
     siblingPorts.value = list.map((x) => ({
       id: Number(x.id),
       name: x.name || `ifIndex-${x.index}`,
-      remark: x.remark || ""
+      remark: x.remark || "",
+      speedMbps: Number(x.speed_mbps || 0)
     }));
   } catch {
     siblingPorts.value = [];
@@ -302,9 +387,12 @@ function jumpSibling(port) {
   router.push({ path: `/port/${port.id}`, query: q });
 }
 
-function applyChart(chart, title, data) {
+function applyChart(chart, title, data, metaKey = "today") {
   if (!chart) return;
   const { inbound, outbound } = toSeriesData(data);
+  const intervalSwitch = detectIntervalSwitchPoints(data);
+  const hasIntervalSwitch = intervalSwitch.length > 0;
+  const smoothEnabled = !showRawSeries.value && !hasIntervalSwitch;
   const inView = decimatePoints(inbound);
   const outView = decimatePoints(outbound);
   const hasData = inView.some((x) => x[1] != null) || outView.some((x) => x[1] != null);
@@ -314,16 +402,63 @@ function applyChart(chart, title, data) {
   ];
   const maxVal = Math.max(1, ...(nonNil.length ? nonNil : [1]));
   const unitInfo = pickUnit(maxVal);
-  const opt = baseOption(title, unitInfo);
-  opt.yAxis.max = maxVal * 1.1;
+  const meta = chartMeta.value[metaKey] || { interval: "-", agg: "-" };
+  const src = chartSource.value[metaKey] || "metrics";
+  const planText = `采样: ${meta.interval || "原始"} · ${meta.agg || "-"} · 源: ${src}`;
+  const opt = baseOption(title, unitInfo, planText);
+  opt.xAxis.axisLabel.formatter = (value) => xAxisLabelFormatter(value, metaKey);
+  // Give dataZoom/timeline enough room to avoid clipping at card bottom.
+  opt.grid.bottom = 92;
+  if (Array.isArray(opt.dataZoom)) {
+    opt.dataZoom[0].bottom = 30;
+    opt.dataZoom[1].bottom = 30;
+  }
+  if (hasIntervalSwitch) {
+    opt.title.subtext = `${opt.title.subtext} · 检测到采样间隔变化，已禁用平滑`;
+  }
+  opt.yAxis.max = roundUpNice(maxVal * 1.1);
   opt.tooltip.confine = true;
   opt.tooltip.transitionDuration = 0;
   opt.series[0].large = true;
   opt.series[1].large = true;
+  opt.series[0].smooth = smoothEnabled;
+  opt.series[1].smooth = smoothEnabled;
   opt.series[0].largeThreshold = 2000;
   opt.series[1].largeThreshold = 2000;
   opt.series[0].data = inView;
   opt.series[1].data = outView;
+  const gapAreas = calcGapAreas(inbound, 2);
+  if (gapAreas.length) {
+    opt.series[0].markArea = {
+      silent: true,
+      itemStyle: { color: "rgba(148,163,184,0.10)" },
+      data: gapAreas
+    };
+  }
+  const speedBps = Number(currentPortSpeedMbps.value || 0) * 1_000_000;
+  const refLines = [];
+  if (speedBps > 0) {
+    refLines.push({ yAxis: speedBps, label: { formatter: "100%速率线" }, lineStyle: { color: "#f97316", type: "dashed" } });
+    refLines.push({ yAxis: speedBps * 0.8, label: { formatter: "80%速率线" }, lineStyle: { color: "#f59e0b", type: "dashed" } });
+  }
+  if (trafficThresholdBps.value > 0) {
+    refLines.push({ yAxis: trafficThresholdBps.value, label: { formatter: `阈值 ${formatBps(trafficThresholdBps.value)}` }, lineStyle: { color: "#ef4444", type: "dashed" } });
+  }
+  if (refLines.length) {
+    opt.series[0].markLine = { symbol: "none", data: refLines };
+  }
+  if (hasIntervalSwitch) {
+    const switchMarks = intervalSwitch.map((x) => ({
+      xAxis: x.ts,
+      label: { formatter: x.label, color: "#475569", fontSize: 11 },
+      lineStyle: { color: "#94a3b8", type: "dotted", width: 1 }
+    }));
+    const baseMarkLine = opt.series[0].markLine?.data || [];
+    opt.series[0].markLine = {
+      symbol: "none",
+      data: [...baseMarkLine, ...switchMarks]
+    };
+  }
   if (!hasData) {
     opt.graphic = [{
       type: "text",
@@ -333,6 +468,31 @@ function applyChart(chart, title, data) {
     }];
   }
   chart.setOption(opt, { notMerge: true, lazyUpdate: true, silent: true });
+}
+
+function detectIntervalSwitchPoints(rawData) {
+  const out = [];
+  const arr = (rawData || [])
+    .map((x) => ({ ts: new Date(x.timestamp).getTime() }))
+    .filter((x) => Number.isFinite(x.ts))
+    .sort((a, b) => a.ts - b.ts);
+  if (arr.length < 4) return out;
+  let prevGap = 0;
+  for (let i = 1; i < arr.length; i++) {
+    const gapSec = Math.round((arr[i].ts - arr[i - 1].ts) / 1000);
+    if (gapSec <= 0) continue;
+    if (prevGap > 0) {
+      const ratio = gapSec / prevGap;
+      if (ratio >= 1.8 || ratio <= 0.56) {
+        out.push({
+          ts: arr[i].ts,
+          label: `${prevGap}s→${gapSec}s`
+        });
+      }
+    }
+    prevGap = gapSec;
+  }
+  return out.slice(0, 12);
 }
 
 function saveChartPNG(chartKey) {
@@ -364,22 +524,28 @@ async function loadAllCharts() {
   loading.value = true;
   try {
     const now = new Date();
-    const todayStart = startOfDay(now);
-    const d7Start = startOfDay(new Date(now.getTime() - 6 * 24 * 3600 * 1000));
-    const d30Start = startOfDay(new Date(now.getTime() - 29 * 24 * 3600 * 1000));
+    const todayStart = startOfServerDay(now);
+    const d7Start = startOfServerDay(new Date(now.getTime() - 6 * 24 * 3600 * 1000));
+    const d30Start = startOfServerDay(new Date(now.getTime() - 29 * 24 * 3600 * 1000));
 
-    const [today, d7, d30] = await Promise.all([
+    const [todayRes, d7Res, d30Res] = await Promise.all([
       fetchRange(todayStart, now),
       fetchRange(d7Start, now),
       fetchRange(d30Start, now)
     ]);
-    lastSeriesCache.value.today = today;
-    lastSeriesCache.value.d7 = d7;
-    lastSeriesCache.value.d30 = d30;
+    lastSeriesCache.value.today = todayRes.data;
+    lastSeriesCache.value.d7 = d7Res.data;
+    lastSeriesCache.value.d30 = d30Res.data;
+    chartMeta.value.today = todayRes.plan;
+    chartMeta.value.d7 = d7Res.plan;
+    chartMeta.value.d30 = d30Res.plan;
+    chartSource.value.today = todayRes.source || "metrics";
+    chartSource.value.d7 = d7Res.source || "metrics";
+    chartSource.value.d30 = d30Res.source || "metrics_1m";
 
-    applyChart(charts.today, "当日流量", today);
-    applyChart(charts.d7, "近7天流量", d7);
-    applyChart(charts.d30, "近30天流量", d30);
+  applyChart(charts.today, "当日流量", todayRes.data, "today");
+  applyChart(charts.d7, "近7天流量", d7Res.data, "d7");
+  applyChart(charts.d30, "近30天流量", d30Res.data, "d30");
     if (customRange.value?.length === 2) {
       await loadCustomChart();
     }
@@ -398,9 +564,11 @@ async function loadCustomChart() {
   if (!start || !end) return;
   loading.value = true;
   try {
-    const data = await fetchRange(new Date(start), new Date(end));
-    lastSeriesCache.value.custom = data;
-    applyChart(charts.custom, "自定义时间段流量", data);
+    const res = await fetchRange(new Date(start), new Date(end));
+    lastSeriesCache.value.custom = res.data;
+    chartMeta.value.custom = res.plan;
+    chartSource.value.custom = res.source || "metrics";
+    applyChart(charts.custom, "自定义时间段流量", res.data, "custom");
   } catch (err) {
     fb.apiError(err, "加载自定义时间段流量失败");
   } finally {
@@ -431,10 +599,10 @@ function resizeCharts() {
 }
 
 function applyThresholdToAllCharts() {
-  applyChart(charts.today, "当日流量", lastSeriesCache.value.today || []);
-  applyChart(charts.d7, "近7天流量", lastSeriesCache.value.d7 || []);
-  applyChart(charts.d30, "近30天流量", lastSeriesCache.value.d30 || []);
-  applyChart(charts.custom, "自定义时间段流量", lastSeriesCache.value.custom || []);
+  applyChart(charts.today, "当日流量", lastSeriesCache.value.today || [], "today");
+  applyChart(charts.d7, "近7天流量", lastSeriesCache.value.d7 || [], "d7");
+  applyChart(charts.d30, "近30天流量", lastSeriesCache.value.d30 || [], "d30");
+  applyChart(charts.custom, "自定义时间段流量", lastSeriesCache.value.custom || [], "custom");
 }
 
 function switchChartCard(name) {
@@ -458,12 +626,14 @@ async function loadPortMeta() {
   }
   const hit = siblingPorts.value.find((x) => Number(x.id) === Number(props.id));
   if (hit) {
+    currentPortSpeedMbps.value = Number(hit.speedMbps || 0);
     portMeta.value = { id: props.id, name: hit.name };
     portEdit.value.name = hit.name;
     portEdit.value.remark = hit.remark || "";
   } else {
     portMeta.value = { id: props.id, name: `端口-${props.id}` };
     portEdit.value.name = "";
+    currentPortSpeedMbps.value = 0;
   }
 }
 
@@ -549,10 +719,10 @@ onMounted(async () => {
   charts.d7 = e.init(chart7dRef.value);
   charts.d30 = e.init(chart30dRef.value);
   charts.custom = e.init(chartCustomRef.value);
-  applyChart(charts.today, "当日流量", []);
-  applyChart(charts.d7, "近7天流量", []);
-  applyChart(charts.d30, "近30天流量", []);
-  applyChart(charts.custom, "自定义时间段流量", []);
+  applyChart(charts.today, "当日流量", [], "today");
+  applyChart(charts.d7, "近7天流量", [], "d7");
+  applyChart(charts.d30, "近30天流量", [], "d30");
+  applyChart(charts.custom, "自定义时间段流量", [], "custom");
   customRangeDraft.value = [...(customRange.value || [])];
   await loadAllCharts();
   window.addEventListener("resize", resizeCharts);
@@ -608,6 +778,7 @@ function onEditModeEvent(e) {
           <div class="flex flex-wrap items-center gap-2">
             <el-input-number v-model="trafficThresholdBps" :min="0" :step="1000000" placeholder="告警阈值(bps)" />
             <el-button @click="applyThresholdToAllCharts">应用阈值线</el-button>
+            <el-switch v-model="showRawSeries" inline-prompt active-text="原始" inactive-text="平滑" @change="applyThresholdToAllCharts" />
             <el-button @click="loadAllCharts" :loading="loading">{{ zhCN.portDetail.refresh }}</el-button>
           </div>
         </div>
