@@ -21,17 +21,27 @@ import (
 )
 
 type counterState struct {
-	inOctets      uint64
-	outOctets     uint64
-	at            time.Time
-	inBps         int64
-	outBps        int64
-	inRaw1        int64
-	inRaw2        int64
-	outRaw1       int64
-	outRaw2       int64
-	inZeroStreak  int
-	outZeroStreak int
+	inOctets          uint64
+	outOctets         uint64
+	counterMode       string
+	hcDiscStreak      int
+	hcStaleStreak     int
+	legacyStaleStreak int
+	hcRatioBadStreak  int
+	lastHCIn          uint64
+	lastHCOut         uint64
+	lastLegacyIn      uint64
+	lastLegacyOut     uint64
+	at                time.Time
+	uptimeSec         int64
+	inBps             int64
+	outBps            int64
+	inRaw1            int64
+	inRaw2            int64
+	outRaw1           int64
+	outRaw2           int64
+	inZeroStreak      int
+	outZeroStreak     int
 }
 
 type Worker struct {
@@ -51,6 +61,7 @@ type Worker struct {
 
 	mu     sync.Mutex
 	last   map[string]counterState
+	modes  map[string]string
 	ifs    map[int64]string
 	devUp  map[int64]bool
 	portUp map[string]bool
@@ -107,6 +118,7 @@ func NewWorker(repo *db.Repository, collector *Collector, interval time.Duration
 		cpuThreshold:  cpuTh,
 		memThreshold:  memTh,
 		last:          make(map[string]counterState),
+		modes:         make(map[string]string),
 		ifs:           make(map[int64]string),
 		devUp:         make(map[int64]bool),
 		portUp:        make(map[string]bool),
@@ -317,21 +329,30 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 
 	mList := make([]db.InterfaceMetric, 0, len(result.Interfaces))
 	for _, itf := range result.Interfaces {
-		inBps, outBps := w.calcBps(d.ID, itf.IfIndex, itf.InOctets, itf.OutOctets, result.PolledAt, itf.SpeedMbps, w.pollIntervalForDevice(d))
+		inBps, outBps, inStat, outStat := w.calcBps(
+			d.ID,
+			itf.IfIndex,
+			itf.HCInOctets, itf.HCOutOctets, itf.HCPresent,
+			itf.LegacyInOctets, itf.LegacyOutOctets, itf.LegacyPresent,
+			result.PolledAt, result.UptimeSec, itf.SpeedMbps, d.SNMPVersion,
+			w.pollIntervalForDevice(d),
+		)
 		w.trackPortState(ctx, d, itf.IfIndex, itf.IfName, itf.OperUp)
 		mList = append(mList, db.InterfaceMetric{
-			IfIndex:       itf.IfIndex,
-			IfName:        itf.IfName,
-			CPUUsage:      result.CPUUsage,
-			MemoryUsage:   result.MemoryUsage,
-			StorageUsage:  result.StorageUsage,
-			StorageTotal:  result.StorageTotal,
-			StorageFree:   result.StorageFree,
-			UptimeSec:     result.UptimeSec,
-			SpeedMbps:     itf.SpeedMbps,
-			OperStatus:    boolToOperStatus(itf.OperUp),
-			TrafficInBps:  inBps,
-			TrafficOutBps: outBps,
+			IfIndex:        itf.IfIndex,
+			IfName:         itf.IfName,
+			CPUUsage:       result.CPUUsage,
+			MemoryUsage:    result.MemoryUsage,
+			StorageUsage:   result.StorageUsage,
+			StorageTotal:   result.StorageTotal,
+			StorageFree:    result.StorageFree,
+			UptimeSec:      result.UptimeSec,
+			SpeedMbps:      itf.SpeedMbps,
+			OperStatus:     boolToOperStatus(itf.OperUp),
+			TrafficInBps:   inBps,
+			TrafficOutBps:  outBps,
+			TrafficInStat:  inStat,
+			TrafficOutStat: outStat,
 		})
 	}
 
@@ -376,7 +397,13 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 	if policy.trafficThreshold > 0 {
 		var peak int64
 		for _, m := range mList {
-			v := m.TrafficInBps + m.TrafficOutBps
+			var v int64
+			if m.TrafficInBps != nil {
+				v += *m.TrafficInBps
+			}
+			if m.TrafficOutBps != nil {
+				v += *m.TrafficOutBps
+			}
 			if v > peak {
 				peak = v
 			}
@@ -689,26 +716,70 @@ func (w *Worker) persistSystemHealth(ctx context.Context, devices []db.Device) {
 	}
 }
 
-func (w *Worker) calcBps(deviceID int64, ifIndex int, inOctets, outOctets uint64, now time.Time, speedMbps int, expectedInterval time.Duration) (int64, int64) {
+func (w *Worker) calcBps(
+	deviceID int64,
+	ifIndex int,
+	hcInOctets, hcOutOctets uint64, hcPresent bool,
+	legacyInOctets, legacyOutOctets uint64, legacyPresent bool,
+	now time.Time,
+	uptimeSec int64,
+	speedMbps int,
+	snmpVersion string,
+	expectedInterval time.Duration,
+) (*int64, *int64, string, string) {
 	key := interfaceKey(deviceID, ifIndex)
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	mode := w.pickCounterMode(key, speedMbps, snmpVersion, hcPresent, legacyPresent)
+	inOctets, outOctets := pickCounterPair(mode, hcInOctets, hcOutOctets, legacyInOctets, legacyOutOctets)
+
 	prev, ok := w.last[key]
 	if !ok {
 		w.last[key] = counterState{
 			inOctets: inOctets, outOctets: outOctets, at: now,
+			counterMode: mode,
+			lastHCIn:    hcInOctets, lastHCOut: hcOutOctets,
+			lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
 			inBps: 0, outBps: 0,
 			inRaw1: 0, inRaw2: 0, outRaw1: 0, outRaw2: 0,
 			inZeroStreak: 0, outZeroStreak: 0,
+			uptimeSec: uptimeSec,
 		}
-		return 0, 0
+		return nil, nil, "INITIALIZING", "INITIALIZING"
 	}
 
 	seconds := now.Sub(prev.at).Seconds()
 	if seconds <= 0 {
-		return prev.inBps, prev.outBps
+		return nil, nil, "TIME_ERROR", "TIME_ERROR"
+	}
+	if prev.counterMode != "" && prev.counterMode != mode {
+		w.last[key] = counterState{
+			inOctets: inOctets, outOctets: outOctets, at: now,
+			counterMode: mode,
+			lastHCIn:    hcInOctets, lastHCOut: hcOutOctets,
+			lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
+			inBps: prev.inBps, outBps: prev.outBps,
+			inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
+			outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
+			inZeroStreak: 0, outZeroStreak: 0,
+			uptimeSec: uptimeSec,
+		}
+		return nil, nil, "COUNTER_SOURCE_SWITCH", "COUNTER_SOURCE_SWITCH"
+	}
+	if prev.uptimeSec > 0 && uptimeSec > 0 && uptimeSec < prev.uptimeSec {
+		w.last[key] = counterState{
+			inOctets: inOctets, outOctets: outOctets, at: now,
+			counterMode: mode,
+			lastHCIn:    hcInOctets, lastHCOut: hcOutOctets,
+			lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
+			inBps: 0, outBps: 0,
+			inRaw1: 0, inRaw2: 0, outRaw1: 0, outRaw2: 0,
+			inZeroStreak: 0, outZeroStreak: 0,
+			uptimeSec: uptimeSec,
+		}
+		return nil, nil, "DEVICE_REBOOT", "DEVICE_REBOOT"
 	}
 
 	// Guard against scheduling jitter and long gap spikes:
@@ -718,55 +789,234 @@ func (w *Worker) calcBps(deviceID int64, ifIndex int, inOctets, outOctets uint64
 		if seconds < exp*0.2 || seconds > exp*6.0 {
 			w.last[key] = counterState{
 				inOctets: inOctets, outOctets: outOctets, at: now,
+				counterMode:       mode,
+				hcDiscStreak:      prev.hcDiscStreak,
+				hcStaleStreak:     prev.hcStaleStreak,
+				legacyStaleStreak: prev.legacyStaleStreak,
+				lastHCIn:          hcInOctets, lastHCOut: hcOutOctets,
+				lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
 				inBps: prev.inBps, outBps: prev.outBps,
 				inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 				outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
 				inZeroStreak: prev.inZeroStreak, outZeroStreak: prev.outZeroStreak,
+				uptimeSec: uptimeSec,
 			}
-			return prev.inBps, prev.outBps
+			return nil, nil, "WINDOW_GAP", "WINDOW_GAP"
 		}
 	}
 
-	inDelta, inDis := safeDeltaWithDiscontinuity(inOctets, prev.inOctets)
-	outDelta, outDis := safeDeltaWithDiscontinuity(outOctets, prev.outOctets)
-	if inDis || outDis {
-		// ifCounter discontinuity/reset detected: keep previous rate to avoid false plunge.
-		w.last[key] = counterState{
-			inOctets: inOctets, outOctets: outOctets, at: now,
-			inBps: prev.inBps, outBps: prev.outBps,
-			inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
-			outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
-			inZeroStreak: prev.inZeroStreak, outZeroStreak: prev.outZeroStreak,
+	inDelta, inDis := safeDelta(mode, inOctets, prev.inOctets)
+	outDelta, outDis := safeDelta(mode, outOctets, prev.outOctets)
+	inStat := "VALID"
+	outStat := "VALID"
+	if inDis {
+		inStat = "COUNTER_RESET"
+	}
+	if outDis {
+		outStat = "COUNTER_RESET"
+	}
+
+	hcInDeltaRaw, _ := safeDelta("hc", hcInOctets, prev.lastHCIn)
+	hcOutDeltaRaw, _ := safeDelta("hc", hcOutOctets, prev.lastHCOut)
+	legacyInDeltaRaw, _ := safeDelta("legacy", legacyInOctets, prev.lastLegacyIn)
+	legacyOutDeltaRaw, _ := safeDelta("legacy", legacyOutOctets, prev.lastLegacyOut)
+	hcSum := hcInDeltaRaw + hcOutDeltaRaw
+	legacySum := legacyInDeltaRaw + legacyOutDeltaRaw
+
+	hcDiscStreak := 0
+	hcStaleStreak := prev.hcStaleStreak
+	legacyStaleStreak := prev.legacyStaleStreak
+	hcRatioBadStreak := prev.hcRatioBadStreak
+	if mode == "hc" {
+		hcDiscStreak = prev.hcDiscStreak
+		if inDis || outDis {
+			hcDiscStreak++
+		} else {
+			hcDiscStreak = 0
 		}
-		return prev.inBps, prev.outBps
+		if hcDiscStreak >= 3 && legacyPresent {
+			w.modes[key] = "legacy"
+			w.last[key] = counterState{
+				inOctets: legacyInOctets, outOctets: legacyOutOctets, at: now,
+				counterMode: "legacy",
+				lastHCIn:    hcInOctets, lastHCOut: hcOutOctets,
+				lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
+				inBps: prev.inBps, outBps: prev.outBps,
+				inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
+				outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
+				inZeroStreak: 0, outZeroStreak: 0,
+				uptimeSec: uptimeSec,
+			}
+			return nil, nil, "COUNTER_SOURCE_SWITCH", "COUNTER_SOURCE_SWITCH"
+		}
+		if legacyPresent {
+			// Some devices expose unstable HC counters on high-speed ports.
+			// If HC delta keeps diverging heavily from legacy delta for several
+			// consecutive polls, demote this interface to legacy mode only.
+			if legacyInDeltaRaw > 0 && hcInDeltaRaw > 0 && legacyOutDeltaRaw > 0 && hcOutDeltaRaw > 0 {
+				inRatio := float64(hcInDeltaRaw) / float64(legacyInDeltaRaw)
+				outRatio := float64(hcOutDeltaRaw) / float64(legacyOutDeltaRaw)
+				badIn := inRatio > 4.0 || inRatio < 0.25
+				badOut := outRatio > 4.0 || outRatio < 0.25
+				if badIn || badOut {
+					hcRatioBadStreak++
+				} else {
+					hcRatioBadStreak = 0
+				}
+			} else {
+				hcRatioBadStreak = 0
+			}
+			if hcRatioBadStreak >= 4 {
+				w.modes[key] = "legacy"
+				w.last[key] = counterState{
+					inOctets: legacyInOctets, outOctets: legacyOutOctets, at: now,
+					counterMode: "legacy",
+					lastHCIn:    hcInOctets, lastHCOut: hcOutOctets,
+					lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
+					inBps: prev.inBps, outBps: prev.outBps,
+					inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
+					outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
+					inZeroStreak: prev.inZeroStreak, outZeroStreak: prev.outZeroStreak,
+					uptimeSec: uptimeSec,
+				}
+				return nil, nil, "COUNTER_SOURCE_SWITCH", "COUNTER_SOURCE_SWITCH"
+			}
+			if hcSum == 0 && legacySum > 0 {
+				hcStaleStreak++
+			} else {
+				hcStaleStreak = 0
+			}
+			if hcStaleStreak >= 3 {
+				w.modes[key] = "legacy"
+				w.last[key] = counterState{
+					inOctets: legacyInOctets, outOctets: legacyOutOctets, at: now,
+					counterMode: "legacy",
+					lastHCIn:    hcInOctets, lastHCOut: hcOutOctets,
+					lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
+					inBps: prev.inBps, outBps: prev.outBps,
+					inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
+					outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
+					inZeroStreak: 0, outZeroStreak: 0,
+					uptimeSec: uptimeSec,
+				}
+				return nil, nil, "COUNTER_SOURCE_SWITCH", "COUNTER_SOURCE_SWITCH"
+			}
+		}
+	} else if mode == "legacy" && hcPresent {
+		if legacySum == 0 && hcSum > 0 {
+			legacyStaleStreak++
+		} else {
+			legacyStaleStreak = 0
+		}
+		if legacyStaleStreak >= 5 {
+			w.modes[key] = "hc"
+			w.last[key] = counterState{
+				inOctets: hcInOctets, outOctets: hcOutOctets, at: now,
+				counterMode: "hc",
+				lastHCIn:    hcInOctets, lastHCOut: hcOutOctets,
+				lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
+				inBps: prev.inBps, outBps: prev.outBps,
+				inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
+				outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
+				inZeroStreak: 0, outZeroStreak: 0,
+				uptimeSec: uptimeSec,
+			}
+			return nil, nil, "COUNTER_SOURCE_SWITCH", "COUNTER_SOURCE_SWITCH"
+		}
 	}
 
 	maxBps := maxReasonableBpsBySpeed(speedMbps)
 	rawIn := rawBps(inDelta, seconds)
 	rawOut := rawBps(outDelta, seconds)
-	if speedMbps >= 10000 {
-		rawIn = median3(rawIn, prev.inRaw1, prev.inRaw2)
-		rawOut = median3(rawOut, prev.outRaw1, prev.outRaw2)
+	inCandidate := clampOrKeepPrev(rawIn, prev.inBps, maxBps)
+	outCandidate := clampOrKeepPrev(rawOut, prev.outBps, maxBps)
+	// Do not plunge to zero on one-off counter discontinuity; hold briefly then decay.
+	if inDis && prev.inBps > 0 {
+		inCandidate = prev.inBps
 	}
-	inBps := clampOrKeepPrev(rawIn, prev.inBps, maxBps)
-	outBps := clampOrKeepPrev(rawOut, prev.outBps, maxBps)
-	// lightweight EWMA smoothing, reduces aliasing when polling interval changes.
-	inBps, inZeroStreak := smoothRate(prev.inBps, inBps, prev.inZeroStreak)
-	outBps, outZeroStreak := smoothRate(prev.outBps, outBps, prev.outZeroStreak)
+	if outDis && prev.outBps > 0 {
+		outCandidate = prev.outBps
+	}
+	inBps, inZeroStreak := smoothRate(prev.inBps, inCandidate, prev.inZeroStreak)
+	outBps, outZeroStreak := smoothRate(prev.outBps, outCandidate, prev.outZeroStreak)
 	w.last[key] = counterState{
 		inOctets: inOctets, outOctets: outOctets, at: now,
+		counterMode:       mode,
+		hcDiscStreak:      hcDiscStreak,
+		hcStaleStreak:     hcStaleStreak,
+		legacyStaleStreak: legacyStaleStreak,
+		hcRatioBadStreak:  hcRatioBadStreak,
+		lastHCIn:          hcInOctets, lastHCOut: hcOutOctets,
+		lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
 		inBps: inBps, outBps: outBps,
 		inRaw1: rawIn, inRaw2: prev.inRaw1,
 		outRaw1: rawOut, outRaw2: prev.outRaw1,
 		inZeroStreak: inZeroStreak, outZeroStreak: outZeroStreak,
+		uptimeSec: uptimeSec,
 	}
-	return inBps, outBps
+	var inPtr, outPtr *int64
+	if inStat == "VALID" || strings.HasPrefix(inStat, "COUNTER_") {
+		v := inBps
+		inPtr = &v
+	}
+	if outStat == "VALID" || strings.HasPrefix(outStat, "COUNTER_") {
+		v := outBps
+		outPtr = &v
+	}
+	return inPtr, outPtr, inStat, outStat
 }
 
 func interfaceKey(deviceID int64, ifIndex int) string { return fmt.Sprintf("%d:%d", deviceID, ifIndex) }
 
-func safeDeltaWithDiscontinuity(curr, prev uint64) (uint64, bool) {
+func (w *Worker) pickCounterMode(key string, speedMbps int, snmpVersion string, hcPresent, legacyPresent bool) string {
+	current := w.modes[key]
+	if current == "hc" && hcPresent {
+		return "hc"
+	}
+	if current == "legacy" && legacyPresent {
+		return "legacy"
+	}
+	isV1 := strings.EqualFold(strings.TrimSpace(snmpVersion), "1") || strings.EqualFold(strings.TrimSpace(snmpVersion), "v1")
+	if isV1 {
+		if legacyPresent {
+			w.modes[key] = "legacy"
+			return "legacy"
+		}
+		if hcPresent {
+			w.modes[key] = "hc"
+			return "hc"
+		}
+		w.modes[key] = "legacy"
+		return "legacy"
+	}
+	// For >=20Mbps ports, strongly prefer HC; keep same rule for low-speed when HC is available.
+	if hcPresent && (speedMbps >= 20 || !legacyPresent) {
+		w.modes[key] = "hc"
+		return "hc"
+	}
+	if legacyPresent {
+		w.modes[key] = "legacy"
+		return "legacy"
+	}
+	w.modes[key] = "hc"
+	return "hc"
+}
+
+func pickCounterPair(mode string, hcIn, hcOut, legacyIn, legacyOut uint64) (uint64, uint64) {
+	if mode == "legacy" {
+		return legacyIn, legacyOut
+	}
+	return hcIn, hcOut
+}
+
+func safeDelta(mode string, curr, prev uint64) (uint64, bool) {
 	if curr < prev {
+		if mode == "legacy" {
+			// Counter32 wrap: (2^32 - prev) + curr
+			const wrap32 = uint64(1) << 32
+			return (wrap32 - prev) + curr, false
+		}
+		// HC wrap/discontinuity is treated as reset.
 		return 0, true
 	}
 	return curr - prev, false
