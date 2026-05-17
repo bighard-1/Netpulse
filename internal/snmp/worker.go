@@ -928,17 +928,20 @@ func (w *Worker) calcBps(
 	maxBps := maxReasonableBpsBySpeed(speedMbps)
 	rawIn := rawBps(inDelta, seconds)
 	rawOut := rawBps(outDelta, seconds)
-	inCandidate := clampOrKeepPrev(rawIn, prev.inBps, maxBps)
-	outCandidate := clampOrKeepPrev(rawOut, prev.outBps, maxBps)
-	// Do not plunge to zero on one-off counter discontinuity; hold briefly then decay.
-	if inDis && prev.inBps > 0 {
-		inCandidate = prev.inBps
+	inBps := clampOrKeepPrev(rawIn, prev.inBps, maxBps)
+	outBps := clampOrKeepPrev(rawOut, prev.outBps, maxBps)
+	inZeroStreak := prev.inZeroStreak
+	outZeroStreak := prev.outZeroStreak
+	// Accuracy first: on discontinuity/reset, mark as invalid sample instead of
+	// carrying previous value which may bias comparison against external NMS.
+	if inDis {
+		inBps = 0
+		inZeroStreak = 0
 	}
-	if outDis && prev.outBps > 0 {
-		outCandidate = prev.outBps
+	if outDis {
+		outBps = 0
+		outZeroStreak = 0
 	}
-	inBps, inZeroStreak := smoothRate(prev.inBps, inCandidate, prev.inZeroStreak)
-	outBps, outZeroStreak := smoothRate(prev.outBps, outCandidate, prev.outZeroStreak)
 	w.last[key] = counterState{
 		inOctets: inOctets, outOctets: outOctets, at: now,
 		counterMode:       mode,
@@ -955,11 +958,11 @@ func (w *Worker) calcBps(
 		uptimeSec: uptimeSec,
 	}
 	var inPtr, outPtr *int64
-	if inStat == "VALID" || strings.HasPrefix(inStat, "COUNTER_") {
+	if inStat == "VALID" {
 		v := inBps
 		inPtr = &v
 	}
-	if outStat == "VALID" || strings.HasPrefix(outStat, "COUNTER_") {
+	if outStat == "VALID" {
 		v := outBps
 		outPtr = &v
 	}
