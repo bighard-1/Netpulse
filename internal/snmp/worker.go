@@ -1003,6 +1003,65 @@ func (w *Worker) calcBps(
 			}
 		}
 	}
+	// Directional fallback: on some distributed chassis, one direction may have
+	// stale/abnormal counter while the other direction is fine in the same poll.
+	// Fallback per direction instead of forcing whole-interface switch.
+	if mode == "hc" && legacyPresent && seconds > 0 {
+		hcInRate := rawBps(hcInDeltaRaw, seconds)
+		hcOutRate := rawBps(hcOutDeltaRaw, seconds)
+		legacyInRate := rawBps(legacyInDeltaRaw, seconds)
+		legacyOutRate := rawBps(legacyOutDeltaRaw, seconds)
+		if hcInDeltaRaw == 0 && legacyInDeltaRaw > 0 {
+			rawIn = legacyInRate
+			inStat = "DIR_FALLBACK_LEGACY"
+		}
+		if hcOutDeltaRaw == 0 && legacyOutDeltaRaw > 0 {
+			rawOut = legacyOutRate
+			outStat = "DIR_FALLBACK_LEGACY"
+		}
+		if hcInDeltaRaw > 0 && legacyInDeltaRaw > 0 {
+			r := float64(hcInDeltaRaw) / float64(legacyInDeltaRaw)
+			if r > 6.0 || r < 0.16 {
+				rawIn = chooseCloserToPrev(prev.inBps, hcInRate, legacyInRate)
+				inStat = "DIR_RECONCILED"
+			}
+		}
+		if hcOutDeltaRaw > 0 && legacyOutDeltaRaw > 0 {
+			r := float64(hcOutDeltaRaw) / float64(legacyOutDeltaRaw)
+			if r > 6.0 || r < 0.16 {
+				rawOut = chooseCloserToPrev(prev.outBps, hcOutRate, legacyOutRate)
+				outStat = "DIR_RECONCILED"
+			}
+		}
+	}
+	if mode == "legacy" && hcPresent && seconds > 0 {
+		hcInRate := rawBps(hcInDeltaRaw, seconds)
+		hcOutRate := rawBps(hcOutDeltaRaw, seconds)
+		legacyInRate := rawBps(legacyInDeltaRaw, seconds)
+		legacyOutRate := rawBps(legacyOutDeltaRaw, seconds)
+		if legacyInDeltaRaw == 0 && hcInDeltaRaw > 0 {
+			rawIn = hcInRate
+			inStat = "DIR_FALLBACK_HC"
+		}
+		if legacyOutDeltaRaw == 0 && hcOutDeltaRaw > 0 {
+			rawOut = hcOutRate
+			outStat = "DIR_FALLBACK_HC"
+		}
+		if legacyInDeltaRaw > 0 && hcInDeltaRaw > 0 {
+			r := float64(legacyInDeltaRaw) / float64(hcInDeltaRaw)
+			if r > 6.0 || r < 0.16 {
+				rawIn = chooseCloserToPrev(prev.inBps, legacyInRate, hcInRate)
+				inStat = "DIR_RECONCILED"
+			}
+		}
+		if legacyOutDeltaRaw > 0 && hcOutDeltaRaw > 0 {
+			r := float64(legacyOutDeltaRaw) / float64(hcOutDeltaRaw)
+			if r > 6.0 || r < 0.16 {
+				rawOut = chooseCloserToPrev(prev.outBps, legacyOutRate, hcOutRate)
+				outStat = "DIR_RECONCILED"
+			}
+		}
+	}
 	inBps := clampOrKeepPrev(rawIn, prev.inBps, maxBps)
 	outBps := clampOrKeepPrev(rawOut, prev.outBps, maxBps)
 	inZeroStreak := prev.inZeroStreak
@@ -1044,6 +1103,34 @@ func (w *Worker) calcBps(
 		outPtr = &v
 	}
 	return inPtr, outPtr, inStat, outStat
+}
+
+func chooseCloserToPrev(prev, a, b int64) int64 {
+	if prev <= 0 {
+		if a <= 0 {
+			return b
+		}
+		if b <= 0 {
+			return a
+		}
+		if a < b {
+			return a
+		}
+		return b
+	}
+	da := abs64(a - prev)
+	db := abs64(b - prev)
+	if da <= db {
+		return a
+	}
+	return b
+}
+
+func abs64(x int64) int64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 func interfaceKey(deviceID int64, ifIndex int) string { return fmt.Sprintf("%d:%d", deviceID, ifIndex) }
