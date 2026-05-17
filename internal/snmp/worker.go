@@ -23,6 +23,8 @@ import (
 type counterState struct {
 	inOctets          uint64
 	outOctets         uint64
+	inChangeOctets    uint64
+	outChangeOctets   uint64
 	counterMode       string
 	hcDiscStreak      int
 	hcStaleStreak     int
@@ -33,6 +35,8 @@ type counterState struct {
 	lastLegacyIn      uint64
 	lastLegacyOut     uint64
 	at                time.Time
+	inChangedAt       time.Time
+	outChangedAt      time.Time
 	uptimeSec         int64
 	inBps             int64
 	outBps            int64
@@ -739,9 +743,11 @@ func (w *Worker) calcBps(
 	if !ok {
 		w.last[key] = counterState{
 			inOctets: inOctets, outOctets: outOctets, at: now,
+			inChangeOctets: inOctets, outChangeOctets: outOctets,
 			counterMode: mode,
 			lastHCIn:    hcInOctets, lastHCOut: hcOutOctets,
 			lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
+			inChangedAt: now, outChangedAt: now,
 			inBps: 0, outBps: 0,
 			inRaw1: 0, inRaw2: 0, outRaw1: 0, outRaw2: 0,
 			inZeroStreak: 0, outZeroStreak: 0,
@@ -757,9 +763,11 @@ func (w *Worker) calcBps(
 	if prev.counterMode != "" && prev.counterMode != mode {
 		w.last[key] = counterState{
 			inOctets: inOctets, outOctets: outOctets, at: now,
+			inChangeOctets: inOctets, outChangeOctets: outOctets,
 			counterMode: mode,
 			lastHCIn:    hcInOctets, lastHCOut: hcOutOctets,
 			lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
+			inChangedAt: now, outChangedAt: now,
 			inBps: prev.inBps, outBps: prev.outBps,
 			inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 			outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
@@ -771,9 +779,11 @@ func (w *Worker) calcBps(
 	if prev.uptimeSec > 0 && uptimeSec > 0 && uptimeSec < prev.uptimeSec {
 		w.last[key] = counterState{
 			inOctets: inOctets, outOctets: outOctets, at: now,
+			inChangeOctets: inOctets, outChangeOctets: outOctets,
 			counterMode: mode,
 			lastHCIn:    hcInOctets, lastHCOut: hcOutOctets,
 			lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
+			inChangedAt: now, outChangedAt: now,
 			inBps: 0, outBps: 0,
 			inRaw1: 0, inRaw2: 0, outRaw1: 0, outRaw2: 0,
 			inZeroStreak: 0, outZeroStreak: 0,
@@ -789,12 +799,14 @@ func (w *Worker) calcBps(
 		if seconds < exp*0.2 || seconds > exp*6.0 {
 			w.last[key] = counterState{
 				inOctets: inOctets, outOctets: outOctets, at: now,
+				inChangeOctets: prev.inChangeOctets, outChangeOctets: prev.outChangeOctets,
 				counterMode:       mode,
 				hcDiscStreak:      prev.hcDiscStreak,
 				hcStaleStreak:     prev.hcStaleStreak,
 				legacyStaleStreak: prev.legacyStaleStreak,
 				lastHCIn:          hcInOctets, lastHCOut: hcOutOctets,
 				lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
+				inChangedAt: prev.inChangedAt, outChangedAt: prev.outChangedAt,
 				inBps: prev.inBps, outBps: prev.outBps,
 				inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 				outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
@@ -805,8 +817,8 @@ func (w *Worker) calcBps(
 		}
 	}
 
-	inDelta, inDis := safeDelta(mode, inOctets, prev.inOctets)
-	outDelta, outDis := safeDelta(mode, outOctets, prev.outOctets)
+	_, inDis := safeDelta(mode, inOctets, prev.inOctets)
+	_, outDis := safeDelta(mode, outOctets, prev.outOctets)
 	inStat := "VALID"
 	outStat := "VALID"
 	if inDis {
@@ -838,9 +850,11 @@ func (w *Worker) calcBps(
 			w.modes[key] = "legacy"
 			w.last[key] = counterState{
 				inOctets: legacyInOctets, outOctets: legacyOutOctets, at: now,
+				inChangeOctets: legacyInOctets, outChangeOctets: legacyOutOctets,
 				counterMode: "legacy",
 				lastHCIn:    hcInOctets, lastHCOut: hcOutOctets,
 				lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
+				inChangedAt: now, outChangedAt: now,
 				inBps: prev.inBps, outBps: prev.outBps,
 				inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 				outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
@@ -870,9 +884,11 @@ func (w *Worker) calcBps(
 				w.modes[key] = "legacy"
 				w.last[key] = counterState{
 					inOctets: legacyInOctets, outOctets: legacyOutOctets, at: now,
+					inChangeOctets: legacyInOctets, outChangeOctets: legacyOutOctets,
 					counterMode: "legacy",
 					lastHCIn:    hcInOctets, lastHCOut: hcOutOctets,
 					lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
+					inChangedAt: now, outChangedAt: now,
 					inBps: prev.inBps, outBps: prev.outBps,
 					inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 					outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
@@ -890,9 +906,11 @@ func (w *Worker) calcBps(
 				w.modes[key] = "legacy"
 				w.last[key] = counterState{
 					inOctets: legacyInOctets, outOctets: legacyOutOctets, at: now,
+					inChangeOctets: legacyInOctets, outChangeOctets: legacyOutOctets,
 					counterMode: "legacy",
 					lastHCIn:    hcInOctets, lastHCOut: hcOutOctets,
 					lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
+					inChangedAt: now, outChangedAt: now,
 					inBps: prev.inBps, outBps: prev.outBps,
 					inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 					outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
@@ -912,9 +930,11 @@ func (w *Worker) calcBps(
 			w.modes[key] = "hc"
 			w.last[key] = counterState{
 				inOctets: hcInOctets, outOctets: hcOutOctets, at: now,
+				inChangeOctets: hcInOctets, outChangeOctets: hcOutOctets,
 				counterMode: "hc",
 				lastHCIn:    hcInOctets, lastHCOut: hcOutOctets,
 				lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
+				inChangedAt: now, outChangedAt: now,
 				inBps: prev.inBps, outBps: prev.outBps,
 				inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 				outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
@@ -926,8 +946,63 @@ func (w *Worker) calcBps(
 	}
 
 	maxBps := maxReasonableBpsBySpeed(speedMbps)
-	rawIn := rawBps(inDelta, seconds)
-	rawOut := rawBps(outDelta, seconds)
+	rawIn := prev.inBps
+	rawOut := prev.outBps
+	inChangeOctets := prev.inChangeOctets
+	outChangeOctets := prev.outChangeOctets
+	inChangedAt := prev.inChangedAt
+	outChangedAt := prev.outChangedAt
+	// Core fix for distributed chassis counters:
+	// compute rate over the elapsed time since last counter CHANGE,
+	// not simply every poll interval.
+	if !inDis {
+		if inOctets != prev.inOctets {
+			if inChangedAt.IsZero() {
+				inChangedAt = prev.at
+			}
+			baseSec := now.Sub(inChangedAt).Seconds()
+			if baseSec > 0 {
+				var deltaFromChange uint64
+				if inOctets >= inChangeOctets {
+					deltaFromChange = inOctets - inChangeOctets
+				} else {
+					if mode == "legacy" {
+						const wrap32 = uint64(1) << 32
+						deltaFromChange = (wrap32 - inChangeOctets) + inOctets
+					} else {
+						deltaFromChange = 0
+					}
+				}
+				rawIn = rawBps(deltaFromChange, baseSec)
+				inChangeOctets = inOctets
+				inChangedAt = now
+			}
+		}
+	}
+	if !outDis {
+		if outOctets != prev.outOctets {
+			if outChangedAt.IsZero() {
+				outChangedAt = prev.at
+			}
+			baseSec := now.Sub(outChangedAt).Seconds()
+			if baseSec > 0 {
+				var deltaFromChange uint64
+				if outOctets >= outChangeOctets {
+					deltaFromChange = outOctets - outChangeOctets
+				} else {
+					if mode == "legacy" {
+						const wrap32 = uint64(1) << 32
+						deltaFromChange = (wrap32 - outChangeOctets) + outOctets
+					} else {
+						deltaFromChange = 0
+					}
+				}
+				rawOut = rawBps(deltaFromChange, baseSec)
+				outChangeOctets = outOctets
+				outChangedAt = now
+			}
+		}
+	}
 	inBps := clampOrKeepPrev(rawIn, prev.inBps, maxBps)
 	outBps := clampOrKeepPrev(rawOut, prev.outBps, maxBps)
 	inZeroStreak := prev.inZeroStreak
@@ -944,6 +1019,7 @@ func (w *Worker) calcBps(
 	}
 	w.last[key] = counterState{
 		inOctets: inOctets, outOctets: outOctets, at: now,
+		inChangeOctets: inChangeOctets, outChangeOctets: outChangeOctets,
 		counterMode:       mode,
 		hcDiscStreak:      hcDiscStreak,
 		hcStaleStreak:     hcStaleStreak,
@@ -951,6 +1027,7 @@ func (w *Worker) calcBps(
 		hcRatioBadStreak:  hcRatioBadStreak,
 		lastHCIn:          hcInOctets, lastHCOut: hcOutOctets,
 		lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
+		inChangedAt: inChangedAt, outChangedAt: outChangedAt,
 		inBps: inBps, outBps: outBps,
 		inRaw1: rawIn, inRaw2: prev.inRaw1,
 		outRaw1: rawOut, outRaw2: prev.outRaw1,
