@@ -38,7 +38,7 @@ const trafficThresholdBps = ref(0);
 const chartCardActive = ref("today");
 const siblingPorts = ref([]);
 const currentPortSpeedMbps = ref(0);
-const showRawSeries = ref(true);
+const showRawSeries = ref(false);
 const lastSeriesCache = ref({
   today: [],
   d7: [],
@@ -117,14 +117,14 @@ function roundUpNice(v) {
 function baseOption(title, unitInfo, planText = "") {
   return {
     animation: false,
-    grid: npChartGrid,
+    grid: { ...npChartGrid, top: 90, bottom: 92 },
     title: {
       text: title,
-      subtext: `单位: ${unitInfo.unit}${planText ? ` · ${planText}` : ""}`,
+      subtext: `单位: ${unitInfo.unit}${planText ? `\n${planText}` : ""}`,
       left: 10,
-      top: 8,
+      top: 10,
       textStyle: { fontSize: 14, fontWeight: 600 },
-      subtextStyle: { fontSize: 12, color: "#64748b", lineHeight: 14 }
+      subtextStyle: { fontSize: 12, color: "#64748b", lineHeight: 17 }
     },
     tooltip: npTooltip({
       axisPointer: { type: "line", animation: false },
@@ -142,10 +142,12 @@ function baseOption(title, unitInfo, planText = "") {
         for (const p of params) {
           lines.push(`${p.marker}${p.seriesName}: ${bpsLabel(p.data[1])}`);
         }
+        lines.push(`<span style="color:#94a3b8">展示模式: ${showRawSeries.value ? "原始折线" : "轻度平滑"}</span>`);
+        lines.push(`<span style="color:#94a3b8">说明: 高速端口若检测到缓存采样相位，采集端已按有效采样入库</span>`);
         return lines.join("<br/>");
       }
     }),
-    legend: { top: 8, right: 10, data: ["入方向", "出方向"] },
+    legend: { top: 14, right: 10, data: ["入方向", "出方向"] },
     dataZoom: [
       { type: "inside", throttle: 60, zoomOnMouseWheel: true, moveOnMouseMove: true },
       { type: "slider", height: 18, bottom: 0 }
@@ -433,10 +435,12 @@ function applyChart(chart, title, data, metaKey = "today") {
   const unitInfo = pickUnit(maxVal);
   const meta = chartMeta.value[metaKey] || { interval: "-", agg: "-" };
   const src = chartSource.value[metaKey] || "metrics";
-  const planText = `采样: ${meta.interval || "原始"} · ${meta.agg || "-"} · 源: ${src}`;
+  const displayMode = showRawSeries.value ? "原始折线" : "轻度平滑显示";
+  const planText = `采样: ${meta.interval || "原始"} · ${meta.agg || "-"} · 源: ${src} · 展示: ${displayMode}`;
   const opt = baseOption(title, unitInfo, planText);
   opt.xAxis.axisLabel.formatter = (value) => xAxisLabelFormatter(value, metaKey);
-  // Give dataZoom/timeline enough room to avoid clipping at card bottom.
+  // Give title/subtitle and dataZoom enough room to avoid clipping or overlap.
+  opt.grid.top = 90;
   opt.grid.bottom = 92;
   if (Array.isArray(opt.dataZoom)) {
     opt.dataZoom[0].bottom = 30;
@@ -807,7 +811,7 @@ function onEditModeEvent(e) {
           <div class="flex flex-wrap items-center gap-2">
             <el-input-number v-model="trafficThresholdBps" :min="0" :step="1000000" placeholder="告警阈值(bps)" />
             <el-button @click="applyThresholdToAllCharts">应用阈值线</el-button>
-            <el-switch v-model="showRawSeries" inline-prompt active-text="原始" inactive-text="平滑" @change="applyThresholdToAllCharts" />
+            <el-switch v-model="showRawSeries" inline-prompt active-text="原始显示" inactive-text="平滑显示" @change="applyThresholdToAllCharts" />
             <el-button @click="loadAllCharts" :loading="loading">{{ zhCN.portDetail.refresh }}</el-button>
           </div>
         </div>
