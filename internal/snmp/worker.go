@@ -46,6 +46,8 @@ type counterState struct {
 	outRaw2           int64
 	inZeroStreak      int
 	outZeroStreak     int
+	inAliasPending    bool
+	outAliasPending   bool
 }
 
 type Worker struct {
@@ -1066,19 +1068,11 @@ func (w *Worker) calcBps(
 	}
 	inZeroStreak := prev.inZeroStreak
 	outZeroStreak := prev.outZeroStreak
+	inAliasPending := false
+	outAliasPending := false
 	if highSpeedHC && expectedInterval > 0 && expectedInterval <= time.Minute {
-		if v, ok := dampHighSpeedCacheAlias(prev.inBps, rawIn); ok {
-			rawIn = v
-			if inStat == "VALID" {
-				inStat = "CACHE_SMOOTHED"
-			}
-		}
-		if v, ok := dampHighSpeedCacheAlias(prev.outBps, rawOut); ok {
-			rawOut = v
-			if outStat == "VALID" {
-				outStat = "CACHE_SMOOTHED"
-			}
-		}
+		rawIn, inStat, inAliasPending = pairHighSpeedCacheSample(prev.inAliasPending, prev.inRaw1, rawIn, inStat)
+		rawOut, outStat, outAliasPending = pairHighSpeedCacheSample(prev.outAliasPending, prev.outRaw1, rawOut, outStat)
 	}
 	inBps := clampOrKeepPrev(rawIn, prev.inBps, maxBps)
 	outBps := clampOrKeepPrev(rawOut, prev.outBps, maxBps)
@@ -1107,6 +1101,7 @@ func (w *Worker) calcBps(
 		inRaw1: rawIn, inRaw2: prev.inRaw1,
 		outRaw1: rawOut, outRaw2: prev.outRaw1,
 		inZeroStreak: inZeroStreak, outZeroStreak: outZeroStreak,
+		inAliasPending: inAliasPending, outAliasPending: outAliasPending,
 		uptimeSec: uptimeSec,
 	}
 	var inPtr, outPtr *int64
@@ -1122,18 +1117,21 @@ func (w *Worker) calcBps(
 }
 
 func isPersistableTrafficStatus(status string) bool {
-	return status == "VALID" || strings.HasPrefix(status, "DIR_") || status == "CACHE_SMOOTHED"
+	return status == "VALID" || strings.HasPrefix(status, "DIR_") || status == "CACHE_AVG"
 }
 
-func dampHighSpeedCacheAlias(prev, curr int64) (int64, bool) {
-	if prev <= 0 || curr <= 0 {
-		return curr, false
+func pairHighSpeedCacheSample(pending bool, previous, curr int64, status string) (int64, string, bool) {
+	if curr <= 0 || status != "VALID" {
+		return curr, status, false
 	}
-	// Distributed chassis can expose cached counter stair-steps when polled at
-	// 30-60s. The counter is still valid, but adjacent samples are phase-shifted
-	// by the device cache refresh. A two-point low-pass removes that aliasing
-	// without changing OIDs, counter source, or total trend direction.
-	return (prev + curr) / 2, true
+	if !pending || previous <= 0 {
+		// The first point of a pair is only a candidate. Persisting it creates the
+		// visible high/low aliasing seen on distributed chassis at 30s polling.
+		return curr, "CACHE_WAIT", true
+	}
+	// Persist one averaged point per pair. This preserves the real average
+	// throughput across the two samples while hiding the device cache phase.
+	return (previous + curr) / 2, "CACHE_AVG", false
 }
 
 func chooseCloserToPrev(prev, a, b int64) int64 {
