@@ -46,8 +46,6 @@ type counterState struct {
 	outRaw2           int64
 	inZeroStreak      int
 	outZeroStreak     int
-	inNear2Streak     int
-	outNear2Streak    int
 }
 
 type Worker struct {
@@ -754,7 +752,6 @@ func (w *Worker) calcBps(
 			inBps: 0, outBps: 0,
 			inRaw1: 0, inRaw2: 0, outRaw1: 0, outRaw2: 0,
 			inZeroStreak: 0, outZeroStreak: 0,
-			inNear2Streak: 0, outNear2Streak: 0,
 			uptimeSec: uptimeSec,
 		}
 		return nil, nil, "INITIALIZING", "INITIALIZING"
@@ -776,7 +773,6 @@ func (w *Worker) calcBps(
 			inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 			outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
 			inZeroStreak: 0, outZeroStreak: 0,
-			inNear2Streak: 0, outNear2Streak: 0,
 			uptimeSec: uptimeSec,
 		}
 		return nil, nil, "COUNTER_SOURCE_SWITCH", "COUNTER_SOURCE_SWITCH"
@@ -792,7 +788,6 @@ func (w *Worker) calcBps(
 			inBps: 0, outBps: 0,
 			inRaw1: 0, inRaw2: 0, outRaw1: 0, outRaw2: 0,
 			inZeroStreak: 0, outZeroStreak: 0,
-			inNear2Streak: 0, outNear2Streak: 0,
 			uptimeSec: uptimeSec,
 		}
 		return nil, nil, "DEVICE_REBOOT", "DEVICE_REBOOT"
@@ -817,7 +812,6 @@ func (w *Worker) calcBps(
 				inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 				outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
 				inZeroStreak: prev.inZeroStreak, outZeroStreak: prev.outZeroStreak,
-				inNear2Streak: prev.inNear2Streak, outNear2Streak: prev.outNear2Streak,
 				uptimeSec: uptimeSec,
 			}
 			return nil, nil, "WINDOW_GAP", "WINDOW_GAP"
@@ -866,7 +860,6 @@ func (w *Worker) calcBps(
 				inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 				outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
 				inZeroStreak: 0, outZeroStreak: 0,
-				inNear2Streak: 0, outNear2Streak: 0,
 				uptimeSec: uptimeSec,
 			}
 			return nil, nil, "COUNTER_SOURCE_SWITCH", "COUNTER_SOURCE_SWITCH"
@@ -902,7 +895,6 @@ func (w *Worker) calcBps(
 					inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 					outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
 					inZeroStreak: prev.inZeroStreak, outZeroStreak: prev.outZeroStreak,
-					inNear2Streak: prev.inNear2Streak, outNear2Streak: prev.outNear2Streak,
 					uptimeSec: uptimeSec,
 				}
 				return nil, nil, "COUNTER_SOURCE_SWITCH", "COUNTER_SOURCE_SWITCH"
@@ -925,7 +917,6 @@ func (w *Worker) calcBps(
 					inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 					outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
 					inZeroStreak: 0, outZeroStreak: 0,
-					inNear2Streak: 0, outNear2Streak: 0,
 					uptimeSec: uptimeSec,
 				}
 				return nil, nil, "COUNTER_SOURCE_SWITCH", "COUNTER_SOURCE_SWITCH"
@@ -950,7 +941,6 @@ func (w *Worker) calcBps(
 				inRaw1: prev.inRaw1, inRaw2: prev.inRaw2,
 				outRaw1: prev.outRaw1, outRaw2: prev.outRaw2,
 				inZeroStreak: 0, outZeroStreak: 0,
-				inNear2Streak: 0, outNear2Streak: 0,
 				uptimeSec: uptimeSec,
 			}
 			return nil, nil, "COUNTER_SOURCE_SWITCH", "COUNTER_SOURCE_SWITCH"
@@ -1076,26 +1066,18 @@ func (w *Worker) calcBps(
 	}
 	inZeroStreak := prev.inZeroStreak
 	outZeroStreak := prev.outZeroStreak
-	inNear2Streak := prev.inNear2Streak
-	outNear2Streak := prev.outNear2Streak
-	if highSpeedHC && legacyPresent && seconds > 0 {
-		if shouldApplyHalfScale(hcInDeltaRaw, legacyInDeltaRaw, rawIn, maxBps) {
-			inNear2Streak++
-		} else {
-			inNear2Streak = 0
+	if highSpeedHC && expectedInterval > 0 && expectedInterval <= time.Minute {
+		if v, ok := smoothHighSpeedCacheJitter(prev.inBps, rawIn); ok {
+			rawIn = v
+			if inStat == "VALID" {
+				inStat = "CACHE_SMOOTHED"
+			}
 		}
-		if shouldApplyHalfScale(hcOutDeltaRaw, legacyOutDeltaRaw, rawOut, maxBps) {
-			outNear2Streak++
-		} else {
-			outNear2Streak = 0
-		}
-		if inNear2Streak >= 3 {
-			rawIn = rawIn / 2
-			inStat = "HC_SCALE_HALF"
-		}
-		if outNear2Streak >= 3 {
-			rawOut = rawOut / 2
-			outStat = "HC_SCALE_HALF"
+		if v, ok := smoothHighSpeedCacheJitter(prev.outBps, rawOut); ok {
+			rawOut = v
+			if outStat == "VALID" {
+				outStat = "CACHE_SMOOTHED"
+			}
 		}
 	}
 	inBps := clampOrKeepPrev(rawIn, prev.inBps, maxBps)
@@ -1125,7 +1107,6 @@ func (w *Worker) calcBps(
 		inRaw1: rawIn, inRaw2: prev.inRaw1,
 		outRaw1: rawOut, outRaw2: prev.outRaw1,
 		inZeroStreak: inZeroStreak, outZeroStreak: outZeroStreak,
-		inNear2Streak: inNear2Streak, outNear2Streak: outNear2Streak,
 		uptimeSec: uptimeSec,
 	}
 	var inPtr, outPtr *int64
@@ -1141,21 +1122,24 @@ func (w *Worker) calcBps(
 }
 
 func isPersistableTrafficStatus(status string) bool {
-	return status == "VALID" || strings.HasPrefix(status, "DIR_") || status == "HC_SCALE_HALF"
+	return status == "VALID" || strings.HasPrefix(status, "DIR_") || status == "CACHE_SMOOTHED"
 }
 
-func shouldApplyHalfScale(hcDelta, legacyDelta uint64, hcRate int64, maxReasonableBps float64) bool {
-	if hcDelta == 0 || legacyDelta == 0 || hcRate <= 0 {
-		return false
+func smoothHighSpeedCacheJitter(prev, curr int64) (int64, bool) {
+	if prev <= 0 || curr <= 0 {
+		return curr, false
 	}
-	ratio := float64(hcDelta) / float64(legacyDelta)
-	if ratio < 1.85 || ratio > 2.15 {
-		return false
+	hi := prev
+	lo := curr
+	if lo > hi {
+		hi, lo = lo, hi
 	}
-	if maxReasonableBps <= 0 {
-		return true
+	if lo <= 0 || float64(hi)/float64(lo) < 1.35 {
+		return curr, false
 	}
-	return float64(hcRate) <= maxReasonableBps
+	// Distributed chassis can expose cached counter stair-steps at 30s polling.
+	// A conservative EWMA removes sampling aliasing without switching counter source.
+	return int64(float64(prev)*0.65 + float64(curr)*0.35), true
 }
 
 func chooseCloserToPrev(prev, a, b int64) int64 {
