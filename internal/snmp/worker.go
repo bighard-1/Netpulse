@@ -1067,13 +1067,13 @@ func (w *Worker) calcBps(
 	inZeroStreak := prev.inZeroStreak
 	outZeroStreak := prev.outZeroStreak
 	if highSpeedHC && expectedInterval > 0 && expectedInterval <= time.Minute {
-		if v, ok := smoothHighSpeedCacheJitter(prev.inBps, rawIn); ok {
+		if v, ok := dampHighSpeedCacheAlias(prev.inBps, rawIn); ok {
 			rawIn = v
 			if inStat == "VALID" {
 				inStat = "CACHE_SMOOTHED"
 			}
 		}
-		if v, ok := smoothHighSpeedCacheJitter(prev.outBps, rawOut); ok {
+		if v, ok := dampHighSpeedCacheAlias(prev.outBps, rawOut); ok {
 			rawOut = v
 			if outStat == "VALID" {
 				outStat = "CACHE_SMOOTHED"
@@ -1125,21 +1125,15 @@ func isPersistableTrafficStatus(status string) bool {
 	return status == "VALID" || strings.HasPrefix(status, "DIR_") || status == "CACHE_SMOOTHED"
 }
 
-func smoothHighSpeedCacheJitter(prev, curr int64) (int64, bool) {
+func dampHighSpeedCacheAlias(prev, curr int64) (int64, bool) {
 	if prev <= 0 || curr <= 0 {
 		return curr, false
 	}
-	hi := prev
-	lo := curr
-	if lo > hi {
-		hi, lo = lo, hi
-	}
-	if lo <= 0 || float64(hi)/float64(lo) < 1.35 {
-		return curr, false
-	}
-	// Distributed chassis can expose cached counter stair-steps at 30s polling.
-	// A conservative EWMA removes sampling aliasing without switching counter source.
-	return int64(float64(prev)*0.65 + float64(curr)*0.35), true
+	// Distributed chassis can expose cached counter stair-steps when polled at
+	// 30-60s. The counter is still valid, but adjacent samples are phase-shifted
+	// by the device cache refresh. A two-point low-pass removes that aliasing
+	// without changing OIDs, counter source, or total trend direction.
+	return (prev + curr) / 2, true
 }
 
 func chooseCloserToPrev(prev, a, b int64) int64 {
