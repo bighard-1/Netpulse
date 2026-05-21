@@ -11,7 +11,8 @@ import {
   startOfServerDay,
   startOfServerMonth,
   startOfServerWeek,
-  startOfServerYear
+  startOfServerYear,
+  datePickerValueToServerDate
 } from "../utils/serverTime";
 
 const props = defineProps({ id: { type: [String, Number], required: true } });
@@ -693,9 +694,9 @@ function confirmCustomRange() {
     fb.warn("请先选择开始与结束时间");
     return;
   }
-  const start = new Date(customStartDraft.value);
-  const end = new Date(customEndDraft.value);
-  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) {
+  const start = datePickerValueToServerDate(customStartDraft.value);
+  const end = datePickerValueToServerDate(customEndDraft.value);
+  if (!start || !end || !Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) {
     fb.warn("结束时间必须晚于开始时间");
     return;
   }

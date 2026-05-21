@@ -1384,13 +1384,6 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 	ds.Uptime = formatUptime(ds.UptimeSec)
 
 	const iq = `
-		WITH latest_metrics AS (
-			SELECT DISTINCT ON (interface_id)
-			       interface_id, traffic_in_bps, traffic_out_bps
-			FROM metrics
-			WHERE interface_id IS NOT NULL
-			ORDER BY interface_id, ts DESC
-		)
 		SELECT i.id, i.device_id, i."index",
 		       COALESCE(NULLIF(i.custom_name,''), i.name) AS display_name,
 		       i.name AS raw_name,
@@ -1401,7 +1394,13 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 		       COALESCE(m.traffic_in_bps, 0),
 		       COALESCE(m.traffic_out_bps, 0)
 		FROM interfaces i
-		LEFT JOIN latest_metrics m ON m.interface_id = i.id
+		LEFT JOIN LATERAL (
+			SELECT traffic_in_bps, traffic_out_bps
+			FROM metrics
+			WHERE interface_id = i.id
+			ORDER BY ts DESC
+			LIMIT 1
+		) m ON TRUE
 		WHERE i.device_id = $1
 		ORDER BY i."index";
 	`
@@ -2100,13 +2099,6 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 	}
 
 	const iq = `
-		WITH latest_metrics AS (
-			SELECT DISTINCT ON (interface_id)
-			       interface_id, traffic_in_bps, traffic_out_bps
-			FROM metrics
-			WHERE interface_id IS NOT NULL
-			ORDER BY interface_id, ts DESC
-		)
 		SELECT i.id, i.device_id, i."index",
 		       COALESCE(NULLIF(i.custom_name,''), i.name) AS display_name,
 		       i.name AS raw_name,
@@ -2117,7 +2109,13 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		       COALESCE(m.traffic_in_bps, 0),
 		       COALESCE(m.traffic_out_bps, 0)
 		FROM interfaces i
-		LEFT JOIN latest_metrics m ON m.interface_id = i.id
+		LEFT JOIN LATERAL (
+			SELECT traffic_in_bps, traffic_out_bps
+			FROM metrics
+			WHERE interface_id = i.id
+			ORDER BY ts DESC
+			LIMIT 1
+		) m ON TRUE
 		ORDER BY i.device_id, i."index";
 	`
 	iRows, err := r.db.QueryContext(ctx, iq)
@@ -2346,13 +2344,6 @@ func (r *Repository) UpdateInterfaceRemark(ctx context.Context, id int64, remark
 
 func (r *Repository) GetInterfaceByID(ctx context.Context, id int64) (*Interface, error) {
 	const q = `
-		WITH latest_metrics AS (
-			SELECT DISTINCT ON (interface_id)
-			       interface_id, traffic_in_bps, traffic_out_bps
-			FROM metrics
-			WHERE interface_id = $1
-			ORDER BY interface_id, ts DESC
-		)
 		SELECT i.id,
 		       i.device_id,
 		       host(d.ip) AS device_ip,
@@ -2368,7 +2359,13 @@ func (r *Repository) GetInterfaceByID(ctx context.Context, id int64) (*Interface
 		       COALESCE(m.traffic_out_bps, 0)
 		FROM interfaces i
 		JOIN devices d ON d.id = i.device_id
-		LEFT JOIN latest_metrics m ON m.interface_id = i.id
+		LEFT JOIN LATERAL (
+			SELECT traffic_in_bps, traffic_out_bps
+			FROM metrics
+			WHERE interface_id = i.id
+			ORDER BY ts DESC
+			LIMIT 1
+		) m ON TRUE
 		WHERE i.id = $1
 		LIMIT 1;
 	`
