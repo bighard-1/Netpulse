@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS interfaces (
     custom_name VARCHAR(128),
     speed_mbps INTEGER NOT NULL DEFAULT 0,
     oper_status SMALLINT,
+    admin_status SMALLINT,
     remark TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (device_id, "index")
@@ -72,6 +73,7 @@ CREATE TABLE IF NOT EXISTS interfaces (
 ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS custom_name VARCHAR(128);
 ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS speed_mbps INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS oper_status SMALLINT;
+ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS admin_status SMALLINT;
 
 CREATE INDEX IF NOT EXISTS idx_devices_name_trgm ON devices USING GIN (name gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_devices_ip_trgm ON devices USING GIN ((host(ip)) gin_trgm_ops);
@@ -760,12 +762,15 @@ type Device struct {
 type Interface struct {
 	ID            int64  `json:"id"`
 	DeviceID      int64  `json:"device_id,omitempty"`
+	DeviceIP      string `json:"device_ip,omitempty"`
+	DeviceName    string `json:"device_name,omitempty"`
 	Index         int    `json:"index"`
 	Name          string `json:"name"`
 	RawName       string `json:"raw_name,omitempty"`
 	Remark        string `json:"remark"`
 	SpeedMbps     int    `json:"speed_mbps,omitempty"`
 	OperStatus    int    `json:"oper_status,omitempty"`
+	AdminStatus   int    `json:"admin_status,omitempty"`
 	TrafficInBps  int64  `json:"traffic_in_bps,omitempty"`
 	TrafficOutBps int64  `json:"traffic_out_bps,omitempty"`
 }
@@ -781,6 +786,7 @@ type InterfaceMetric struct {
 	UptimeSec      int64
 	SpeedMbps      int
 	OperStatus     int
+	AdminStatus    int
 	TrafficInBps   *int64
 	TrafficOutBps  *int64
 	TrafficInStat  string
@@ -956,13 +962,26 @@ type SystemHealthPoint struct {
 }
 
 type RecentEvent struct {
-	ID         int64     `json:"id"`
-	DeviceID   int64     `json:"device_id"`
-	DeviceIP   string    `json:"device_ip"`
-	DeviceName string    `json:"device_name"`
-	Level      string    `json:"level"`
-	Message    string    `json:"message"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID          int64     `json:"id"`
+	DeviceID    int64     `json:"device_id"`
+	DeviceIP    string    `json:"device_ip"`
+	DeviceName  string    `json:"device_name"`
+	InterfaceID *int64    `json:"interface_id,omitempty"`
+	Level       string    `json:"level"`
+	Type        string    `json:"type"`
+	Code        string    `json:"code,omitempty"`
+	Source      string    `json:"source"`
+	Message     string    `json:"message"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type EventFilter struct {
+	Limit      int
+	DeviceID   int64
+	DeviceName string
+	EventType  string
+	Start      *time.Time
+	End        *time.Time
 }
 
 type AlertEvent struct {
@@ -1041,9 +1060,10 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 	const mig4 = `
 		ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS speed_mbps INTEGER NOT NULL DEFAULT 0;
 		ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS oper_status SMALLINT;
+		ALTER TABLE interfaces ADD COLUMN IF NOT EXISTS admin_status SMALLINT;
 		ALTER TABLE metrics ADD COLUMN IF NOT EXISTS uptime_sec BIGINT;
 		INSERT INTO schema_migrations(version, description)
-		VALUES (4, 'add interfaces.speed_mbps/interfaces.oper_status and metrics.uptime_sec')
+		VALUES (4, 'add interfaces.speed_mbps/interfaces.oper_status/interfaces.admin_status and metrics.uptime_sec')
 		ON CONFLICT (version) DO NOTHING;
 	`
 	if _, err := r.db.ExecContext(ctx, mig4); err != nil {
@@ -1377,6 +1397,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 		       COALESCE(i.remark, ''),
 		       COALESCE(i.speed_mbps, 0),
 		       COALESCE(i.oper_status, 0),
+		       COALESCE(i.admin_status, 0),
 		       COALESCE(m.traffic_in_bps, 0),
 		       COALESCE(m.traffic_out_bps, 0)
 		FROM interfaces i
@@ -1391,7 +1412,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 	defer rows.Close()
 	for rows.Next() {
 		var itf Interface
-		if err := rows.Scan(&itf.ID, &itf.DeviceID, &itf.Index, &itf.Name, &itf.RawName, &itf.Remark, &itf.SpeedMbps, &itf.OperStatus, &itf.TrafficInBps, &itf.TrafficOutBps); err != nil {
+		if err := rows.Scan(&itf.ID, &itf.DeviceID, &itf.Index, &itf.Name, &itf.RawName, &itf.Remark, &itf.SpeedMbps, &itf.OperStatus, &itf.AdminStatus, &itf.TrafficInBps, &itf.TrafficOutBps); err != nil {
 			return nil, fmt.Errorf("scan interface by device id: %w", err)
 		}
 		ds.Interfaces = append(ds.Interfaces, itf)
@@ -1910,12 +1931,12 @@ func (r *Repository) GlobalSearch(ctx context.Context, q string, limit int, ctxD
 				('IP='||host(d.ip)||' 品牌='||d.brand||' 备注='||COALESCE(d.remark,'')) AS sub,
 				'device'::text AS type,
 				d.id::bigint AS device_id,
-				NULL::bigint AS interface_id,
+				0::bigint AS interface_id,
 				COALESCE(d.name, host(d.ip)) AS device_name,
 				host(d.ip) AS device_ip,
-				NULL::text AS interface_name,
-				NULL::text AS interface_custom_name,
-				NULL::text AS interface_remark,
+				''::text AS interface_name,
+				''::text AS interface_custom_name,
+				''::text AS interface_remark,
 				CASE
 					WHEN COALESCE(d.name,'') ILIKE $1 THEN 'device_name'
 					WHEN host(d.ip) ILIKE $1 THEN 'device_ip'
@@ -2092,6 +2113,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		       COALESCE(i.remark, ''),
 		       COALESCE(i.speed_mbps, 0),
 		       COALESCE(i.oper_status, 0),
+		       COALESCE(i.admin_status, 0),
 		       COALESCE(m.traffic_in_bps, 0),
 		       COALESCE(m.traffic_out_bps, 0)
 		FROM interfaces i
@@ -2107,7 +2129,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 	byDevice := make(map[int64][]Interface)
 	for iRows.Next() {
 		var itf Interface
-		if err := iRows.Scan(&itf.ID, &itf.DeviceID, &itf.Index, &itf.Name, &itf.RawName, &itf.Remark, &itf.SpeedMbps, &itf.OperStatus, &itf.TrafficInBps, &itf.TrafficOutBps); err != nil {
+		if err := iRows.Scan(&itf.ID, &itf.DeviceID, &itf.Index, &itf.Name, &itf.RawName, &itf.Remark, &itf.SpeedMbps, &itf.OperStatus, &itf.AdminStatus, &itf.TrafficInBps, &itf.TrafficOutBps); err != nil {
 			return nil, fmt.Errorf("scan interface: %w", err)
 		}
 		byDevice[itf.DeviceID] = append(byDevice[itf.DeviceID], itf)
@@ -2201,8 +2223,8 @@ func (r *Repository) SaveMetrics(
 ) error {
 	const q = `
 		WITH upsert_if AS (
-			INSERT INTO interfaces (device_id, "index", name, remark)
-			VALUES ($2, $3, $4, '')
+			INSERT INTO interfaces (device_id, "index", name, remark, speed_mbps, oper_status, admin_status)
+			VALUES ($2, $3, $4, '', GREATEST($13, 0), NULLIF($14, 0), NULLIF($17, 0))
 			ON CONFLICT (device_id, "index")
 			DO UPDATE SET
 				name = CASE
@@ -2216,6 +2238,10 @@ func (r *Repository) SaveMetrics(
 				oper_status = CASE
 					WHEN $14 BETWEEN 1 AND 7 THEN $14
 					ELSE interfaces.oper_status
+				END,
+				admin_status = CASE
+					WHEN $17 BETWEEN 1 AND 3 THEN $17
+					ELSE interfaces.admin_status
 				END
 			RETURNING id
 		)
@@ -2239,7 +2265,7 @@ func (r *Repository) SaveMetrics(
 		outBps := clampTrafficBpsNullable(m.TrafficOutBps)
 
 		if _, err := tx.ExecContext(
-			ctx, q, ts, deviceID, m.IfIndex, m.IfName, cpu, mem, clampPercent(m.StorageUsage), clampNonNegative(m.StorageTotal), clampNonNegative(m.StorageFree), m.UptimeSec, inBps, outBps, m.SpeedMbps, m.OperStatus, strings.TrimSpace(m.TrafficInStat), strings.TrimSpace(m.TrafficOutStat),
+			ctx, q, ts, deviceID, m.IfIndex, m.IfName, cpu, mem, clampPercent(m.StorageUsage), clampNonNegative(m.StorageTotal), clampNonNegative(m.StorageFree), m.UptimeSec, inBps, outBps, m.SpeedMbps, m.OperStatus, strings.TrimSpace(m.TrafficInStat), strings.TrimSpace(m.TrafficOutStat), m.AdminStatus,
 		); err != nil {
 			return fmt.Errorf("insert metric ifIndex=%d: %w", m.IfIndex, err)
 		}
@@ -2316,6 +2342,58 @@ func (r *Repository) UpdateInterfaceRemark(ctx context.Context, id int64, remark
 		return fmt.Errorf("update interface remark: %w", err)
 	}
 	return nil
+}
+
+func (r *Repository) GetInterfaceByID(ctx context.Context, id int64) (*Interface, error) {
+	const q = `
+		WITH latest_metrics AS (
+			SELECT DISTINCT ON (interface_id)
+			       interface_id, traffic_in_bps, traffic_out_bps
+			FROM metrics
+			WHERE interface_id = $1
+			ORDER BY interface_id, ts DESC
+		)
+		SELECT i.id,
+		       i.device_id,
+		       host(d.ip) AS device_ip,
+		       COALESCE(d.name, host(d.ip)) AS device_name,
+		       i."index",
+		       COALESCE(NULLIF(i.custom_name,''), i.name) AS display_name,
+		       i.name AS raw_name,
+		       COALESCE(i.remark, ''),
+		       COALESCE(i.speed_mbps, 0),
+		       COALESCE(i.oper_status, 0),
+		       COALESCE(i.admin_status, 0),
+		       COALESCE(m.traffic_in_bps, 0),
+		       COALESCE(m.traffic_out_bps, 0)
+		FROM interfaces i
+		JOIN devices d ON d.id = i.device_id
+		LEFT JOIN latest_metrics m ON m.interface_id = i.id
+		WHERE i.id = $1
+		LIMIT 1;
+	`
+	var itf Interface
+	if err := r.db.QueryRowContext(ctx, q, id).Scan(
+		&itf.ID,
+		&itf.DeviceID,
+		&itf.DeviceIP,
+		&itf.DeviceName,
+		&itf.Index,
+		&itf.Name,
+		&itf.RawName,
+		&itf.Remark,
+		&itf.SpeedMbps,
+		&itf.OperStatus,
+		&itf.AdminStatus,
+		&itf.TrafficInBps,
+		&itf.TrafficOutBps,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get interface by id: %w", err)
+	}
+	return &itf, nil
 }
 
 func (r *Repository) UpdateInterfaceProfile(ctx context.Context, id int64, name, remark *string) error {
@@ -2448,51 +2526,107 @@ func (r *Repository) GetSystemHealthTrend(ctx context.Context, limit int) ([]Sys
 }
 
 func (r *Repository) GetRecentEvents(ctx context.Context, limit int) ([]RecentEvent, error) {
-	if limit <= 0 || limit > 500 {
+	return r.QueryRecentEvents(ctx, EventFilter{Limit: limit})
+}
+
+func (r *Repository) QueryRecentEvents(ctx context.Context, f EventFilter) ([]RecentEvent, error) {
+	limit := f.Limit
+	if limit <= 0 || limit > 1000 {
 		limit = 30
 	}
+	eventType := strings.TrimSpace(strings.ToLower(f.EventType))
+	if eventType == "all" {
+		eventType = ""
+	}
+	deviceName := strings.TrimSpace(strings.ToLower(f.DeviceName))
+	var startArg any
+	if f.Start != nil {
+		startArg = *f.Start
+	}
+	var endArg any
+	if f.End != nil {
+		endArg = *f.End
+	}
 	const q = `
-		SELECT id, device_id, device_ip, device_name, level, message, created_at
+		SELECT id, device_id, device_ip, device_name, interface_id, level, event_type, code, source, message, created_at
 		FROM (
 			SELECT l.id AS id,
 			       l.device_id AS device_id,
 			       host(d.ip) AS device_ip,
 			       COALESCE(d.name, host(d.ip)) AS device_name,
+			       i.id AS interface_id,
 			       l.level AS level,
+			       CASE
+			         WHEN l.message LIKE '[DEVICE_%' THEN 'device_status'
+			         WHEN l.message LIKE '[PORT_%' THEN 'port_status'
+			         WHEN l.message LIKE '[POLL_%' OR l.message LIKE '[TCP161_%' OR l.message LIKE '[HOST_%' THEN 'polling'
+			         WHEN l.message LIKE '[SYSLOG]%' OR l.message LIKE '[TRAP]%' THEN 'log'
+			         WHEN UPPER(l.level) IN ('ERROR','CRITICAL','WARNING') THEN 'log'
+			         ELSE 'log'
+			       END AS event_type,
+			       COALESCE(NULLIF(substring(l.message from '^\[([^\]]+)\]'), ''), 'DEVICE_LOG') AS code,
+			       'device_log' AS source,
 			       l.message AS message,
 			       l.created_at AS created_at
 			FROM (
 				SELECT id, device_id, level, message, created_at
 				FROM device_logs
+				WHERE NOT (
+					UPPER(level)='INFO'
+					AND (
+						message LIKE '[OK]%'
+						OR message LIKE '[ALERT_MUTED]%'
+						OR message LIKE '[POLL_OK]%'
+						OR message LIKE '[TCP161_OK]%'
+						OR message LIKE '[HOST_OK]%'
+					)
+				)
 				ORDER BY created_at DESC
-				LIMIT GREATEST($1 * 4, 200)
+				LIMIT GREATEST($1 * 5, 300)
 			) l
 			JOIN devices d ON d.id = l.device_id
+			LEFT JOIN interfaces i
+			  ON i.device_id = l.device_id
+			 AND i.index = NULLIF(substring(l.message from 'ifIndex=([0-9]+)'), '')::integer
 			UNION ALL
 			SELECT (ae.id + 1000000000) AS id,
 			       ae.device_id AS device_id,
 			       host(d.ip) AS device_ip,
 			       COALESCE(d.name, host(d.ip)) AS device_name,
+			       NULL::bigint AS interface_id,
 			       UPPER(ae.level) AS level,
+			       'alert' AS event_type,
+			       COALESCE(ae.code, 'ALERT') AS code,
+			       'alert_event' AS source,
 			       ('[' || COALESCE(ae.code, 'ALERT') || '] ' || ae.message) AS message,
 			       ae.created_at AS created_at
 			FROM alert_events ae
 			JOIN devices d ON d.id = ae.device_id
 		) e
+		WHERE ($2::bigint = 0 OR e.device_id = $2)
+		  AND ($3 = '' OR lower(e.device_name) LIKE '%' || $3 || '%' OR lower(e.device_ip) LIKE '%' || $3 || '%')
+		  AND ($4 = '' OR e.event_type = $4)
+		  AND ($5::timestamptz IS NULL OR e.created_at >= $5)
+		  AND ($6::timestamptz IS NULL OR e.created_at <= $6)
 		ORDER BY created_at DESC
 		LIMIT $1;
 	`
-	rows, err := r.db.QueryContext(ctx, q, limit)
+	rows, err := r.db.QueryContext(ctx, q, limit, f.DeviceID, deviceName, eventType, startArg, endArg)
 	if err != nil {
-		return nil, fmt.Errorf("get recent events: %w", err)
+		return nil, fmt.Errorf("query recent events: %w", err)
 	}
 	defer rows.Close()
 
 	out := make([]RecentEvent, 0, limit)
 	for rows.Next() {
 		var e RecentEvent
-		if err := rows.Scan(&e.ID, &e.DeviceID, &e.DeviceIP, &e.DeviceName, &e.Level, &e.Message, &e.CreatedAt); err != nil {
+		var interfaceID sql.NullInt64
+		if err := rows.Scan(&e.ID, &e.DeviceID, &e.DeviceIP, &e.DeviceName, &interfaceID, &e.Level, &e.Type, &e.Code, &e.Source, &e.Message, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan recent event: %w", err)
+		}
+		if interfaceID.Valid {
+			v := interfaceID.Int64
+			e.InterfaceID = &v
 		}
 		out = append(out, e)
 	}
@@ -2608,22 +2742,13 @@ func (r *Repository) GetInterfaceHistory(
 	}
 	if useAgg && bucketInterval != "" {
 		q = fmt.Sprintf(`
-			WITH buckets AS (
-				SELECT DISTINCT time_bucket('%[1]s', gs) AS ts
-				FROM generate_series($2::timestamptz, $3::timestamptz, '%[1]s'::interval) AS gs
-			),
-			raw AS (
-				SELECT time_bucket('%[1]s', bucket) AS ts,
-				       AVG(avg_traffic_in_bps) AS traffic_in_bps,
-				       AVG(avg_traffic_out_bps) AS traffic_out_bps
-				FROM metrics_1m
-				WHERE interface_id = $1 AND bucket >= $2 AND bucket <= $3
-				GROUP BY 1
-			)
-			SELECT b.ts, r.traffic_in_bps, r.traffic_out_bps
-			FROM buckets b
-			LEFT JOIN raw r ON r.ts = b.ts
-			ORDER BY b.ts;
+			SELECT time_bucket('%[1]s', bucket) AS ts,
+			       AVG(avg_traffic_in_bps) AS traffic_in_bps,
+			       AVG(avg_traffic_out_bps) AS traffic_out_bps
+			FROM metrics_1m
+			WHERE interface_id = $1 AND bucket >= $2 AND bucket <= $3
+			GROUP BY 1
+			ORDER BY 1;
 		`, bucketInterval)
 	}
 
@@ -2906,6 +3031,7 @@ func (r *Repository) GetInterfaceTopBySpeedClass(ctx context.Context, speedMin, 
 		       COALESCE(i.remark, ''),
 		       COALESCE(i.speed_mbps, 0),
 		       COALESCE(i.oper_status, 0),
+		       COALESCE(i.admin_status, 0),
 		       COALESCE(m.traffic_in_bps, 0),
 		       COALESCE(m.traffic_out_bps, 0)
 		FROM interfaces i
@@ -2922,7 +3048,7 @@ func (r *Repository) GetInterfaceTopBySpeedClass(ctx context.Context, speedMin, 
 	out := make([]Interface, 0, limit)
 	for rows.Next() {
 		var it Interface
-		if err := rows.Scan(&it.ID, &it.DeviceID, &it.Index, &it.Name, &it.RawName, &it.Remark, &it.SpeedMbps, &it.OperStatus, &it.TrafficInBps, &it.TrafficOutBps); err != nil {
+		if err := rows.Scan(&it.ID, &it.DeviceID, &it.Index, &it.Name, &it.RawName, &it.Remark, &it.SpeedMbps, &it.OperStatus, &it.AdminStatus, &it.TrafficInBps, &it.TrafficOutBps); err != nil {
 			return nil, fmt.Errorf("scan interface top by speed class: %w", err)
 		}
 		out = append(out, it)

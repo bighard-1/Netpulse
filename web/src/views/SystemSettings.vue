@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { api } from "../services/api";
 import { useFeedback } from "../composables/useFeedback";
 import { useAuthStore } from "../stores/auth";
-import PhaseRoadmap from "../components/dashboard/PhaseRoadmap.vue";
 
 const fb = useFeedback();
 const auth = useAuthStore();
@@ -63,6 +62,10 @@ const templateForm = ref({
   name: "",
   brand: "H3C",
   description: "",
+  match_sysobjectid: "",
+  match_sysdescr: "",
+  priority: 100,
+  auto_enabled: true,
   cpu_oid: ".1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5",
   mem_oid: ".1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7",
   if_in_oid: ".1.3.6.1.2.1.31.1.1.1.6",
@@ -84,7 +87,6 @@ const alertRuleForm = ref({
 });
 
 const runtimeForm = ref({
-  snmp_poll_interval_sec: 60,
   poll_interval_core_sec: 60,
   poll_interval_agg_sec: 90,
   poll_interval_access_sec: 120,
@@ -93,8 +95,7 @@ const runtimeForm = ref({
   alert_cpu_threshold: 90,
   alert_mem_threshold: 90,
   alert_webhook_url: "",
-  snmp_calibration_map: "{}",
-  terminal_url_template: "ssh://{ip}"
+  snmp_calibration_map: "{}"
 });
 const runtimeSnapshot = ref({});
 
@@ -107,7 +108,6 @@ async function loadRuntimeSettings() {
       ...runtimeForm.value,
       ...(res.data || {})
     };
-    runtimeForm.value.terminal_url_template = localStorage.getItem("np_terminal_url_template") || runtimeForm.value.terminal_url_template || "ssh://{ip}";
     hydrateCalibrationRows(runtimeForm.value.snmp_calibration_map);
   } catch (err) {
     if (isForbidden(err)) return;
@@ -153,16 +153,14 @@ async function saveRuntimeSettings() {
     syncCalibrationMap();
     const raw = String(runtimeForm.value.snmp_calibration_map || "{}").trim();
     JSON.parse(raw || "{}");
-    localStorage.setItem("np_terminal_url_template", runtimeForm.value.terminal_url_template || "ssh://{ip}");
     const keep = runtimeSnapshot.value || {};
     // White-list editable fields; preserve hidden fields from server snapshot.
     const payload = {
-      snmp_poll_interval_sec: Number(keep.snmp_poll_interval_sec || runtimeForm.value.snmp_poll_interval_sec || 60),
-      poll_interval_core_sec: Number(keep.poll_interval_core_sec || runtimeForm.value.poll_interval_core_sec || 60),
-      poll_interval_agg_sec: Number(keep.poll_interval_agg_sec || runtimeForm.value.poll_interval_agg_sec || 90),
-      poll_interval_access_sec: Number(keep.poll_interval_access_sec || runtimeForm.value.poll_interval_access_sec || 120),
-      alert_cpu_threshold: Number(keep.alert_cpu_threshold || runtimeForm.value.alert_cpu_threshold || 90),
-      alert_mem_threshold: Number(keep.alert_mem_threshold || runtimeForm.value.alert_mem_threshold || 90),
+      poll_interval_core_sec: Number(runtimeForm.value.poll_interval_core_sec || keep.poll_interval_core_sec || 60),
+      poll_interval_agg_sec: Number(runtimeForm.value.poll_interval_agg_sec || keep.poll_interval_agg_sec || 90),
+      poll_interval_access_sec: Number(runtimeForm.value.poll_interval_access_sec || keep.poll_interval_access_sec || 120),
+      alert_cpu_threshold: Number(runtimeForm.value.alert_cpu_threshold || keep.alert_cpu_threshold || 90),
+      alert_mem_threshold: Number(runtimeForm.value.alert_mem_threshold || keep.alert_mem_threshold || 90),
       snmp_device_timeout_sec: Number(runtimeForm.value.snmp_device_timeout_sec || keep.snmp_device_timeout_sec || 15),
       status_online_window_sec: Number(runtimeForm.value.status_online_window_sec || keep.status_online_window_sec || 300),
       alert_webhook_url: String(runtimeForm.value.alert_webhook_url || "").trim(),
@@ -182,9 +180,11 @@ async function onBackup() {
   try {
     const res = await api.downloadBackup();
     const blobUrl = URL.createObjectURL(new Blob([res.data]));
+    const disposition = res.headers?.["content-disposition"] || "";
+    const match = disposition.match(/filename="?([^"]+)"?/i);
     const a = document.createElement("a");
     a.href = blobUrl;
-    a.download = "netpulse_backup.sql.gz";
+    a.download = match?.[1] || "netpulse_backup.sql.gz";
     a.click();
     URL.revokeObjectURL(blobUrl);
   } catch (err) {
@@ -192,7 +192,7 @@ async function onBackup() {
   }
 }
 
-const backupScopeText = "全量备份：包含资产设备、端口、历史指标(流量/CPU/内存/存储)、告警与事件、用户与权限、系统设置。";
+const backupScopeText = "全量备份：包含资产设备、端口、历史指标(流量/CPU/内存/存储)、告警与事件、用户与权限、系统设置。下载得到的 .sql.gz 文件可在本恢复入口原样上传，无需解压或修改。";
 
 async function onRestore(file) {
   if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
@@ -447,7 +447,6 @@ function onEditModeEvent(e) {
         <el-tab-pane label="模板中心" name="template" />
         <el-tab-pane label="备份恢复" name="backup" />
         <el-tab-pane label="运行观测" name="ops" />
-        <el-tab-pane label="系统信息" name="systemInfo" />
       </el-tabs>
     </el-card>
 
@@ -456,24 +455,32 @@ function onEditModeEvent(e) {
       <el-skeleton :loading="settingsLoading" animated :rows="6">
         <template #default>
           <el-form label-position="top" class="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <el-form-item label="核心层默认轮询（推荐 30-90 秒）">
+              <el-input-number v-model="runtimeForm.poll_interval_core_sec" :min="5" :max="3600" :step="5" class="w-full" />
+            </el-form-item>
+            <el-form-item label="汇聚层默认轮询（推荐 60-180 秒）">
+              <el-input-number v-model="runtimeForm.poll_interval_agg_sec" :min="5" :max="3600" :step="5" class="w-full" />
+            </el-form-item>
+            <el-form-item label="接入层默认轮询（推荐 120-300 秒）">
+              <el-input-number v-model="runtimeForm.poll_interval_access_sec" :min="5" :max="3600" :step="5" class="w-full" />
+            </el-form-item>
             <el-form-item label="设备超时（秒，2-120）">
               <el-input-number v-model="runtimeForm.snmp_device_timeout_sec" :min="2" :max="120" class="w-full" />
             </el-form-item>
             <el-form-item label="在线判定窗口（秒，30-3600）">
               <el-input-number v-model="runtimeForm.status_online_window_sec" :min="30" :max="3600" :step="30" class="w-full" />
             </el-form-item>
+            <el-form-item label="默认CPU告警阈值（%）">
+              <el-input-number v-model="runtimeForm.alert_cpu_threshold" :min="0" :max="100" :precision="2" class="w-full" />
+            </el-form-item>
+            <el-form-item label="默认内存告警阈值（%）">
+              <el-input-number v-model="runtimeForm.alert_mem_threshold" :min="0" :max="100" :precision="2" class="w-full" />
+            </el-form-item>
             <el-form-item label="说明" class="md:col-span-2">
-              <el-alert
-                type="info"
-                :closable="false"
-                title="轮询间隔与CPU/内存告警阈值已迁移到资产新增/编辑页面，支持按设备单独配置。"
-              />
+              <el-alert type="info" :closable="false" title="这里配置系统默认值；单台资产可在资产新增/编辑或设备详情编辑中覆盖。设为0表示跟随系统默认。" />
             </el-form-item>
             <el-form-item label="告警 Webhook（可空）" class="md:col-span-2">
               <el-input v-model="runtimeForm.alert_webhook_url" placeholder="https://example.com/webhook" />
-            </el-form-item>
-            <el-form-item label="终端跳转模板（全局）" class="md:col-span-2">
-              <el-input v-model="runtimeForm.terminal_url_template" placeholder="ssh://{ip} 或 http://webssh.local/?host={ip}" />
             </el-form-item>
             <el-form-item label="SNMP 校准映射(JSON)" class="md:col-span-2">
               <el-input
@@ -598,6 +605,10 @@ function onEditModeEvent(e) {
             </el-select>
           </el-form-item>
           <el-form-item label="说明"><el-input v-model="templateForm.description" type="textarea" :rows="2" /></el-form-item>
+          <el-form-item label="sysObjectID匹配（逗号分隔）"><el-input v-model="templateForm.match_sysobjectid" placeholder="如：1.3.6.1.4.1.2011,1.3.6.1.4.1.25506" /></el-form-item>
+          <el-form-item label="sysDescr关键词（逗号分隔）"><el-input v-model="templateForm.match_sysdescr" placeholder="如：S12700E,CloudEngine,H3C S12500" /></el-form-item>
+          <el-form-item label="匹配优先级（越小越优先）"><el-input-number v-model="templateForm.priority" :min="1" :max="1000" class="w-full" /></el-form-item>
+          <el-form-item label="启用自动匹配"><el-switch v-model="templateForm.auto_enabled" /></el-form-item>
           <el-form-item label="CPU OID"><el-input v-model="templateForm.cpu_oid" /></el-form-item>
           <el-form-item label="内存 OID"><el-input v-model="templateForm.mem_oid" /></el-form-item>
           <el-form-item label="入方向 OID"><el-input v-model="templateForm.if_in_oid" /></el-form-item>
@@ -610,6 +621,12 @@ function onEditModeEvent(e) {
         <el-table :data="templates" class="np-borderless-table" height="460" v-loading="templateLoading">
           <el-table-column prop="name" label="模板名" min-width="160" />
           <el-table-column prop="brand" label="厂商" width="120" />
+          <el-table-column prop="priority" label="优先级" width="90" />
+          <el-table-column label="自动匹配" width="100">
+            <template #default="{ row }">{{ row.auto_enabled ? "启用" : "停用" }}</template>
+          </el-table-column>
+          <el-table-column prop="match_sysobjectid" label="sysObjectID规则" min-width="180" />
+          <el-table-column prop="match_sysdescr" label="sysDescr规则" min-width="180" />
           <el-table-column prop="description" label="说明" min-width="220" />
         </el-table>
       </div>
@@ -625,7 +642,7 @@ function onEditModeEvent(e) {
         <div class="space-y-3">
           <el-button type="primary" @click="onBackup">下载备份</el-button>
           <el-button @click="downloadInspectionBundle">导出一键巡检包</el-button>
-          <el-upload :auto-upload="false" :show-file-list="false" accept=".gz" :on-change="onRestore" :disabled="restoreLoading || !editMode">
+          <el-upload :auto-upload="false" :show-file-list="false" accept=".sql.gz,.gz" :on-change="onRestore" :disabled="restoreLoading || !editMode">
             <el-button>恢复数据</el-button>
           </el-upload>
         </div>
@@ -668,11 +685,6 @@ function onEditModeEvent(e) {
         <div class="rounded-lg bg-slate-50 p-3">最新事件时间：<b>{{ opsSummary.last_event_at || "-" }}</b></div>
         <div class="rounded-lg bg-slate-50 p-3">最新审计时间：<b>{{ opsSummary.last_audit_at || "-" }}</b></div>
       </div>
-    </el-card>
-
-    <el-card v-show="activeTab === 'systemInfo'">
-      <template #header><span class="text-lg font-semibold">系统信息</span></template>
-      <PhaseRoadmap />
     </el-card>
 
     <el-dialog v-model="opsDetailVisible" :title="opsDetailTitle" width="960">

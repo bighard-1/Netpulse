@@ -22,7 +22,8 @@ const editMode = ref(localStorage.getItem("np_edit_mode") === "1");
 
 const loading = ref(false);
 const customRange = ref([]);
-const customRangeDraft = ref([]);
+const customStartDraft = ref(null);
+const customEndDraft = ref(null);
 const chartTodayRef = ref(null);
 const chart7dRef = ref(null);
 const chart30dRef = ref(null);
@@ -142,7 +143,7 @@ function baseOption(title, unitInfo, planText = "") {
         for (const p of params) {
           lines.push(`${p.marker}${p.seriesName}: ${bpsLabel(p.data[1])}`);
         }
-        lines.push(`<span style="color:#94a3b8">展示模式: ${showRawSeries.value ? "原始折线" : "轻度平滑"}</span>`);
+        lines.push(`<span style="color:#94a3b8">展示模式: ${showRawSeries.value ? "原始折线" : "稳健平滑"}</span>`);
         lines.push(`<span style="color:#94a3b8">说明: 高速端口若检测到缓存采样相位，采集端已按有效采样入库</span>`);
         return lines.join("<br/>");
       }
@@ -281,6 +282,10 @@ function fillShortNullGaps(points, maxGap = 1) {
   return arr;
 }
 
+function compactValidPoints(points) {
+  return (points || []).filter((x) => x?.[1] != null && Number.isFinite(Number(x[1])));
+}
+
 function decimatePoints(points, maxPoints = 2200) {
   const arr = points || [];
   if (arr.length <= maxPoints) return arr;
@@ -295,16 +300,57 @@ function decimatePoints(points, maxPoints = 2200) {
   return out;
 }
 
+function isHighSpeedCacheSensitive() {
+  const speedMbps = Number(currentPortSpeedMbps.value || 0);
+  const pollSec = Math.max(5, Number(runtimePollSec.value || 60));
+  return speedMbps >= 1000 && pollSec <= 120;
+}
+
+function medianOf(values) {
+  const arr = values.filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+  if (!arr.length) return null;
+  const mid = Math.floor(arr.length / 2);
+  return arr.length % 2 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2;
+}
+
+function stabilizeTrafficPoints(points, enabled) {
+  const arr = points || [];
+  if (!enabled || arr.length < 5) return arr;
+  const values = arr.map((x) => x[1]);
+  const medianed = values.map((v, i) => {
+    if (v == null || !Number.isFinite(Number(v))) return null;
+    const window = [];
+    for (let k = Math.max(0, i - 2); k <= Math.min(values.length - 1, i + 2); k += 1) {
+      if (values[k] != null) window.push(Number(values[k]));
+    }
+    return medianOf(window);
+  });
+
+  let previous = null;
+  return arr.map(([ts, value], i) => {
+    if (value == null || !Number.isFinite(Number(value))) {
+      previous = null;
+      return [ts, null];
+    }
+    const baseline = Number(medianed[i] ?? value);
+    const smoothed = previous == null ? baseline : previous * 0.62 + baseline * 0.38;
+    previous = smoothed;
+    return [ts, smoothed];
+  });
+}
+
 function calcFetchPlan(start, end) {
   const spanMs = end.getTime() - start.getTime();
-  const pollSec = Math.max(5, Number(runtimePollSec.value || 60));
   let interval = "";
-  if (spanMs > 180 * 24 * 3600 * 1000) interval = "1h";
+  const highSpeedStable = isHighSpeedCacheSensitive();
+  if (highSpeedStable && spanMs <= 7 * 24 * 3600 * 1000) interval = "2m";
+  else if (spanMs > 180 * 24 * 3600 * 1000) interval = "1h";
   else if (spanMs > 30 * 24 * 3600 * 1000) interval = "5m";
   else if (spanMs > 7 * 24 * 3600 * 1000) interval = "2m";
-  // Keep <=7 days on raw points to ensure tail alignment with "today" chart.
+  // Low-speed ports keep <=7 days on raw points; high-speed cached devices use
+  // a short bucket so the visual curve remains comparable across poll settings.
   else interval = "";
-  const agg = interval ? "time_bucket聚合" : "原始采样点";
+  const agg = highSpeedStable && interval ? "高速端口稳健聚合" : (interval ? "time_bucket聚合" : "原始采样点");
   return { interval, agg };
 }
 
@@ -387,11 +433,41 @@ async function loadSiblingPorts() {
     siblingPorts.value = list.map((x) => ({
       id: Number(x.id),
       name: x.name || `ifIndex-${x.index}`,
+      rawName: x.raw_name || x.name || `ifIndex-${x.index}`,
       remark: x.remark || "",
       speedMbps: Number(x.speed_mbps || 0)
     }));
   } catch {
     siblingPorts.value = [];
+  }
+}
+
+async function resolvePortContext() {
+  const hasName = String(route.query.portName || "").trim() !== "";
+  const hasDevice = Number(route.query.deviceId || 0) > 0 && String(route.query.deviceIp || "").trim() !== "";
+  const hasSpeed = Number(route.query.speedMbps || 0) > 0;
+  if (hasName && hasDevice && hasSpeed) return null;
+  try {
+    const res = await api.getInterfaceById(props.id);
+    const itf = res?.data || null;
+    if (!itf) return null;
+    const nextQuery = {
+      ...route.query,
+      deviceId: String(route.query.deviceId || itf.device_id || ""),
+      deviceIp: String(route.query.deviceIp || itf.device_ip || ""),
+      portName: String(route.query.portName || itf.name || `ifIndex-${itf.index}`),
+      portBaseName: String(route.query.portBaseName || itf.raw_name || itf.name || `ifIndex-${itf.index}`),
+      portRemark: String(route.query.portRemark || itf.remark || ""),
+      speedMbps: String(route.query.speedMbps || itf.speed_mbps || 0)
+    };
+    const changed = Object.keys(nextQuery).some((k) => String(nextQuery[k] ?? "") !== String(route.query[k] ?? ""));
+    if (changed) {
+      await router.replace({ path: route.path, query: nextQuery });
+    }
+    return itf;
+  } catch (err) {
+    fb.apiError(err, "加载端口上下文失败");
+    return null;
   }
 }
 
@@ -410,7 +486,13 @@ const nextPort = computed(() => {
 
 function jumpSibling(port) {
   if (!port?.id) return;
-  const q = { ...route.query, portName: port.name, portRemark: port.remark || "" };
+  const q = {
+    ...route.query,
+    portName: port.name,
+    portBaseName: port.rawName || port.name,
+    portRemark: port.remark || "",
+    speedMbps: String(port.speedMbps || 0)
+  };
   router.push({ path: `/port/${port.id}`, query: q });
 }
 
@@ -419,13 +501,17 @@ function applyChart(chart, title, data, metaKey = "today") {
   const { inbound, outbound } = toSeriesData(data);
   const intervalSwitch = detectIntervalSwitchPoints(data);
   const hasIntervalSwitch = intervalSwitch.length > 0;
-  const smoothEnabled = !showRawSeries.value && !hasIntervalSwitch;
+  const smoothEnabled = !showRawSeries.value;
   // Bridge only tiny one-sample holes to avoid "dashed" appearance while
   // keeping real outages/gaps visible.
-  const inBase = fillShortNullGaps(inbound, 1);
-  const outBase = fillShortNullGaps(outbound, 1);
-  const inView = decimatePoints(inBase);
-  const outView = decimatePoints(outBase);
+  const historicalView = metaKey === "d7" || metaKey === "d30" || metaKey === "custom";
+  const inBase = historicalView ? compactValidPoints(fillShortNullGaps(inbound, 2)) : fillShortNullGaps(inbound, 1);
+  const outBase = historicalView ? compactValidPoints(fillShortNullGaps(outbound, 2)) : fillShortNullGaps(outbound, 1);
+  const stableDisplay = !showRawSeries.value;
+  const inPrepared = stabilizeTrafficPoints(inBase, stableDisplay);
+  const outPrepared = stabilizeTrafficPoints(outBase, stableDisplay);
+  const inView = decimatePoints(inPrepared);
+  const outView = decimatePoints(outPrepared);
   const hasData = inView.some((x) => x[1] != null) || outView.some((x) => x[1] != null);
   const nonNil = [
     ...inView.map((x) => x[1]).filter((v) => v != null),
@@ -435,7 +521,7 @@ function applyChart(chart, title, data, metaKey = "today") {
   const unitInfo = pickUnit(maxVal);
   const meta = chartMeta.value[metaKey] || { interval: "-", agg: "-" };
   const src = chartSource.value[metaKey] || "metrics";
-  const displayMode = showRawSeries.value ? "原始折线" : "轻度平滑显示";
+  const displayMode = showRawSeries.value ? "原始折线" : "稳健平滑显示";
   const planText = `采样: ${meta.interval || "原始"} · ${meta.agg || "-"} · 源: ${src} · 展示: ${displayMode}`;
   const opt = baseOption(title, unitInfo, planText);
   opt.xAxis.axisLabel.formatter = (value) => xAxisLabelFormatter(value, metaKey);
@@ -446,8 +532,8 @@ function applyChart(chart, title, data, metaKey = "today") {
     opt.dataZoom[0].bottom = 30;
     opt.dataZoom[1].bottom = 30;
   }
-  if (hasIntervalSwitch) {
-    opt.title.subtext = `${opt.title.subtext} · 检测到采样间隔变化，已禁用平滑`;
+  if (hasIntervalSwitch && !showRawSeries.value) {
+    opt.title.subtext = `${opt.title.subtext} · 已自动消隐采样相位抖动`;
   }
   opt.yAxis.max = roundUpNice(maxVal * 1.1);
   opt.tooltip.confine = true;
@@ -456,11 +542,13 @@ function applyChart(chart, title, data, metaKey = "today") {
   opt.series[1].large = true;
   opt.series[0].smooth = smoothEnabled;
   opt.series[1].smooth = smoothEnabled;
+  opt.series[0].sampling = showRawSeries.value ? "lttb" : "average";
+  opt.series[1].sampling = showRawSeries.value ? "lttb" : "average";
   opt.series[0].largeThreshold = 2000;
   opt.series[1].largeThreshold = 2000;
   opt.series[0].data = inView;
   opt.series[1].data = outView;
-  const gapAreas = calcGapAreas(inbound, 2);
+  const gapAreas = historicalView ? [] : calcGapAreas(inbound, 2);
   if (gapAreas.length) {
     opt.series[0].markArea = {
       silent: true,
@@ -479,18 +567,6 @@ function applyChart(chart, title, data, metaKey = "today") {
   }
   if (refLines.length) {
     opt.series[0].markLine = { symbol: "none", data: refLines };
-  }
-  if (hasIntervalSwitch) {
-    const switchMarks = intervalSwitch.map((x) => ({
-      xAxis: x.ts,
-      label: { formatter: x.label, color: "#475569", fontSize: 11 },
-      lineStyle: { color: "#94a3b8", type: "dotted", width: 1 }
-    }));
-    const baseMarkLine = opt.series[0].markLine?.data || [];
-    opt.series[0].markLine = {
-      symbol: "none",
-      data: [...baseMarkLine, ...switchMarks]
-    };
   }
   if (!hasData) {
     opt.graphic = [{
@@ -601,7 +677,10 @@ async function loadCustomChart() {
     lastSeriesCache.value.custom = res.data;
     chartMeta.value.custom = res.plan;
     chartSource.value.custom = res.source || "metrics";
+    chartCardActive.value = "custom";
+    await nextTick();
     applyChart(charts.custom, "自定义时间段流量", res.data, "custom");
+    charts.custom?.resize();
   } catch (err) {
     fb.apiError(err, "加载自定义时间段流量失败");
   } finally {
@@ -610,18 +689,25 @@ async function loadCustomChart() {
 }
 
 function confirmCustomRange() {
-  if (!customRangeDraft.value || customRangeDraft.value.length !== 2) {
+  if (!customStartDraft.value || !customEndDraft.value) {
     fb.warn("请先选择开始与结束时间");
     return;
   }
-  customRange.value = [...customRangeDraft.value];
+  const start = new Date(customStartDraft.value);
+  const end = new Date(customEndDraft.value);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) {
+    fb.warn("结束时间必须晚于开始时间");
+    return;
+  }
+  customRange.value = [start, end];
   loadCustomChart().then(() => {
     customChartAnchorRef.value?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 }
 
 function cancelCustomRange() {
-  customRangeDraft.value = [...(customRange.value || [])];
+  customStartDraft.value = customRange.value?.[0] || null;
+  customEndDraft.value = customRange.value?.[1] || null;
 }
 
 function resizeCharts() {
@@ -644,8 +730,19 @@ function switchChartCard(name) {
 }
 
 async function loadPortMeta() {
+  const resolved = await resolvePortContext();
   const fromQueryName = String(route.query.portName || "").trim();
   const fromQueryRemark = String(route.query.portRemark || "").trim();
+  const fromQuerySpeed = Number(route.query.speedMbps || 0);
+  if (fromQuerySpeed > 0) {
+    currentPortSpeedMbps.value = fromQuerySpeed;
+  }
+  const hit = siblingPorts.value.find((x) => Number(x.id) === Number(props.id));
+  if (hit) {
+    currentPortSpeedMbps.value = Number(hit.speedMbps || 0);
+  } else if (resolved) {
+    currentPortSpeedMbps.value = Number(resolved.speed_mbps || 0);
+  }
   if (fromQueryName) {
     portMeta.value = { id: props.id, name: fromQueryName };
     portEdit.value.name = fromQueryName;
@@ -657,12 +754,18 @@ async function loadPortMeta() {
       : "";
     return;
   }
-  const hit = siblingPorts.value.find((x) => Number(x.id) === Number(props.id));
   if (hit) {
-    currentPortSpeedMbps.value = Number(hit.speedMbps || 0);
     portMeta.value = { id: props.id, name: hit.name };
     portEdit.value.name = hit.name;
     portEdit.value.remark = hit.remark || "";
+  } else if (resolved) {
+    const name = resolved.name || `ifIndex-${resolved.index}`;
+    const base = resolved.raw_name || name;
+    portMeta.value = { id: props.id, name };
+    portEdit.value.name = name;
+    portEdit.value.remark = resolved.remark || "";
+    portBaseName.value = base;
+    portSuffix.value = name.startsWith(`${base} `) ? name.slice((`${base} `).length) : "";
   } else {
     portMeta.value = { id: props.id, name: `端口-${props.id}` };
     portEdit.value.name = "";
@@ -673,14 +776,8 @@ async function loadPortMeta() {
 function buildTerminalUrl() {
   const ip = String(route.query.deviceIp || "").trim();
   if (!ip) return "";
-  const schemeTpl = {
-    ssh: "ssh://{ip}",
-    termius: "termius://host/{ip}",
-    securecrt: "ssh2://{ip}",
-    custom: localStorage.getItem("np_terminal_url_template") || "ssh://{ip}"
-  };
-  const tpl = schemeTpl[terminalType.value] || schemeTpl.custom;
-  return String(tpl).replaceAll("{ip}", ip);
+  const protocol = terminalType.value === "telnet" ? "telnet" : "ssh";
+  return `${protocol}://${ip}`;
 }
 
 function openTerminal() {
@@ -689,7 +786,14 @@ function openTerminal() {
     fb.warn("缺少设备IP，无法打开终端");
     return;
   }
-  window.open(url, "_blank", "noopener");
+  const a = document.createElement("a");
+  a.href = url;
+  a.rel = "noopener";
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  fb.success(`已调用本地 ${terminalType.value === "telnet" ? "Telnet" : "SSH"} 连接`);
 }
 
 async function savePortProfile() {
@@ -733,7 +837,7 @@ async function restoreDefaultPortName() {
 async function copyTerminalTarget() {
   const ip = String(route.query.deviceIp || "").trim();
   if (!ip) return fb.warn("缺少设备IP");
-  const cmd = `ssh ${ip}`;
+  const cmd = terminalType.value === "telnet" ? `telnet ${ip}` : `ssh ${ip}`;
   try {
     await navigator.clipboard.writeText(cmd);
     fb.success("已复制连接命令");
@@ -743,6 +847,7 @@ async function copyTerminalTarget() {
 }
 
 onMounted(async () => {
+  await loadPortMeta();
   await loadRuntimePollSec();
   await loadSiblingPorts();
   await loadPortMeta();
@@ -756,13 +861,16 @@ onMounted(async () => {
   applyChart(charts.d7, "近7天流量", [], "d7");
   applyChart(charts.d30, "近30天流量", [], "d30");
   applyChart(charts.custom, "自定义时间段流量", [], "custom");
-  customRangeDraft.value = [...(customRange.value || [])];
+  customStartDraft.value = customRange.value?.[0] || null;
+  customEndDraft.value = customRange.value?.[1] || null;
   await loadAllCharts();
   window.addEventListener("resize", resizeCharts);
   window.addEventListener("np-edit-mode", onEditModeEvent);
 });
 
 watch(() => props.id, async () => {
+  await loadPortMeta();
+  await loadRuntimePollSec();
   await loadSiblingPorts();
   await loadPortMeta();
   await loadAllCharts();
@@ -817,25 +925,29 @@ function onEditModeEvent(e) {
         </div>
         <div class="space-y-3">
           <div class="flex flex-wrap items-center gap-2">
-            <span class="text-xs text-slate-500">终端跳转模板</span>
+            <span class="text-xs text-slate-500">连接方式</span>
             <el-select v-model="terminalType" class="w-[180px]">
-              <el-option label="系统默认 SSH" value="ssh" />
-              <el-option label="Termius" value="termius" />
-              <el-option label="SecureCRT" value="securecrt" />
-              <el-option label="自定义模板" value="custom" />
+              <el-option label="SSH（本地终端）" value="ssh" />
+              <el-option label="Telnet（本地终端）" value="telnet" />
             </el-select>
             <el-button type="primary" @click="openTerminal">连接设备终端</el-button>
-            <el-button @click="copyTerminalTarget">复制 SSH</el-button>
+            <el-button @click="copyTerminalTarget">复制连接命令</el-button>
           </div>
           <div class="flex flex-wrap items-center gap-2">
             <el-date-picker
-              v-model="customRangeDraft"
-              type="datetimerange"
-              unlink-panels
-              range-separator="至"
-              start-placeholder="开始时间"
-              end-placeholder="结束时间"
-              :shortcuts="pickerShortcuts"
+              v-model="customStartDraft"
+              type="datetime"
+              placeholder="开始时间"
+              :shortcuts="pickerShortcuts.map((x) => ({ text: x.text + '开始', value: () => x.value()[0] }))"
+              class="w-[220px]"
+            />
+            <span class="text-xs text-slate-500">至</span>
+            <el-date-picker
+              v-model="customEndDraft"
+              type="datetime"
+              placeholder="结束时间"
+              :shortcuts="pickerShortcuts.map((x) => ({ text: x.text + '结束', value: () => x.value()[1] }))"
+              class="w-[220px]"
             />
             <el-button type="primary" @click="confirmCustomRange" :loading="loading">查询自定义区间</el-button>
             <el-button @click="cancelCustomRange">取消</el-button>
