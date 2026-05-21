@@ -4,12 +4,25 @@ struct StatusDot: View {
     enum Kind {
         case up
         case down
+        case disabled
         case unknown
     }
 
     private let kind: Kind
 
     init(status: Int?) {
+        switch status {
+        case 1: self.kind = .up
+        case 2: self.kind = .down
+        default: self.kind = .unknown
+        }
+    }
+
+    init(status: Int?, adminStatus: Int?) {
+        if adminStatus == 2 {
+            self.kind = .disabled
+            return
+        }
         switch status {
         case 1: self.kind = .up
         case 2: self.kind = .down
@@ -26,12 +39,8 @@ struct StatusDot: View {
     }
 
     var body: some View {
-        HStack(spacing: 4) {
-            symbol
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
+        symbol
+            .accessibilityLabel(label)
     }
 
     @ViewBuilder
@@ -39,19 +48,31 @@ struct StatusDot: View {
         switch kind {
         case .up:
             Circle()
-                .fill(Color.green)
-                .frame(width: 11, height: 11)
-                .overlay(Image(systemName: "checkmark").font(.system(size: 7, weight: .bold)).foregroundStyle(.white))
+                .fill(Color(red: 0.05, green: 0.12, blue: 0.09))
+                .frame(width: 17, height: 17)
+                .overlay(Circle().fill(Color(red: 0.0, green: 0.86, blue: 0.35)).frame(width: 11, height: 11))
+                .shadow(color: Color.green.opacity(0.35), radius: 3)
         case .down:
-            RoundedRectangle(cornerRadius: 2)
-                .fill(Color.red)
-                .frame(width: 11, height: 11)
-                .overlay(Image(systemName: "xmark").font(.system(size: 7, weight: .bold)).foregroundStyle(.white))
+            Circle()
+                .fill(Color(red: 0.14, green: 0.05, blue: 0.05))
+                .frame(width: 17, height: 17)
+                .overlay(Circle().fill(Color(red: 0.95, green: 0.08, blue: 0.12)).frame(width: 11, height: 11))
+                .shadow(color: Color.red.opacity(0.35), radius: 3)
+        case .disabled:
+            ZStack {
+                Circle()
+                    .fill(Color(red: 0.18, green: 0.04, blue: 0.05))
+                    .frame(width: 18, height: 18)
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .heavy))
+                    .foregroundStyle(Color(red: 1.0, green: 0.16, blue: 0.18))
+            }
+            .shadow(color: Color.red.opacity(0.35), radius: 3)
         case .unknown:
-            Triangle()
-                .fill(Color.yellow)
-                .frame(width: 12, height: 11)
-                .overlay(Image(systemName: "questionmark").font(.system(size: 7, weight: .bold)).foregroundStyle(.black))
+            Circle()
+                .fill(Color(red: 0.14, green: 0.12, blue: 0.05))
+                .frame(width: 17, height: 17)
+                .overlay(Circle().fill(Color(red: 0.95, green: 0.72, blue: 0.12)).frame(width: 11, height: 11))
         }
     }
 
@@ -59,18 +80,8 @@ struct StatusDot: View {
         switch kind {
         case .up: return "UP"
         case .down: return "DOWN"
+        case .disabled: return "ADMIN DOWN"
         case .unknown: return "UNKNOWN"
         }
-    }
-}
-
-private struct Triangle: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-        path.closeSubpath()
-        return path
     }
 }

@@ -30,7 +30,9 @@ struct Port: Codable, Identifiable {
     let name: String
     let custom_name: String?
     let remark: String
+    let speed_mbps: Int?
     let oper_status: Int?
+    let admin_status: Int?
 }
 
 struct DeviceHistoryPoint: Codable, Identifiable {
@@ -50,6 +52,10 @@ struct TrafficHistoryPoint: Codable, Identifiable {
 struct HistoryResponse<T: Codable>: Codable {
     let type: String
     let id: Int64
+    let interval: String?
+    let sampled_interval: String?
+    let source_table: String?
+    let maxPoints: Int?
     let data: [T]
 }
 
