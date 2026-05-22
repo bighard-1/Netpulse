@@ -35,6 +35,22 @@ const healthRef = ref(null);
 const topNRef = ref(null);
 const chartRefreshKey = ref(0);
 const topTab = ref("100m");
+const statusPreviewDevices = computed(() => devices.value.map((d) => ({
+  ...d,
+  statusText: statusLabel(d),
+  statusNorm: normalizeStatus(d.status)
+})));
+const statusPreviewSummary = computed(() => {
+  const total = devices.value.length;
+  const online = onlineCount.value;
+  const offline = devices.value.filter((d) => normalizeStatus(d.status) === "offline").length;
+  return {
+    total,
+    online,
+    offline,
+    unknown: Math.max(0, total - online - offline)
+  };
+});
 const todoActions = computed(() => {
   const out = [];
   if (devices.value.length === 0) out.push({ key: "add", title: "添加首台资产", action: () => router.push("/assets") });
@@ -357,6 +373,44 @@ watch(activeDashboardModule, async () => {
       </div>
     </el-card>
 
+    <el-card class="np-device-preview-card">
+      <template #header>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <span class="np-section-title text-base font-semibold">设备状态预览</span>
+            <div class="mt-1 text-xs text-slate-500">简要展示全部资产在线状态，点击设备可进入详情</div>
+          </div>
+          <div class="np-preview-summary">
+            <span>总数 <b>{{ statusPreviewSummary.total }}</b></span>
+            <span class="is-online">在线 <b>{{ statusPreviewSummary.online }}</b></span>
+            <span class="is-offline">离线 <b>{{ statusPreviewSummary.offline }}</b></span>
+            <span class="is-unknown">未知 <b>{{ statusPreviewSummary.unknown }}</b></span>
+          </div>
+        </div>
+      </template>
+      <el-skeleton :loading="loading" animated :rows="2">
+        <template #default>
+          <div v-if="statusPreviewDevices.length" class="np-device-preview-grid">
+            <button
+              v-for="d in statusPreviewDevices"
+              :key="d.id"
+              class="np-device-preview-item"
+              :class="`is-${d.statusNorm}`"
+              type="button"
+              @click="openDeviceDetail(d)"
+            >
+              <span class="inline-block shrink-0" :class="deviceStatusClass(d)" />
+              <span class="min-w-0 flex-1 text-left">
+                <span class="block truncate text-sm font-semibold text-slate-800">{{ d.name || d.ip }}</span>
+                <span class="block truncate text-xs text-slate-500">{{ d.ip }} · {{ d.statusText }}</span>
+              </span>
+            </button>
+          </div>
+          <el-empty v-else description="暂无设备，前往资产中心添加后会自动显示" :image-size="72" />
+        </template>
+      </el-skeleton>
+    </el-card>
+
     <section class="np-dashboard-shell">
       <el-card class="np-module-card">
         <el-tabs v-model="activeDashboardModule" class="np-dashboard-tabs">
@@ -586,6 +640,86 @@ watch(activeDashboardModule, async () => {
 
 :deep(.np-dashboard-tabs .el-tab-pane) {
   min-width: 0;
+}
+
+:deep(.np-device-preview-card .el-card__header) {
+  padding-bottom: 12px;
+}
+
+.np-preview-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.np-preview-summary span {
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #f8fafc;
+  padding: 5px 10px;
+}
+
+.np-preview-summary .is-online {
+  color: #047857;
+  border-color: rgba(16, 185, 129, 0.22);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.np-preview-summary .is-offline {
+  color: #b91c1c;
+  border-color: rgba(239, 68, 68, 0.22);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.np-preview-summary .is-unknown {
+  color: #92400e;
+  border-color: rgba(245, 158, 11, 0.22);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.np-device-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+  max-height: 168px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.np-device-preview-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.96)),
+    #fff;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+.np-device-preview-item:hover {
+  transform: translateY(-1px);
+  border-color: rgba(99, 102, 241, 0.35);
+  background: linear-gradient(135deg, #ffffff, #eef2ff);
+  box-shadow: 0 14px 28px -22px rgba(15, 23, 42, 0.45);
+}
+
+.np-device-preview-item.is-online {
+  box-shadow: inset 3px 0 0 rgba(16, 185, 129, 0.78);
+}
+
+.np-device-preview-item.is-offline {
+  box-shadow: inset 3px 0 0 rgba(239, 68, 68, 0.78);
+}
+
+.np-device-preview-item.is-unknown {
+  box-shadow: inset 3px 0 0 rgba(245, 158, 11, 0.78);
 }
 
 @media (max-width: 1280px) {
