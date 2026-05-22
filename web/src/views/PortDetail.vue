@@ -186,7 +186,7 @@ function baseOption(title, unitInfo, planText = "") {
         showSymbol: false,
         smooth: !showRawSeries.value,
         step: false,
-        connectNulls: false,
+        connectNulls: true,
         sampling: "lttb",
         progressive: 5000,
         lineStyle: { color: "#6366F1", width: 2 },
@@ -205,7 +205,7 @@ function baseOption(title, unitInfo, planText = "") {
         showSymbol: false,
         smooth: !showRawSeries.value,
         step: false,
-        connectNulls: false,
+        connectNulls: true,
         sampling: "lttb",
         progressive: 5000,
         lineStyle: { color: "#22C55E", width: 2 },
@@ -449,7 +449,11 @@ async function resolvePortContext() {
   const hasSpeed = Number(route.query.speedMbps || 0) > 0;
   if (hasName && hasDevice && hasSpeed) return null;
   try {
-    const res = await api.getInterfaceById(props.id);
+    const getter = typeof api.getInterfaceById === "function" ? api.getInterfaceById : api.getInterface;
+    if (typeof getter !== "function") {
+      throw new Error("端口详情接口未注册，请刷新页面后重试");
+    }
+    const res = await getter(props.id);
     const itf = res?.data || null;
     if (!itf) return null;
     const nextQuery = {
@@ -506,8 +510,8 @@ function applyChart(chart, title, data, metaKey = "today") {
   // Bridge only tiny one-sample holes to avoid "dashed" appearance while
   // keeping real outages/gaps visible.
   const historicalView = metaKey === "d7" || metaKey === "d30" || metaKey === "custom";
-  const inBase = historicalView ? compactValidPoints(fillShortNullGaps(inbound, 2)) : fillShortNullGaps(inbound, 1);
-  const outBase = historicalView ? compactValidPoints(fillShortNullGaps(outbound, 2)) : fillShortNullGaps(outbound, 1);
+  const inBase = compactValidPoints(fillShortNullGaps(inbound, historicalView ? 2 : 3));
+  const outBase = compactValidPoints(fillShortNullGaps(outbound, historicalView ? 2 : 3));
   const stableDisplay = !showRawSeries.value;
   const inPrepared = stabilizeTrafficPoints(inBase, stableDisplay);
   const outPrepared = stabilizeTrafficPoints(outBase, stableDisplay);
@@ -549,7 +553,7 @@ function applyChart(chart, title, data, metaKey = "today") {
   opt.series[1].largeThreshold = 2000;
   opt.series[0].data = inView;
   opt.series[1].data = outView;
-  const gapAreas = historicalView ? [] : calcGapAreas(inbound, 2);
+  const gapAreas = [];
   if (gapAreas.length) {
     opt.series[0].markArea = {
       silent: true,

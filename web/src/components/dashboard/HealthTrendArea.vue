@@ -3,11 +3,17 @@ import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { npAxisLabel, npAxisLine, npChartGrid, npSplitLine, npTooltip } from "../../utils/chartTheme";
 
 const props = defineProps({
-  trend: { type: Array, default: () => [] }
+  trend: { type: Array, default: () => [] },
+  refreshKey: { type: Number, default: 0 },
+  loading: { type: Boolean, default: false },
+  compact: { type: Boolean, default: false }
 });
 
 const chartRef = ref(null);
 let chart = null;
+let echartsMod = null;
+let resizeObserver = null;
+let redrawFrame = 0;
 
 function render() {
   if (!chart) return;
@@ -58,28 +64,78 @@ function resize() {
   chart?.resize();
 }
 
-onMounted(async () => {
-  const e = await import("echarts");
+async function redraw() {
+  await ensureChart();
   await nextTick();
-  chart = e.init(chartRef.value);
+  resize();
   render();
-  window.addEventListener("resize", resize);
+}
+
+async function ensureChart() {
+  if (chart || !chartRef.value) return;
+  bindResizeObserver();
+  if (!echartsMod) {
+    echartsMod = await import("echarts");
+  }
+  await nextTick();
+  if (!chartRef.value || chart) return;
+  const box = chartRef.value.getBoundingClientRect();
+  if (box.width < 40 || box.height < 40) return;
+  chart = echartsMod.init(chartRef.value);
+}
+
+function scheduleRedraw() {
+  if (redrawFrame) cancelAnimationFrame(redrawFrame);
+  redrawFrame = requestAnimationFrame(async () => {
+    redrawFrame = 0;
+    await redraw();
+  });
+}
+
+function bindResizeObserver() {
+  if (resizeObserver || !chartRef.value) return;
+  resizeObserver = new ResizeObserver(() => scheduleRedraw());
+  resizeObserver.observe(chartRef.value);
+}
+
+onMounted(async () => {
+  window.addEventListener("resize", scheduleRedraw);
+  await redraw();
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener("resize", resize);
+  window.removeEventListener("resize", scheduleRedraw);
+  if (redrawFrame) cancelAnimationFrame(redrawFrame);
+  resizeObserver?.disconnect();
   chart?.dispose();
 });
 
-watch(() => props.trend, render, { deep: true });
+watch(() => props.trend, async () => {
+  scheduleRedraw();
+}, { deep: true });
+
+watch(() => props.refreshKey, async () => {
+  scheduleRedraw();
+});
+
+watch(() => props.loading, async (v) => {
+  if (!v) {
+    scheduleRedraw();
+  }
+});
 </script>
 
 <template>
   <el-card>
     <template #header>
-      <span class="text-lg font-semibold">全网健康趋势（Area）</span>
+      <span class="text-lg font-semibold">全网健康趋势</span>
     </template>
-    <el-empty v-if="!(props.trend || []).length" description="暂无健康趋势数据（等待15分钟采样）" :image-size="72" />
-    <div v-else ref="chartRef" class="h-[280px] w-full"></div>
+    <el-skeleton :loading="props.loading" animated>
+      <template #template><div :class="props.compact ? 'h-[260px] min-h-[260px]' : 'h-[320px] min-h-[320px]'" class="w-full rounded-lg bg-slate-100"></div></template>
+      <template #default>
+        <el-empty v-if="!(props.trend || []).length" description="暂无健康趋势数据（等待15分钟采样）" :image-size="72" />
+        <div v-else ref="chartRef" :class="props.compact ? 'h-[260px] min-h-[260px]' : 'h-[320px] min-h-[320px]'" class="w-full"></div>
+      </template>
+    </el-skeleton>
   </el-card>
 </template>

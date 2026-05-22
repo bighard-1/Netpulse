@@ -1,4 +1,5 @@
 import axios from "axios";
+import { setServerTimezone } from "../utils/serverTime";
 
 const API_BASE =
   import.meta.env.VITE_API_BASE_URL || "http://119.40.55.18:18080/api";
@@ -7,6 +8,7 @@ const http = axios.create({
   baseURL: API_BASE,
   timeout: 20000
 });
+const LONG_RUNNING_TIMEOUT_MS = 10 * 60 * 1000;
 const SLOW_LOG_KEY = "np_slow_api_logs";
 
 function appendSlowApiLog(item) {
@@ -43,6 +45,8 @@ http.interceptors.request.use((config) => {
 
 http.interceptors.response.use(
   (resp) => {
+    const tz = resp?.headers?.["x-server-timezone"] || resp?.headers?.["X-Server-Timezone"];
+    if (tz) setServerTimezone(tz);
     const cost = Date.now() - (resp?.config?.metadata?.start || Date.now());
     if (cost > 1200) {
       // Lightweight client-side perf telemetry for slow API calls.
@@ -136,6 +140,12 @@ export const api = {
   updateInterfaceRemark(id, remark) {
     return http.put(`/interfaces/${id}/remark`, { remark });
   },
+  getInterfaceById(id) {
+    return http.get(`/interfaces/${id}`);
+  },
+  getInterface(id) {
+    return http.get(`/interfaces/${id}`);
+  },
   updateInterfaceProfile(id, payload) {
     return http.put(`/interfaces/${id}`, payload);
   },
@@ -160,20 +170,33 @@ export const api = {
   diagnoseDevice(id) {
     return http.get(`/devices/${id}/diagnose`);
   },
+  diagnoseTrafficBias(id) {
+    return http.get(`/devices/${id}/diagnose/traffic-bias`);
+  },
   exportDiagnosis(id, format = "txt") {
     return http.get(`/devices/${id}/diagnose`, {
       params: { format, download: 1 },
       responseType: "blob"
     });
   },
+  exportTrafficBiasDiagnosis(id, format = "txt") {
+    return http.get(`/devices/${id}/diagnose/traffic-bias`, {
+      params: { format, download: 1 },
+      responseType: "blob"
+    });
+  },
   downloadBackup() {
-    return http.get("/system/backup", { responseType: "blob" });
+    return http.get("/system/backup", {
+      responseType: "blob",
+      timeout: LONG_RUNNING_TIMEOUT_MS
+    });
   },
   restoreFromFile(file) {
     const form = new FormData();
     form.append("file", file);
     return http.post("/system/restore", form, {
-      headers: { "Content-Type": "multipart/form-data" }
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: LONG_RUNNING_TIMEOUT_MS
     });
   },
   listUsers() {
@@ -197,8 +220,8 @@ export const api = {
   listAuditLogs() {
     return http.get("/audit/logs");
   },
-  listRecentEvents(limit = 20) {
-    return http.get("/events/recent", { params: { limit } });
+  listRecentEvents(limit = 20, params = {}) {
+    return http.get("/events/recent", { params: { ...params, limit } });
   },
   listAlertEvents(limit = 200, status = "") {
     return http.get("/alerts/events", { params: { limit, status } });
@@ -230,7 +253,7 @@ export const api = {
     return http.post("/discovery/scan", payload);
   },
   backupDrill() {
-    return http.post("/system/backup/drill");
+    return http.post("/system/backup/drill", {}, { timeout: LONG_RUNNING_TIMEOUT_MS });
   },
   listBackupDrillReports() {
     return http.get("/system/backup/drill/reports");
@@ -248,6 +271,9 @@ export const api = {
     return http.get("/system/ops");
   },
   downloadInspectionBundle() {
-    return http.get("/system/inspection-bundle", { responseType: "blob" });
+    return http.get("/system/inspection-bundle", {
+      responseType: "blob",
+      timeout: LONG_RUNNING_TIMEOUT_MS
+    });
   }
 };

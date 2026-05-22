@@ -5,15 +5,26 @@ import { npAxisLabel, npAxisLine, npChartGrid, npSplitLine, npTooltip } from "..
 
 const props = defineProps({
   title: { type: String, default: "Top N 端口流量排行" },
-  hotspots: { type: Array, default: () => [] }
+  hotspots: { type: Array, default: () => [] },
+  refreshKey: { type: Number, default: 0 },
+  loading: { type: Boolean, default: false },
+  expanded: { type: Boolean, default: false }
 });
+const emit = defineEmits(["open-port"]);
 
 const chartRef = ref(null);
 let chart = null;
+let echartsMod = null;
+let resizeObserver = null;
+let redrawFrame = 0;
 
 function render() {
   if (!chart) return;
   const list = props.hotspots || [];
+  const yLabels = list.map((x) => {
+    const full = `${x.deviceName}/#${Number(x.interfaceIndex || 0)} ${x.interfaceName}`;
+    return full.length > 20 ? `${full.slice(0, 19)}…` : full;
+  });
   chart.setOption({
     animation: false,
     grid: npChartGrid,
@@ -22,25 +33,33 @@ function render() {
       formatter: (params) => {
         const p = params?.[0];
         if (!p) return "";
-        return `${p.name}<br/>带宽: ${formatBps(Number(p.value || 0))}`;
+        const src = (props.hotspots || [])[Number(p.dataIndex || 0)] || {};
+        return [
+          `${src.deviceName || "-"} / #${Number(src.interfaceIndex || 0)} ${src.interfaceName || "-"}`,
+          `入方向: ${formatBps(Number(src.inBps || 0))}`,
+          `出方向: ${formatBps(Number(src.outBps || 0))}`,
+          `总流量: ${formatBps(Number(src.bps || p.value || 0))}`
+        ].join("<br/>");
       }
     }),
     xAxis: {
       type: "value",
       axisLabel: { ...npAxisLabel, formatter: (v) => formatBps(v) },
       axisLine: npAxisLine,
-      splitLine: npSplitLine
+      splitLine: npSplitLine,
+      splitNumber: 3
     },
     yAxis: {
       type: "category",
-      data: list.map((x) => `${x.deviceName}/${x.interfaceName}`),
-      axisLabel: { ...npAxisLabel, width: 260, overflow: "truncate" },
+      data: yLabels,
+      axisLabel: { ...npAxisLabel, width: 140, overflow: "truncate", interval: 0 },
       axisLine: npAxisLine
     },
     series: [
       {
         type: "bar",
         data: list.map((x) => Number(x.bps || 0)),
+        barMaxWidth: 18,
         itemStyle: {
           color: (ctx) => {
             const v = Number(ctx.value || 0);
@@ -58,28 +77,102 @@ function resize() {
   chart?.resize();
 }
 
-onMounted(async () => {
-  const e = await import("echarts");
+async function redraw() {
+  await ensureChart();
   await nextTick();
-  chart = e.init(chartRef.value);
+  resize();
   render();
-  window.addEventListener("resize", resize);
+}
+
+async function ensureChart() {
+  if (chart || !chartRef.value) return;
+  bindResizeObserver();
+  if (!echartsMod) {
+    echartsMod = await import("echarts");
+  }
+  await nextTick();
+  if (!chartRef.value || chart) return;
+  const box = chartRef.value.getBoundingClientRect();
+  if (box.width < 40 || box.height < 40) return;
+  chart = echartsMod.init(chartRef.value);
+  chart.on("click", (params) => {
+    const idx = Number(params?.dataIndex ?? -1);
+    if (idx < 0) return;
+    const item = (props.hotspots || [])[idx];
+    if (item) emit("open-port", item);
+  });
+}
+
+function scheduleRedraw() {
+  if (redrawFrame) cancelAnimationFrame(redrawFrame);
+  redrawFrame = requestAnimationFrame(async () => {
+    redrawFrame = 0;
+    await redraw();
+  });
+}
+
+function bindResizeObserver() {
+  if (resizeObserver || !chartRef.value) return;
+  resizeObserver = new ResizeObserver(() => scheduleRedraw());
+  resizeObserver.observe(chartRef.value);
+}
+
+onMounted(async () => {
+  window.addEventListener("resize", scheduleRedraw);
+  await redraw();
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener("resize", resize);
+  window.removeEventListener("resize", scheduleRedraw);
+  if (redrawFrame) cancelAnimationFrame(redrawFrame);
+  resizeObserver?.disconnect();
   chart?.dispose();
 });
 
-watch(() => props.hotspots, render, { deep: true });
+watch(() => props.hotspots, async () => {
+  scheduleRedraw();
+}, { deep: true });
+
+watch(() => props.refreshKey, async () => {
+  scheduleRedraw();
+});
+
+watch(() => props.loading, async (v) => {
+  if (!v) {
+    scheduleRedraw();
+  }
+});
 </script>
 
 <template>
-  <el-card>
-    <template #header>
-      <span class="text-lg font-semibold">{{ props.title }}</span>
-    </template>
-    <el-empty v-if="!(props.hotspots || []).length" description="暂无端口流量数据（等待采样入库）" :image-size="72" />
-    <div v-else ref="chartRef" class="h-[260px] w-full"></div>
-  </el-card>
+  <div>
+    <div class="mb-2 text-sm font-semibold text-slate-700">{{ props.title }}</div>
+    <el-skeleton :loading="props.loading" animated>
+      <template #template><div :class="props.expanded ? 'h-[430px]' : 'h-[300px]'" class="w-full rounded-lg bg-slate-100"></div></template>
+      <template #default>
+        <el-empty v-if="!(props.hotspots || []).length" description="暂无端口流量数据（等待采样入库）" :image-size="72" />
+        <div v-else class="space-y-2">
+          <div ref="chartRef" :class="props.expanded ? 'h-[280px]' : 'h-[220px]'" class="w-full"></div>
+          <div :class="props.expanded ? 'max-h-[260px]' : 'max-h-[150px]'" class="overflow-auto rounded-lg border border-slate-200">
+            <el-table :data="props.hotspots" size="small" class="np-borderless-table">
+              <el-table-column label="端口" min-width="220">
+                <template #default="{ row }">
+                  <el-link type="primary" @click.prevent="emit('open-port', row)">{{ row.deviceName }}/#{{ Number(row.interfaceIndex || 0) }} {{ row.interfaceName }}</el-link>
+                </template>
+              </el-table-column>
+              <el-table-column label="入方向" width="110">
+                <template #default="{ row }">{{ formatBps(Number(row.inBps || 0)) }}</template>
+              </el-table-column>
+              <el-table-column label="出方向" width="110">
+                <template #default="{ row }">{{ formatBps(Number(row.outBps || 0)) }}</template>
+              </el-table-column>
+              <el-table-column label="总流量" width="110">
+                <template #default="{ row }">{{ formatBps(Number(row.bps || 0)) }}</template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </div>
+      </template>
+    </el-skeleton>
+  </div>
 </template>

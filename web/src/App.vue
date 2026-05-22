@@ -15,6 +15,7 @@ const fb = useFeedback();
 
 const isMobile = ref(false);
 const sidebarOpen = ref(true);
+const sidebarCollapsed = ref(localStorage.getItem("np_sidebar_collapsed") === "1");
 const loginVisible = ref(!auth.isAuthed);
 const loginForm = ref({ username: "", password: "" });
 
@@ -145,8 +146,13 @@ function resetIdleTimer() {
 }
 
 function onResize() {
-  isMobile.value = window.innerWidth < 960;
+  isMobile.value = window.innerWidth < 1200;
   if (!isMobile.value) sidebarOpen.value = true;
+}
+
+function toggleSidebarCollapsed() {
+  sidebarCollapsed.value = !sidebarCollapsed.value;
+  localStorage.setItem("np_sidebar_collapsed", sidebarCollapsed.value ? "1" : "0");
 }
 
 function onSelectMenu(idx) {
@@ -261,7 +267,16 @@ function goSearchResult(item) {
   if (item?.category === "device" && item?.id) {
     router.push(`/device/${item.id}`);
   } else if (item?.category === "interface" && item?.id) {
-    router.push(`/port/${item.id}`);
+    router.push({
+      path: `/port/${item.id}`,
+      query: {
+        deviceId: String(item.device_id || item.deviceId || ""),
+        deviceIp: String(item.device_ip || item.deviceIP || ""),
+        portName: String(item.interface_custom_name || item.interface_name || item.title || ""),
+        portBaseName: String(item.interface_name || item.title || ""),
+        portRemark: String(item.interface_remark || "")
+      }
+    });
   }
   if (item?.id) {
     const nowItem = { category: item.category, id: item.id, title: item.title, sub: item.sub };
@@ -273,7 +288,16 @@ function goSearchResult(item) {
 
 function openSearchChart(item) {
   if (item?.category !== "interface" || !item?.id) return;
-  router.push(`/port/${item.id}`);
+  router.push({
+    path: `/port/${item.id}`,
+    query: {
+      deviceId: String(item.device_id || item.deviceId || ""),
+      deviceIp: String(item.device_ip || item.deviceIP || ""),
+      portName: String(item.interface_custom_name || item.interface_name || item.title || ""),
+      portBaseName: String(item.interface_name || item.title || ""),
+      portRemark: String(item.interface_remark || "")
+    }
+  });
   quickSearchVisible.value = false;
 }
 
@@ -343,30 +367,38 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="np-app v2">
-    <aside class="sidebar" :class="{ open: !isMobile || sidebarOpen, mobile: isMobile }">
-      <div class="px-5 pb-5 pt-6">
-        <div class="text-2xl font-semibold tracking-wide text-white">NetPulse</div>
-        <div class="mt-1 text-xs text-slate-400">{{ zhCN.app.edition }}</div>
+    <aside class="sidebar" :class="{ open: !isMobile || sidebarOpen, mobile: isMobile, collapsed: sidebarCollapsed && !isMobile }">
+      <div class="px-4 pb-4 pt-5">
+        <div class="flex items-start justify-between gap-2">
+          <div>
+            <div class="text-2xl font-semibold tracking-wide text-white">NetPulse</div>
+            <div class="mt-1 text-xs text-slate-400">{{ zhCN.app.edition }}</div>
+          </div>
+          <el-button class="np-sidebar-hide" size="small" text @click="toggleSidebarCollapsed">隐藏</el-button>
+        </div>
       </div>
 
       <el-menu :default-active="activeMenu" class="np-menu" background-color="transparent" text-color="#94a3b8" active-text-color="#ffffff" @select="onSelectMenu">
         <el-menu-item v-for="item in menuItems" :key="item.path" :index="item.path">{{ item.label }}</el-menu-item>
       </el-menu>
 
-      <div class="mt-auto border-t border-white/10 px-4 py-4">
+      <div class="mt-auto border-t border-white/10 px-3 py-3">
         <div class="text-xs text-slate-400">当前用户</div>
         <div class="mt-1 text-sm text-slate-100">{{ currentUser?.username || "未登录" }}</div>
-        <div class="mt-3 grid grid-cols-2 gap-2">
-          <el-button v-if="isAdmin" size="small" :type="editMode ? 'warning' : 'primary'" plain @click="toggleEditMode">
-            {{ editMode ? "退出编辑模式" : "进入编辑模式" }}
-          </el-button>
-          <el-tooltip v-if="!isAdmin" content="仅管理员可管理用户" placement="top">
-            <el-button size="small" disabled>用户管理</el-button>
-          </el-tooltip>
-          <el-button v-if="isAdmin" size="small" @click="openUsers">用户管理</el-button>
-          <el-button size="small" plain @click="openQuickSearch">Ctrl+K</el-button>
-          <el-button size="small" type="danger" plain @click="logout">退出</el-button>
-        </div>
+        <details class="np-sidebar-actions mt-3">
+          <summary>快捷操作</summary>
+          <div class="mt-2 grid grid-cols-1 gap-2">
+            <el-button v-if="isAdmin" size="small" :type="editMode ? 'warning' : 'primary'" plain @click="toggleEditMode">
+              {{ editMode ? "退出编辑模式" : "进入编辑模式" }}
+            </el-button>
+            <el-tooltip v-if="!isAdmin" content="仅管理员可管理用户" placement="top">
+              <el-button size="small" disabled>用户管理</el-button>
+            </el-tooltip>
+            <el-button v-if="isAdmin" size="small" @click="openUsers">用户管理</el-button>
+            <el-button size="small" plain @click="openQuickSearch">Ctrl+K</el-button>
+            <el-button size="small" type="danger" plain @click="logout">退出</el-button>
+          </div>
+        </details>
       </div>
     </aside>
 
@@ -376,6 +408,7 @@ onBeforeUnmount(() => {
       <header class="np-topbar">
         <div class="flex items-center gap-3">
           <el-button v-if="isMobile" class="np-menu-trigger" @click="sidebarOpen = !sidebarOpen">菜单</el-button>
+          <el-button v-else class="np-menu-trigger" @click="toggleSidebarCollapsed">{{ sidebarCollapsed ? "展开侧栏" : "隐藏侧栏" }}</el-button>
           <div>
             <h2 class="text-xl font-semibold text-slate-900">{{ pageTitle }}</h2>
             <div class="text-xs text-slate-500">深海蓝高密度运维工作台</div>
@@ -515,9 +548,55 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.sidebar.collapsed {
+  width: 0;
+  border-right-width: 0;
+  overflow: hidden;
+}
+
+.np-sidebar-hide {
+  color: #cbd5e1 !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-radius: 999px;
+}
+
 .np-hl {
   background: #fde68a;
   padding: 0 2px;
   border-radius: 2px;
+}
+
+.np-sidebar-actions {
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 8px 10px;
+}
+
+.np-sidebar-actions summary {
+  cursor: pointer;
+  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 700;
+  list-style: none;
+}
+
+.np-sidebar-actions summary::-webkit-details-marker {
+  display: none;
+}
+
+.np-sidebar-actions summary::after {
+  content: "展开";
+  float: right;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.np-sidebar-actions[open] summary::after {
+  content: "收起";
+}
+
+.np-sidebar-actions :deep(.el-button) {
+  width: 100%;
+  margin-left: 0 !important;
 }
 </style>
