@@ -35,11 +35,25 @@ const healthRef = ref(null);
 const topNRef = ref(null);
 const chartRefreshKey = ref(0);
 const topTab = ref("100m");
-const statusPreviewDevices = computed(() => devices.value.map((d) => ({
-  ...d,
-  statusText: statusLabel(d),
-  statusNorm: normalizeStatus(d.status)
-})));
+const statusPreviewDevices = computed(() => {
+  const offline = [];
+  const rest = [];
+  for (const d of devices.value) {
+    const item = {
+      ...d,
+      statusText: statusLabel(d),
+      statusNorm: normalizeStatus(d.status)
+    };
+    if (item.statusNorm === "offline") {
+      offline.push(item);
+    } else {
+      rest.push(item);
+    }
+  }
+  // devices itself is already sorted by core -> aggregation -> access; splitting
+  // and concatenating only lifts offline assets to the top until they recover.
+  return offline.concat(rest);
+});
 const statusPreviewSummary = computed(() => {
   const total = devices.value.length;
   const online = onlineCount.value;
@@ -401,8 +415,8 @@ watch(activeDashboardModule, async () => {
             >
               <span class="inline-block shrink-0" :class="deviceStatusClass(d)" />
               <span class="min-w-0 flex-1 text-left">
-                <span class="block truncate text-sm font-semibold text-slate-800">{{ d.name || d.ip }}</span>
-                <span class="block truncate text-xs text-slate-500">{{ d.ip }} · {{ d.statusText }}</span>
+                <span class="block truncate text-[12px] font-semibold leading-tight text-slate-800">{{ d.name || d.ip }}</span>
+                <span class="block truncate text-[10px] leading-tight text-slate-500">{{ d.ip }} · {{ d.statusText }}</span>
               </span>
             </button>
           </div>
@@ -612,7 +626,7 @@ watch(activeDashboardModule, async () => {
 
 .np-dashboard-shell {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 280px;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 340px);
   gap: 18px;
   align-items: start;
 }
@@ -681,24 +695,21 @@ watch(activeDashboardModule, async () => {
 
 .np-device-preview-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 10px;
-  max-height: 168px;
-  overflow-y: auto;
-  padding-right: 4px;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 6px;
 }
 
 .np-device-preview-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   min-width: 0;
   border: 1px solid #e2e8f0;
-  border-radius: 14px;
+  border-radius: 10px;
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.96)),
     #fff;
-  padding: 10px 12px;
+  padding: 5px 7px;
   cursor: pointer;
   transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
 }
@@ -722,7 +733,17 @@ watch(activeDashboardModule, async () => {
   box-shadow: inset 3px 0 0 rgba(245, 158, 11, 0.78);
 }
 
-@media (max-width: 1280px) {
+:deep(.np-device-preview-item .status-dot-online),
+:deep(.np-device-preview-item .status-dot-offline),
+:deep(.np-device-preview-item .status-dot-unknown) {
+  width: 9px;
+  height: 9px;
+  border-width: 1px;
+  box-shadow: none;
+  animation: none;
+}
+
+@media (max-width: 1440px) {
   .np-dashboard-shell {
     grid-template-columns: 1fr;
   }
