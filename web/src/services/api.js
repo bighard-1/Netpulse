@@ -268,7 +268,7 @@ export const api = {
     return http.get("/system/health", { params: { limit } });
   },
   getSystemOps() {
-    return http.get("/system/ops");
+    return http.get("/system/ops", { timeout: LONG_RUNNING_TIMEOUT_MS });
   },
   downloadInspectionBundle() {
     return http.get("/system/inspection-bundle", {

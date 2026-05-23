@@ -836,7 +836,10 @@ func (h *Handler) handleDeviceLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleSystemBackup(w http.ResponseWriter, r *http.Request) {
-	filePath, filename, err := h.system.Backup(r.Context())
+	backupCtx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+	defer cancel()
+
+	filePath, filename, err := h.system.Backup(backupCtx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -852,6 +855,9 @@ func (h *Handler) handleSystemBackup(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	if stat, statErr := f.Stat(); statErr == nil {
+		w.Header().Set("Content-Length", strconv.FormatInt(stat.Size(), 10))
+	}
 	http.ServeContent(w, r, filename, time.Now(), f)
 }
 
