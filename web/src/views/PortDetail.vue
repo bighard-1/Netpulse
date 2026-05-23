@@ -34,7 +34,7 @@ const portEdit = ref({ name: route.query.portName || "", remark: route.query.por
 const portBaseName = ref(String(route.query.portBaseName || route.query.portName || `端口-${props.id}`));
 const portSuffix = ref("");
 const savingPort = ref(false);
-const terminalType = ref("ssh");
+const terminalType = ref("telnet");
 const customChartAnchorRef = ref(null);
 const trafficThresholdBps = ref(0);
 const chartCardActive = ref("today");
@@ -932,8 +932,8 @@ function onEditModeEvent(e) {
           <div class="flex flex-wrap items-center gap-2">
             <span class="text-xs text-slate-500">连接方式</span>
             <el-select v-model="terminalType" class="w-[180px]">
-              <el-option label="SSH（本地终端）" value="ssh" />
               <el-option label="Telnet（本地终端）" value="telnet" />
+              <el-option label="SSH（本地终端）" value="ssh" />
             </el-select>
             <el-button type="primary" @click="openTerminal">连接设备终端</el-button>
             <el-button @click="copyTerminalTarget">复制连接命令</el-button>

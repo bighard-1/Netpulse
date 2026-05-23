@@ -63,6 +63,7 @@ func (h *Handler) Router() http.Handler {
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("IMPORT_DEVICES")).Post("/api/devices/import", h.handleImportDevices)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("DELETE_DEVICE")).Delete("/api/devices/{id}", h.handleDeleteDevice)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("UPDATE_DEVICE_REMARK")).Put("/api/devices/{id}/remark", h.handleUpdateDeviceRemark)
+		pr.With(h.requirePermission("device.read")).Get("/api/interfaces/{id}", h.handleGetInterface)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("UPDATE_INTERFACE_REMARK")).Put("/api/interfaces/{id}/remark", h.handleUpdateInterfaceRemark)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("UPDATE_INTERFACE_PROFILE")).Put("/api/interfaces/{id}", h.handleUpdateInterfaceProfile)
 		pr.With(h.requirePermission("metrics.read")).Get("/api/metrics/history", h.handleMetricsHistory)
@@ -675,6 +676,24 @@ func (h *Handler) handleUpdateInterfaceRemark(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "interface remark updated"})
+}
+
+func (h *Handler) handleGetInterface(w http.ResponseWriter, r *http.Request) {
+	id, err := parseIDParam(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid interface id")
+		return
+	}
+	item, err := h.repo.GetInterfaceByID(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if item == nil {
+		writeError(w, http.StatusNotFound, "interface not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (h *Handler) handleUpdateInterfaceProfile(w http.ResponseWriter, r *http.Request) {
