@@ -32,7 +32,7 @@ const diagnoseReport = ref(null);
 const capability = ref(null);
 const cpuMemRef = ref(null);
 const storageRef = ref(null);
-const terminalType = ref("ssh");
+const terminalType = ref("telnet");
 let cpuMemChart = null;
 let storageChart = null;
 const storageSummary = ref({
@@ -258,14 +258,8 @@ function openPort(port) {
 function buildTerminalUrl() {
   const ip = String(device.value?.ip || "").trim();
   if (!ip) return "";
-  const schemeTpl = {
-    ssh: "ssh://{ip}",
-    termius: "termius://host/{ip}",
-    securecrt: "ssh2://{ip}",
-    custom: localStorage.getItem("np_terminal_url_template") || "ssh://{ip}"
-  };
-  const tpl = schemeTpl[terminalType.value] || schemeTpl.custom;
-  return String(tpl).replaceAll("{ip}", ip);
+  const protocol = terminalType.value === "telnet" ? "telnet" : "ssh";
+  return `${protocol}://${ip}`;
 }
 
 function openTerminal() {
@@ -274,7 +268,14 @@ function openTerminal() {
     fb.warn("缺少设备IP，无法打开终端");
     return;
   }
-  window.open(url, "_blank", "noopener");
+  const a = document.createElement("a");
+  a.href = url;
+  a.rel = "noopener";
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  fb.success(`已调用本地 ${terminalType.value === "telnet" ? "Telnet" : "SSH"} 连接`);
 }
 
 function openDeviceEdit() {
@@ -376,12 +377,11 @@ watch([portKeyword, () => device.value?.id], () => {
       <template #header>
         <div class="flex items-center justify-between">
           <span class="np-section-title text-base font-semibold">设备基础信息</span>
-          <div class="flex items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-xs text-slate-500">连接方式</span>
             <el-select v-model="terminalType" class="w-[180px]">
-              <el-option label="系统默认 SSH" value="ssh" />
-              <el-option label="Termius" value="termius" />
-              <el-option label="SecureCRT" value="securecrt" />
-              <el-option label="自定义模板" value="custom" />
+              <el-option label="Telnet（本地终端）" value="telnet" />
+              <el-option label="SSH（本地终端）" value="ssh" />
             </el-select>
             <el-button type="primary" plain @click="openTerminal">连接设备终端</el-button>
             <el-button type="primary" plain :icon="Edit" @click="openDeviceEdit">编辑设备名称/备注</el-button>
