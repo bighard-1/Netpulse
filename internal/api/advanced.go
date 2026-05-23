@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/csv"
 	"encoding/hex"
@@ -382,11 +383,14 @@ func (h *Handler) handleUpdateAlertEventWorkflow(w http.ResponseWriter, r *http.
 }
 
 func (h *Handler) handleSystemOps(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
 	devs, _ := h.repo.ListDevicesWithStatus(ctx)
 	events, _ := h.repo.GetRecentEvents(ctx, 50)
 	audits, _ := h.repo.ListAuditLogs(ctx, 50)
 	lastMetricAt, ingestDelaySec, _ := h.repo.GetMetricsIngestStatus(ctx)
+	pollSummary, _ := h.repo.GetOpsPollSummary(ctx, time.Hour)
+	trafficSummary, _ := h.repo.GetTrafficSampleSummary(ctx, time.Hour)
 	openAlerts := 0
 	for _, e := range events {
 		l := strings.ToUpper(strings.TrimSpace(e.Level))
@@ -415,6 +419,8 @@ func (h *Handler) handleSystemOps(w http.ResponseWriter, r *http.Request) {
 		"last_audit_at":     lastAudit,
 		"last_metric_at":    lastMetric,
 		"ingest_delay_sec":  ingestDelaySec,
+		"poll_summary":      pollSummary,
+		"traffic_summary":   trafficSummary,
 		"recent_jobs":       h.listSystemJobs(10),
 	})
 }

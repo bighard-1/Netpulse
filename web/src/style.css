@@ -114,9 +114,23 @@ body,
 .el-card,
 .el-card__body,
 .el-tabs,
+.el-tabs__content,
+.el-tab-pane,
 .el-table,
 .el-table__inner-wrapper {
   min-width: 0;
+}
+
+.np-content .el-card__body {
+  max-width: 100%;
+}
+
+.np-content .el-table {
+  max-width: 100%;
+}
+
+.np-content .el-table__inner-wrapper {
+  overflow-x: auto;
 }
 
 .el-card {
@@ -452,6 +466,28 @@ body,
 
   .np-content {
     padding: 16px;
+  }
+}
+
+@media (max-width: 900px) {
+  .np-topbar {
+    position: sticky;
+  }
+
+  .np-topbar h2 {
+    font-size: 18px;
+  }
+
+  .np-content {
+    overflow-x: hidden;
+  }
+
+  .el-card {
+    border-radius: 10px !important;
+  }
+
+  .el-dialog {
+    width: calc(100vw - 20px) !important;
   }
 }
 

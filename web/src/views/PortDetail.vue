@@ -22,6 +22,7 @@ const fb = useFeedback();
 const editMode = ref(localStorage.getItem("np_edit_mode") === "1");
 
 const loading = ref(false);
+const chartLoadError = ref("");
 const customRange = ref([]);
 const customStartDraft = ref(null);
 const customEndDraft = ref(null);
@@ -61,6 +62,8 @@ const chartSource = ref({
 });
 const runtimePollSec = ref(60);
 let charts = { today: null, d7: null, d30: null, custom: null };
+let fullChartRequestSeq = 0;
+let customChartRequestSeq = 0;
 
 const pickerShortcuts = [
   { text: "本周", value: () => [startOfServerWeek(new Date()), new Date()] },
@@ -635,8 +638,10 @@ function exportChartCSV(chartKey, title) {
 }
 
 async function loadAllCharts() {
+  const seq = ++fullChartRequestSeq;
   loading.value = true;
   try {
+    chartLoadError.value = "";
     const now = new Date();
     const todayStart = startOfServerDay(now);
     const d7Start = startOfServerDay(new Date(now.getTime() - 6 * 24 * 3600 * 1000));
@@ -647,6 +652,7 @@ async function loadAllCharts() {
       fetchRange(d7Start, now),
       fetchRange(d30Start, now)
     ]);
+    if (seq !== fullChartRequestSeq) return;
     lastSeriesCache.value.today = todayRes.data;
     lastSeriesCache.value.d7 = d7Res.data;
     lastSeriesCache.value.d30 = d30Res.data;
@@ -657,28 +663,36 @@ async function loadAllCharts() {
     chartSource.value.d7 = d7Res.source || "metrics";
     chartSource.value.d30 = d30Res.source || "metrics_1m";
 
-  applyChart(charts.today, "当日流量", todayRes.data, "today");
-  applyChart(charts.d7, "近7天流量", d7Res.data, "d7");
-  applyChart(charts.d30, "近30天流量", d30Res.data, "d30");
+    applyChart(charts.today, "当日流量", todayRes.data, "today");
+    applyChart(charts.d7, "近7天流量", d7Res.data, "d7");
+    applyChart(charts.d30, "近30天流量", d30Res.data, "d30");
     if (customRange.value?.length === 2) {
-      await loadCustomChart();
+      await loadCustomChart({ keepLoading: true });
     }
   } catch (err) {
-    fb.apiError(err, "加载端口流量失败");
+    if (seq === fullChartRequestSeq) {
+      chartLoadError.value = err?.response?.data?.message || err?.response?.data?.error || err?.message || "端口流量加载失败";
+      fb.apiError(err, "加载端口流量失败");
+    }
   } finally {
-    loading.value = false;
+    if (seq === fullChartRequestSeq) {
+      loading.value = false;
+    }
   }
 }
 
-async function loadCustomChart() {
+async function loadCustomChart(options = {}) {
   if (!customRange.value?.length || customRange.value.length !== 2) {
     return;
   }
+  const seq = ++customChartRequestSeq;
   const [start, end] = customRange.value;
   if (!start || !end) return;
-  loading.value = true;
+  if (!options.keepLoading) loading.value = true;
   try {
+    chartLoadError.value = "";
     const res = await fetchRange(new Date(start), new Date(end));
+    if (seq !== customChartRequestSeq) return;
     lastSeriesCache.value.custom = res.data;
     chartMeta.value.custom = res.plan;
     chartSource.value.custom = res.source || "metrics";
@@ -687,9 +701,14 @@ async function loadCustomChart() {
     applyChart(charts.custom, "自定义时间段流量", res.data, "custom");
     charts.custom?.resize();
   } catch (err) {
-    fb.apiError(err, "加载自定义时间段流量失败");
+    if (seq === customChartRequestSeq) {
+      chartLoadError.value = err?.response?.data?.message || err?.response?.data?.error || err?.message || "自定义时间段流量加载失败";
+      fb.apiError(err, "加载自定义时间段流量失败");
+    }
   } finally {
-    loading.value = false;
+    if (seq === customChartRequestSeq && !options.keepLoading) {
+      loading.value = false;
+    }
   }
 }
 
@@ -882,6 +901,8 @@ watch(() => props.id, async () => {
 });
 
 onBeforeUnmount(() => {
+  fullChartRequestSeq += 1;
+  customChartRequestSeq += 1;
   window.removeEventListener("resize", resizeCharts);
   window.removeEventListener("np-edit-mode", onEditModeEvent);
   charts.today?.dispose();
@@ -980,6 +1001,22 @@ function onEditModeEvent(e) {
           </div>
         </div>
       </template>
+
+      <el-alert
+        v-if="chartLoadError"
+        class="mb-3"
+        type="warning"
+        show-icon
+        :closable="false"
+        title="端口流量图暂时加载失败"
+      >
+        <template #default>
+          <div class="flex flex-wrap items-center gap-2">
+            <span>{{ chartLoadError }}</span>
+            <el-button size="small" @click="chartCardActive === 'custom' ? loadCustomChart() : loadAllCharts()">重试加载图表</el-button>
+          </div>
+        </template>
+      </el-alert>
 
       <div v-show="chartCardActive === 'today'" ref="chartTodayRef" class="h-[360px] w-full" v-loading="loading"></div>
       <div v-show="chartCardActive === 'd7'" ref="chart7dRef" class="h-[360px] w-full" v-loading="loading"></div>

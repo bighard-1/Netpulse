@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { api } from "../services/api";
 import { useFeedback } from "../composables/useFeedback";
 import { useAuthStore } from "../stores/auth";
@@ -21,6 +21,7 @@ const activeBackupJob = ref(null);
 const activeRestoreJob = ref(null);
 const activeDrillJob = ref(null);
 const jobTimers = new Set();
+let opsTimer = null;
 const calibrationRows = ref([]);
 const activeTab = ref("runtime");
 const templateLoading = ref(false);
@@ -39,6 +40,21 @@ const opsSummary = ref({
   last_audit_at: "",
   last_metric_at: "",
   ingest_delay_sec: 0,
+  poll_summary: {
+    poll_error_count: 0,
+    failed_devices: 0,
+    timeout_count: 0,
+    last_poll_error_at: "",
+    window_minutes: 60
+  },
+  traffic_summary: {
+    total_samples: 0,
+    valid_samples: 0,
+    gap_samples: 0,
+    anomaly_samples: 0,
+    initializing_samples: 0,
+    window_minutes: 60
+  },
   recent_jobs: []
 });
 const opsDetailVisible = ref(false);
@@ -498,6 +514,9 @@ onMounted(async () => {
   window.addEventListener("np-slow-api-log", loadSlowApiLogs);
   if (!isAdmin.value) return;
   await Promise.all([loadRuntimeSettings(), loadDrillReports(), loadTemplates(), loadAlertRules(), loadOpsSummary(), loadSystemJobs()]);
+  opsTimer = window.setInterval(() => {
+    if (activeTab.value === "ops") loadOpsSummary();
+  }, 30000);
 });
 
 onBeforeUnmount(() => {
@@ -507,11 +526,19 @@ onBeforeUnmount(() => {
     window.clearInterval(timer);
   }
   jobTimers.clear();
+  if (opsTimer) window.clearInterval(opsTimer);
 });
 
 function onEditModeEvent(e) {
   editMode.value = Boolean(e?.detail?.enabled);
 }
+
+watch(activeTab, (tab) => {
+  if (tab === "ops") {
+    loadOpsSummary();
+    loadSystemJobs();
+  }
+});
 </script>
 
 <template>
@@ -784,7 +811,49 @@ function onEditModeEvent(e) {
         <div class="rounded-lg bg-slate-50 p-3">最新审计时间：<b>{{ opsSummary.last_audit_at || "-" }}</b></div>
         <div class="rounded-lg bg-slate-50 p-3">最新指标入库：<b>{{ opsSummary.last_metric_at || "-" }}</b></div>
         <div class="rounded-lg bg-slate-50 p-3">入库延迟：<b>{{ opsSummary.ingest_delay_sec ?? 0 }} 秒</b></div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          近{{ opsSummary.poll_summary?.window_minutes || 60 }}分钟失败设备：
+          <b>{{ opsSummary.poll_summary?.failed_devices || 0 }}</b>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          近{{ opsSummary.poll_summary?.window_minutes || 60 }}分钟轮询异常：
+          <b>{{ opsSummary.poll_summary?.poll_error_count || 0 }}</b>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          SNMP超时/不可达：
+          <b>{{ opsSummary.poll_summary?.timeout_count || 0 }}</b>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          最近轮询异常：
+          <b>{{ opsSummary.poll_summary?.last_poll_error_at || "-" }}</b>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          采样有效率：
+          <b>
+            {{
+              opsSummary.traffic_summary?.total_samples
+                ? Math.round(((opsSummary.traffic_summary?.valid_samples || 0) / opsSummary.traffic_summary.total_samples) * 100)
+                : 0
+            }}%
+          </b>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          图表断点样本：
+          <b>{{ opsSummary.traffic_summary?.gap_samples || 0 }}</b>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          采样异常样本：
+          <b>{{ opsSummary.traffic_summary?.anomaly_samples || 0 }}</b>
+        </div>
       </div>
+      <el-alert
+        class="mt-3"
+        type="info"
+        :closable="false"
+        show-icon
+        title="观测说明"
+        description="这里展示最近1小时的采集健康度和图表采样状态，仅用于定位慢设备、断点样本和入库延迟，不会改变现有采集计算结果。"
+      />
       <div class="mt-4 rounded-lg border border-slate-200 p-3">
         <div class="mb-2 flex items-center justify-between">
           <span class="font-semibold">最近后台任务</span>

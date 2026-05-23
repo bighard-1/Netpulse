@@ -12,6 +12,7 @@ const fb = useFeedback();
 
 const loading = ref(false);
 const chartLoading = ref(false);
+const perfChartError = ref("");
 const logsLoading = ref(false);
 const recentLogs = ref([]);
 const logLimit = ref(10);
@@ -35,6 +36,7 @@ const storageRef = ref(null);
 const terminalType = ref("telnet");
 let cpuMemChart = null;
 let storageChart = null;
+let deviceRequestSeq = 0;
 const storageSummary = ref({
   usage: null,
   total: null,
@@ -44,6 +46,8 @@ const storageSummary = ref({
 const cpuSeries = ref([]);
 const memSeries = ref([]);
 const storageSeries = ref([]);
+
+const portPagerCacheKey = computed(() => `np_device_ports_pager_${props.id}`);
 
 const filteredPorts = computed(() => {
   const list = device.value?.interfaces || [];
@@ -87,16 +91,49 @@ function deviceStatusClass() {
 }
 
 async function loadDevice() {
+  const seq = ++deviceRequestSeq;
   loading.value = true;
   try {
-    device.value = await api.getDeviceById(props.id);
+    const nextDevice = await api.getDeviceById(props.id);
+    if (seq !== deviceRequestSeq) return;
+    device.value = nextDevice;
     if (!device.value) return;
     await Promise.all([renderCpuMem(), renderStorage(), loadLogs(), loadCapability()]);
   } catch (err) {
-    fb.apiError(err, "加载设备详情失败");
+    if (seq === deviceRequestSeq) {
+      fb.apiError(err, "加载设备详情失败");
+    }
   } finally {
-    loading.value = false;
+    if (seq === deviceRequestSeq) {
+      loading.value = false;
+    }
   }
+}
+
+function restorePortPager() {
+  try {
+    const raw = JSON.parse(sessionStorage.getItem(portPagerCacheKey.value) || "{}");
+    const nextSize = Number(raw.pageSize || portPageSize.value);
+    const nextPage = Number(raw.page || 1);
+    if ([20, 50, 100, 200].includes(nextSize)) portPageSize.value = nextSize;
+    if (nextPage > 0) portPage.value = nextPage;
+  } catch {
+    portPage.value = 1;
+  }
+}
+
+function savePortPager() {
+  try {
+    sessionStorage.setItem(portPagerCacheKey.value, JSON.stringify({
+      page: portPage.value,
+      pageSize: portPageSize.value
+    }));
+  } catch {}
+}
+
+function normalizePortPage() {
+  const maxPage = Math.max(1, Math.ceil(filteredPorts.value.length / portPageSize.value));
+  if (portPage.value > maxPage) portPage.value = maxPage;
 }
 
 async function loadCapability() {
@@ -158,6 +195,7 @@ async function renderCpuMem() {
   if (!device.value || !cpuMemChart) return;
   chartLoading.value = true;
   try {
+    perfChartError.value = "";
     const end = new Date();
     const start = new Date(end.getTime() - 24 * 3600 * 1000);
     const interval = "1m";
@@ -185,6 +223,7 @@ async function renderCpuMem() {
       ]
     });
   } catch (err) {
+    perfChartError.value = err?.response?.data?.message || err?.response?.data?.error || err?.message || "性能图表加载失败";
     fb.apiError(err, "加载性能图表失败");
   } finally {
     chartLoading.value = false;
@@ -244,6 +283,7 @@ async function renderStorage() {
 }
 
 function openPort(port) {
+  savePortPager();
   router.push({
     path: `/port/${port.id}`,
     query: {
@@ -339,6 +379,7 @@ function resizeChart() {
 }
 
 onMounted(async () => {
+  restorePortPager();
   await nextTick();
   const m = await import("echarts");
   cpuMemChart = m.init(cpuMemRef.value);
@@ -350,6 +391,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  deviceRequestSeq += 1;
   window.removeEventListener("resize", resizeChart);
   cpuMemChart?.dispose();
   storageChart?.dispose();
@@ -358,11 +400,20 @@ onBeforeUnmount(() => {
 watch(
   () => props.id,
   async () => {
+    restorePortPager();
     await loadDevice();
   }
 );
-watch([portKeyword, () => device.value?.id], () => {
+watch(portKeyword, () => {
   portPage.value = 1;
+  savePortPager();
+});
+watch([portPage, portPageSize], () => {
+  normalizePortPage();
+  savePortPager();
+});
+watch(filteredPorts, () => {
+  normalizePortPage();
 });
 </script>
 
@@ -420,6 +471,16 @@ watch([portKeyword, () => device.value?.id], () => {
 
       <el-skeleton :loading="loading" animated :rows="8">
         <template #default>
+          <div v-if="filteredPorts.length > portPageSize" class="mb-3 flex justify-end">
+            <el-pagination
+              v-model:current-page="portPage"
+              v-model:page-size="portPageSize"
+              :total="filteredPorts.length"
+              :page-sizes="[20, 50, 100, 200]"
+              layout="total, sizes, prev, pager, next"
+              background
+            />
+          </div>
           <el-table :data="pagedPorts" class="np-borderless-table">
             <el-table-column label="状态" width="90">
               <template #default="{ row }">
@@ -454,6 +515,21 @@ watch([portKeyword, () => device.value?.id], () => {
       <template #header>
         <span class="np-section-title text-base font-semibold">CPU / 内存实时利用率（24h）</span>
       </template>
+      <el-alert
+        v-if="perfChartError"
+        class="mb-3"
+        type="warning"
+        show-icon
+        :closable="false"
+        title="性能图表暂时加载失败"
+      >
+        <template #default>
+          <div class="flex flex-wrap items-center gap-2">
+            <span>{{ perfChartError }}</span>
+            <el-button size="small" @click="renderCpuMem">重试加载性能图表</el-button>
+          </div>
+        </template>
+      </el-alert>
       <div class="mb-3 grid grid-cols-1 gap-2 text-sm md:grid-cols-3">
         <div class="np-kpi-inline">CPU: 当前 <b>{{ Number.isFinite(perfKpi.cpu.current) ? `${perfKpi.cpu.current.toFixed(1)}%` : '-' }}</b> / 峰值 <b>{{ Number.isFinite(perfKpi.cpu.peak) ? `${perfKpi.cpu.peak.toFixed(1)}%` : '-' }}</b> / 24h变化 <b>{{ Number.isFinite(perfKpi.cpu.delta) ? `${perfKpi.cpu.delta.toFixed(1)}%` : '-' }}</b></div>
         <div class="np-kpi-inline">内存: 当前 <b>{{ Number.isFinite(perfKpi.mem.current) ? `${perfKpi.mem.current.toFixed(1)}%` : '-' }}</b> / 峰值 <b>{{ Number.isFinite(perfKpi.mem.peak) ? `${perfKpi.mem.peak.toFixed(1)}%` : '-' }}</b> / 24h变化 <b>{{ Number.isFinite(perfKpi.mem.delta) ? `${perfKpi.mem.delta.toFixed(1)}%` : '-' }}</b></div>

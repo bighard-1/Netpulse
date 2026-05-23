@@ -25,6 +25,10 @@ const activeDashboardModule = ref("events");
 let timer = null;
 let refreshInFlight = false;
 const healthTrend = ref([]);
+const healthTrendError = ref("");
+const deviceLoadError = ref("");
+const feedLoadError = ref("");
+const lastRefreshedAt = ref("");
 const healthExplainVisible = ref(false);
 const eventDetailVisible = ref(false);
 const eventDetail = ref(null);
@@ -203,7 +207,9 @@ async function loadDevices(opts = {}) {
   try {
     const res = await api.listDevices();
     devices.value = sortAssets((res.data || []).map((x) => ({ ...x, location: x.location || "" })));
+    deviceLoadError.value = "";
   } catch (err) {
+    deviceLoadError.value = err?.response?.data?.message || err?.response?.data?.error || err?.message || "资产列表加载失败";
     if (!silent) fb.apiError(err, "加载资产失败");
   } finally {
     if (!silent) loading.value = false;
@@ -217,7 +223,9 @@ async function loadAlerts(opts = {}) {
   try {
     // 事件流支持 20 条/页，共 5 页，需要拉取 100 条
     await ops.refreshRealtimeAlerts(100);
+    feedLoadError.value = "";
   } catch (err) {
+    feedLoadError.value = err?.response?.data?.message || err?.response?.data?.error || err?.message || "事件流加载失败";
     if (!silent) fb.apiError(err, "加载事件流失败");
   } finally {
     if (!silent) feedLoading.value = false;
@@ -231,6 +239,7 @@ async function refreshAll(opts = {}) {
   const silent = Boolean(opts.silent);
   try {
     await Promise.all([loadDevices({ silent }), loadAlerts({ silent }), loadHealthTrend({ silent })]);
+    lastRefreshedAt.value = new Date().toLocaleTimeString("zh-CN", { hour12: false });
     chartRefreshKey.value += 1;
     const totalPages = Math.max(1, Math.ceil(Math.min((ops.realtimeAlerts || []).length, 100) / eventPageSize.value));
     if (eventPage.value > totalPages) eventPage.value = 1;
@@ -244,7 +253,9 @@ async function loadHealthTrend(opts = {}) {
   try {
     const res = await api.getSystemHealthTrend(30);
     healthTrend.value = res?.data?.data || [];
+    healthTrendError.value = "";
   } catch (err) {
+    healthTrendError.value = err?.response?.data?.message || err?.response?.data?.error || err?.message || "健康趋势加载失败";
     if (!silent) fb.apiError(err, "加载健康趋势失败");
   }
 }
@@ -359,7 +370,10 @@ watch(activeDashboardModule, async () => {
       <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <div class="text-lg font-semibold text-slate-900">全局搜索</div>
-          <div class="text-xs text-slate-500">快速定位设备、端口、备注并直达详情</div>
+          <div class="text-xs text-slate-500">
+            快速定位设备、端口、备注并直达详情
+            <span v-if="lastRefreshedAt" class="ml-2">最近刷新：{{ lastRefreshedAt }}</span>
+          </div>
         </div>
         <div class="flex w-full flex-wrap items-center gap-2 lg:w-auto">
           <el-input v-model="globalKeyword" placeholder="搜索 IP / 名称 / 备注 / 端口名" clearable class="w-full lg:w-[420px]" @keyup.enter="runDashboardSearch" />
@@ -373,6 +387,21 @@ watch(activeDashboardModule, async () => {
         </div>
       </div>
     </el-card>
+
+    <el-alert
+      v-if="deviceLoadError"
+      type="warning"
+      show-icon
+      :closable="false"
+      title="资产数据暂时加载失败"
+    >
+      <template #default>
+        <div class="flex flex-wrap items-center gap-2">
+          <span>{{ deviceLoadError }}</span>
+          <el-button size="small" @click="loadDevices()">重试加载资产</el-button>
+        </div>
+      </template>
+    </el-alert>
 
     <el-card v-if="showOnboarding">
       <template #header><span class="text-lg font-semibold">首次引导</span></template>
@@ -429,6 +458,21 @@ watch(activeDashboardModule, async () => {
       <el-card class="np-module-card">
         <el-tabs v-model="activeDashboardModule" class="np-dashboard-tabs">
           <el-tab-pane label="实时事件流" name="events">
+            <el-alert
+              v-if="feedLoadError"
+              class="mb-3"
+              type="warning"
+              show-icon
+              :closable="false"
+              title="实时事件流暂时加载失败"
+            >
+              <template #default>
+                <div class="flex flex-wrap items-center gap-2">
+                  <span>{{ feedLoadError }}</span>
+                  <el-button size="small" @click="loadAlerts()">重试加载事件流</el-button>
+                </div>
+              </template>
+            </el-alert>
             <LiveEventFeed
               :loading="feedLoading"
               :alerts="pagedAlerts"
@@ -527,6 +571,22 @@ watch(activeDashboardModule, async () => {
 
           <el-tab-pane label="全网健康趋势" name="health">
             <div ref="healthRef">
+              <el-alert
+                v-if="healthTrendError"
+                class="mb-3"
+                type="warning"
+                show-icon
+                :closable="false"
+                title="健康趋势暂时加载失败"
+                :description="healthTrendError"
+              >
+                <template #default>
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span>{{ healthTrendError }}</span>
+                    <el-button size="small" @click="loadHealthTrend()">重试</el-button>
+                  </div>
+                </template>
+              </el-alert>
               <HealthTrendArea :trend="healthTrend" :refresh-key="chartRefreshKey" :loading="loading" compact />
             </div>
           </el-tab-pane>

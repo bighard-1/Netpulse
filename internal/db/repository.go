@@ -961,6 +961,23 @@ type SystemHealthPoint struct {
 	Availability float64   `json:"availability"`
 }
 
+type OpsPollSummary struct {
+	PollErrorCount  int       `json:"poll_error_count"`
+	FailedDevices   int       `json:"failed_devices"`
+	TimeoutCount    int       `json:"timeout_count"`
+	LastPollErrorAt time.Time `json:"last_poll_error_at,omitempty"`
+	WindowMinutes   int       `json:"window_minutes"`
+}
+
+type TrafficSampleSummary struct {
+	TotalSamples        int `json:"total_samples"`
+	ValidSamples        int `json:"valid_samples"`
+	GapSamples          int `json:"gap_samples"`
+	AnomalySamples      int `json:"anomaly_samples"`
+	InitializingSamples int `json:"initializing_samples"`
+	WindowMinutes       int `json:"window_minutes"`
+}
+
 type RecentEvent struct {
 	ID          int64     `json:"id"`
 	DeviceID    int64     `json:"device_id"`
@@ -2547,6 +2564,75 @@ func (r *Repository) GetMetricsIngestStatus(ctx context.Context) (time.Time, int
 		delay = 0
 	}
 	return last.Time, int64(delay), nil
+}
+
+func (r *Repository) GetOpsPollSummary(ctx context.Context, window time.Duration) (OpsPollSummary, error) {
+	if window <= 0 {
+		window = time.Hour
+	}
+	since := time.Now().Add(-window)
+	out := OpsPollSummary{WindowMinutes: int(window.Minutes())}
+	const q = `
+		SELECT COUNT(*) AS poll_errors,
+		       COUNT(DISTINCT device_id) AS failed_devices,
+		       COUNT(*) FILTER (
+		         WHERE message LIKE '[TIMEOUT]%'
+		            OR message LIKE '[CONNECT_FAILED]%'
+		            OR message LIKE '[HOST_UNREACHABLE]%'
+		            OR message LIKE '[TCP161_BLOCKED]%'
+		       ) AS timeout_count,
+		       MAX(created_at) AS last_error_at
+		FROM device_logs
+		WHERE created_at >= $1
+		  AND (
+		    UPPER(level) IN ('ERROR','WARNING','CRITICAL')
+		    OR message LIKE '[DB_WRITE_FAILED]%'
+		    OR message LIKE '[SYNC_FAILED]%'
+		    OR message LIKE '[POLL_FAILED]%'
+		    OR message LIKE '[TIMEOUT]%'
+		    OR message LIKE '[CONNECT_FAILED]%'
+		    OR message LIKE '[HOST_UNREACHABLE]%'
+		    OR message LIKE '[TCP161_BLOCKED]%'
+		  );
+	`
+	var last sql.NullTime
+	if err := r.db.QueryRowContext(ctx, q, since).Scan(&out.PollErrorCount, &out.FailedDevices, &out.TimeoutCount, &last); err != nil {
+		return out, fmt.Errorf("get ops poll summary: %w", err)
+	}
+	if last.Valid {
+		out.LastPollErrorAt = last.Time
+	}
+	return out, nil
+}
+
+func (r *Repository) GetTrafficSampleSummary(ctx context.Context, window time.Duration) (TrafficSampleSummary, error) {
+	if window <= 0 {
+		window = time.Hour
+	}
+	since := time.Now().Add(-window)
+	out := TrafficSampleSummary{WindowMinutes: int(window.Minutes())}
+	const q = `
+		WITH samples AS (
+		  SELECT unnest(ARRAY[
+		           NULLIF(traffic_in_status, ''),
+		           NULLIF(traffic_out_status, '')
+		         ]) AS status
+		  FROM metrics
+		  WHERE ts >= $1
+		    AND (traffic_in_status IS NOT NULL OR traffic_out_status IS NOT NULL)
+		)
+		SELECT COUNT(*) AS total_samples,
+		       COUNT(*) FILTER (WHERE status = 'VALID' OR status LIKE 'DIR_%' OR status = 'CACHE_AVG') AS valid_samples,
+		       COUNT(*) FILTER (WHERE status IN ('WINDOW_GAP','CACHE_WAIT','TIME_ERROR')) AS gap_samples,
+		       COUNT(*) FILTER (WHERE status IN ('COUNTER_RESET','DEVICE_REBOOT','COUNTER_SOURCE_SWITCH') OR status LIKE '%ANOMALY%') AS anomaly_samples,
+		       COUNT(*) FILTER (WHERE status = 'INITIALIZING') AS initializing_samples
+		FROM samples
+		WHERE status IS NOT NULL;
+	`
+	if err := r.db.QueryRowContext(ctx, q, since).Scan(&out.TotalSamples, &out.ValidSamples, &out.GapSamples, &out.AnomalySamples, &out.InitializingSamples); err != nil {
+		return out, fmt.Errorf("get traffic sample summary: %w", err)
+	}
+	return out, nil
 }
 
 func (r *Repository) GetRecentEvents(ctx context.Context, limit int) ([]RecentEvent, error) {
