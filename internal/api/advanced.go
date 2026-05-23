@@ -386,6 +386,7 @@ func (h *Handler) handleSystemOps(w http.ResponseWriter, r *http.Request) {
 	devs, _ := h.repo.ListDevicesWithStatus(ctx)
 	events, _ := h.repo.GetRecentEvents(ctx, 50)
 	audits, _ := h.repo.ListAuditLogs(ctx, 50)
+	lastMetricAt, ingestDelaySec, _ := h.repo.GetMetricsIngestStatus(ctx)
 	openAlerts := 0
 	for _, e := range events {
 		l := strings.ToUpper(strings.TrimSpace(e.Level))
@@ -401,6 +402,10 @@ func (h *Handler) handleSystemOps(w http.ResponseWriter, r *http.Request) {
 	if len(events) > 0 {
 		lastEvent = events[0].CreatedAt.Format(time.RFC3339)
 	}
+	lastMetric := ""
+	if !lastMetricAt.IsZero() {
+		lastMetric = lastMetricAt.Format(time.RFC3339)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"device_total":      len(devs),
 		"open_alert_events": openAlerts,
@@ -408,6 +413,9 @@ func (h *Handler) handleSystemOps(w http.ResponseWriter, r *http.Request) {
 		"recent_audits":     len(audits),
 		"last_event_at":     lastEvent,
 		"last_audit_at":     lastAudit,
+		"last_metric_at":    lastMetric,
+		"ingest_delay_sec":  ingestDelaySec,
+		"recent_jobs":       h.listSystemJobs(10),
 	})
 }
 

@@ -17,8 +17,12 @@ mobile/android/app/build/
 mobile/ios/build/
 mobile/ios/*.xcodeproj/xcuserdata/
 mobile/ios/*.xcworkspace/xcuserdata/
+mobile/ios/**/*.xcuserdata/
+
+# Local release artifacts (publish binaries via GitHub Releases/GHCR, not source tree)
+package/mobile/*.apk
+package/mobile/*.ipa
 
 # IDE
 .idea/
 .vscode/
-

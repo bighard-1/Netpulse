@@ -1069,6 +1069,18 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 	if _, err := r.db.ExecContext(ctx, mig4); err != nil {
 		return fmt.Errorf("apply migration v4 failed: %w", err)
 	}
+
+	// v5: lightweight observability indexes for operation status and event drill-down pages.
+	const mig5 = `
+		CREATE INDEX IF NOT EXISTS idx_metrics_ts_status ON metrics (ts DESC, traffic_in_status, traffic_out_status);
+		CREATE INDEX IF NOT EXISTS idx_device_logs_created_at ON device_logs (created_at DESC);
+		INSERT INTO schema_migrations(version, description)
+		VALUES (5, 'add observability indexes for ops and traffic diagnostics')
+		ON CONFLICT (version) DO NOTHING;
+	`
+	if _, err := r.db.ExecContext(ctx, mig5); err != nil {
+		return fmt.Errorf("apply migration v5 failed: %w", err)
+	}
 	return nil
 }
 
@@ -2520,6 +2532,21 @@ func (r *Repository) GetSystemHealthTrend(ctx context.Context, limit int) ([]Sys
 		tmp[i], tmp[j] = tmp[j], tmp[i]
 	}
 	return tmp, nil
+}
+
+func (r *Repository) GetMetricsIngestStatus(ctx context.Context) (time.Time, int64, error) {
+	var last sql.NullTime
+	if err := r.db.QueryRowContext(ctx, `SELECT MAX(ts) FROM metrics;`).Scan(&last); err != nil {
+		return time.Time{}, 0, fmt.Errorf("get metrics ingest status: %w", err)
+	}
+	if !last.Valid {
+		return time.Time{}, 0, nil
+	}
+	delay := time.Since(last.Time).Seconds()
+	if delay < 0 {
+		delay = 0
+	}
+	return last.Time, int64(delay), nil
 }
 
 func (r *Repository) GetRecentEvents(ctx context.Context, limit int) ([]RecentEvent, error) {

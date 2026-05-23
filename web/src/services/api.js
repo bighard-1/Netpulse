@@ -191,12 +191,34 @@ export const api = {
       timeout: LONG_RUNNING_TIMEOUT_MS
     });
   },
+  startBackupJob() {
+    return http.post("/system/backup/jobs", {});
+  },
+  getSystemJob(id) {
+    return http.get(`/system/jobs/${id}`);
+  },
+  listSystemJobs(limit = 30) {
+    return http.get("/system/jobs", { params: { limit } });
+  },
+  downloadBackupJob(id) {
+    return http.get(`/system/backup/jobs/${id}/download`, {
+      responseType: "blob",
+      timeout: LONG_RUNNING_TIMEOUT_MS
+    });
+  },
   restoreFromFile(file) {
     const form = new FormData();
     form.append("file", file);
     return http.post("/system/restore", form, {
       headers: { "Content-Type": "multipart/form-data" },
       timeout: LONG_RUNNING_TIMEOUT_MS
+    });
+  },
+  startRestoreJob(file) {
+    const form = new FormData();
+    form.append("file", file);
+    return http.post("/system/restore/jobs", form, {
+      headers: { "Content-Type": "multipart/form-data" }
     });
   },
   listUsers() {
@@ -254,6 +276,9 @@ export const api = {
   },
   backupDrill() {
     return http.post("/system/backup/drill", {}, { timeout: LONG_RUNNING_TIMEOUT_MS });
+  },
+  startBackupDrillJob() {
+    return http.post("/system/backup/drill/jobs", {});
   },
   listBackupDrillReports() {
     return http.get("/system/backup/drill/reports");

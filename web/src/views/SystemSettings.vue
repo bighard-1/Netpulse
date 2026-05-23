@@ -10,11 +10,17 @@ const isAdmin = computed(() => Boolean(auth.isAdmin));
 const editMode = ref(localStorage.getItem("np_edit_mode") === "1");
 
 const restoreLoading = ref(false);
+const backupLoading = ref(false);
 const drillLoading = ref(false);
 const settingsLoading = ref(false);
 const savingSettings = ref(false);
 const drillReportsLoading = ref(false);
 const drillReports = ref([]);
+const recentJobs = ref([]);
+const activeBackupJob = ref(null);
+const activeRestoreJob = ref(null);
+const activeDrillJob = ref(null);
+const jobTimers = new Set();
 const calibrationRows = ref([]);
 const activeTab = ref("runtime");
 const templateLoading = ref(false);
@@ -30,7 +36,10 @@ const opsSummary = ref({
   recent_events: 0,
   recent_audits: 0,
   last_event_at: "",
-  last_audit_at: ""
+  last_audit_at: "",
+  last_metric_at: "",
+  ingest_delay_sec: 0,
+  recent_jobs: []
 });
 const opsDetailVisible = ref(false);
 const opsDetailTitle = ref("");
@@ -176,19 +185,81 @@ async function saveRuntimeSettings() {
   }
 }
 
-async function onBackup() {
+function setActiveJob(job) {
+  if (!job?.type) return;
+  if (job.type === "backup") activeBackupJob.value = job;
+  if (job.type === "restore") activeRestoreJob.value = job;
+  if (job.type === "backup_drill") activeDrillJob.value = job;
+}
+
+async function loadSystemJobs(silent = true) {
   try {
-    const res = await api.downloadBackup();
-    const blobUrl = URL.createObjectURL(new Blob([res.data]));
-    const disposition = res.headers?.["content-disposition"] || "";
-    const match = disposition.match(/filename="?([^"]+)"?/i);
-    const a = document.createElement("a");
-    a.href = blobUrl;
-    a.download = match?.[1] || "netpulse_backup.sql.gz";
-    a.click();
-    URL.revokeObjectURL(blobUrl);
+    const res = await api.listSystemJobs(20);
+    recentJobs.value = res.data || [];
+  } catch (err) {
+    if (!silent && !isForbidden(err)) fb.apiError(err, "加载后台任务失败");
+  }
+}
+
+function pollJob(id, onDone) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const timer = window.setInterval(async () => {
+      try {
+        const res = await api.getSystemJob(id);
+        const job = res.data || {};
+        setActiveJob(job);
+        await loadSystemJobs();
+        if (job.status === "completed") {
+          window.clearInterval(timer);
+          jobTimers.delete(timer);
+          if (onDone) await onDone(job);
+          resolve(job);
+        } else if (job.status === "failed") {
+          window.clearInterval(timer);
+          jobTimers.delete(timer);
+          reject(new Error(job.error || job.message || "任务执行失败"));
+        } else if (Date.now() - started > 40 * 60 * 1000) {
+          window.clearInterval(timer);
+          jobTimers.delete(timer);
+          reject(new Error("后台任务超时，请在运行观测中查看状态"));
+        }
+      } catch (err) {
+        window.clearInterval(timer);
+        jobTimers.delete(timer);
+        reject(err);
+      }
+    }, 2000);
+    jobTimers.add(timer);
+  });
+}
+
+async function downloadBackupBlob(jobId) {
+  const res = await api.downloadBackupJob(jobId);
+  const blobUrl = URL.createObjectURL(new Blob([res.data]));
+  const disposition = res.headers?.["content-disposition"] || "";
+  const match = disposition.match(/filename="?([^"]+)"?/i);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = match?.[1] || "netpulse_backup.sql.gz";
+  a.click();
+  URL.revokeObjectURL(blobUrl);
+}
+
+async function onBackup() {
+  backupLoading.value = true;
+  try {
+    const res = await api.startBackupJob();
+    const job = res.data || {};
+    activeBackupJob.value = job;
+    fb.success("备份任务已启动", "完成后会自动下载备份文件");
+    await pollJob(job.id, (doneJob) => downloadBackupBlob(doneJob.id));
+    fb.success("备份文件已下载");
   } catch (err) {
     fb.apiError(err, "下载备份失败");
+  } finally {
+    backupLoading.value = false;
+    await loadSystemJobs();
   }
 }
 
@@ -198,12 +269,17 @@ async function onRestore(file) {
   if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
   restoreLoading.value = true;
   try {
-    await api.restoreFromFile(file.raw);
+    const res = await api.startRestoreJob(file.raw);
+    const job = res.data || {};
+    activeRestoreJob.value = job;
+    fb.success("恢复任务已启动", "恢复完成前请勿重复提交");
+    await pollJob(job.id);
     fb.success("恢复完成");
   } catch (err) {
     fb.apiError(err, "恢复失败");
   } finally {
     restoreLoading.value = false;
+    await loadSystemJobs();
   }
 }
 
@@ -211,13 +287,18 @@ async function runBackupDrill() {
   if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
   drillLoading.value = true;
   try {
-    await api.backupDrill();
+    const res = await api.startBackupDrillJob();
+    const job = res.data || {};
+    activeDrillJob.value = job;
+    fb.success("备份演练任务已启动");
+    await pollJob(job.id);
     fb.success("备份演练完成");
     await loadDrillReports();
   } catch (err) {
     fb.apiError(err, "备份演练失败");
   } finally {
     drillLoading.value = false;
+    await loadSystemJobs();
   }
 }
 
@@ -294,6 +375,7 @@ async function loadOpsSummary() {
   try {
     const res = await api.getSystemOps();
     opsSummary.value = { ...opsSummary.value, ...(res.data || {}) };
+    recentJobs.value = res.data?.recent_jobs || recentJobs.value;
   } catch (err) {
     if (isForbidden(err)) return;
     fb.apiError(err, "加载运维概况失败");
@@ -415,12 +497,16 @@ onMounted(async () => {
   window.addEventListener("np-edit-mode", onEditModeEvent);
   window.addEventListener("np-slow-api-log", loadSlowApiLogs);
   if (!isAdmin.value) return;
-  await Promise.all([loadRuntimeSettings(), loadDrillReports(), loadTemplates(), loadAlertRules(), loadOpsSummary()]);
+  await Promise.all([loadRuntimeSettings(), loadDrillReports(), loadTemplates(), loadAlertRules(), loadOpsSummary(), loadSystemJobs()]);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("np-edit-mode", onEditModeEvent);
   window.removeEventListener("np-slow-api-log", loadSlowApiLogs);
+  for (const timer of jobTimers) {
+    window.clearInterval(timer);
+  }
+  jobTimers.clear();
 });
 
 function onEditModeEvent(e) {
@@ -640,11 +726,19 @@ function onEditModeEvent(e) {
         <template #header><span class="text-lg font-semibold">备份与恢复</span></template>
         <el-alert :title="backupScopeText" type="info" show-icon :closable="false" class="mb-3" />
         <div class="space-y-3">
-          <el-button type="primary" @click="onBackup">下载备份</el-button>
+          <el-button type="primary" :loading="backupLoading" @click="onBackup">下载备份</el-button>
           <el-button @click="downloadInspectionBundle">导出一键巡检包</el-button>
           <el-upload :auto-upload="false" :show-file-list="false" accept=".sql.gz,.gz" :on-change="onRestore" :disabled="restoreLoading || !editMode">
-            <el-button>恢复数据</el-button>
+            <el-button :loading="restoreLoading">恢复数据</el-button>
           </el-upload>
+          <div v-if="activeBackupJob" class="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
+            <div class="mb-1 font-semibold">备份任务：{{ activeBackupJob.message }}</div>
+            <el-progress :percentage="Number(activeBackupJob.progress || 0)" :status="activeBackupJob.status === 'failed' ? 'exception' : activeBackupJob.status === 'completed' ? 'success' : undefined" />
+          </div>
+          <div v-if="activeRestoreJob" class="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
+            <div class="mb-1 font-semibold">恢复任务：{{ activeRestoreJob.message }}</div>
+            <el-progress :percentage="Number(activeRestoreJob.progress || 0)" :status="activeRestoreJob.status === 'failed' ? 'exception' : activeRestoreJob.status === 'completed' ? 'success' : undefined" />
+          </div>
         </div>
       </el-card>
 
@@ -653,6 +747,10 @@ function onEditModeEvent(e) {
         <div class="space-y-3">
           <el-button :disabled="!editMode" :loading="drillLoading" @click="runBackupDrill">执行备份演练</el-button>
           <el-button :loading="drillReportsLoading" @click="loadDrillReports">刷新演练记录</el-button>
+          <div v-if="activeDrillJob" class="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
+            <div class="mb-1 font-semibold">演练任务：{{ activeDrillJob.message }}</div>
+            <el-progress :percentage="Number(activeDrillJob.progress || 0)" :status="activeDrillJob.status === 'failed' ? 'exception' : activeDrillJob.status === 'completed' ? 'success' : undefined" />
+          </div>
         </div>
         <el-table :data="drillReports" class="mt-3 np-borderless-table" height="260">
           <el-table-column prop="created_at" label="时间" width="180" />
@@ -684,6 +782,23 @@ function onEditModeEvent(e) {
         <div class="cursor-pointer rounded-lg bg-slate-50 p-3 hover:bg-slate-100" @click="openOpsDetail('audits')">近期审计：<b>{{ opsSummary.recent_audits }}</b></div>
         <div class="rounded-lg bg-slate-50 p-3">最新事件时间：<b>{{ opsSummary.last_event_at || "-" }}</b></div>
         <div class="rounded-lg bg-slate-50 p-3">最新审计时间：<b>{{ opsSummary.last_audit_at || "-" }}</b></div>
+        <div class="rounded-lg bg-slate-50 p-3">最新指标入库：<b>{{ opsSummary.last_metric_at || "-" }}</b></div>
+        <div class="rounded-lg bg-slate-50 p-3">入库延迟：<b>{{ opsSummary.ingest_delay_sec ?? 0 }} 秒</b></div>
+      </div>
+      <div class="mt-4 rounded-lg border border-slate-200 p-3">
+        <div class="mb-2 flex items-center justify-between">
+          <span class="font-semibold">最近后台任务</span>
+          <el-button size="small" @click="loadSystemJobs(false)">刷新任务</el-button>
+        </div>
+        <el-table :data="recentJobs" size="small" max-height="300" class="np-borderless-table">
+          <el-table-column prop="created_at" label="创建时间" min-width="190" />
+          <el-table-column prop="type" label="任务" width="120" />
+          <el-table-column prop="status" label="状态" width="110" />
+          <el-table-column prop="progress" label="进度" width="90">
+            <template #default="{ row }">{{ row.progress || 0 }}%</template>
+          </el-table-column>
+          <el-table-column prop="message" label="说明" min-width="260" />
+        </el-table>
       </div>
     </el-card>
 

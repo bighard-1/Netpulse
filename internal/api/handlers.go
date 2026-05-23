@@ -31,12 +31,15 @@ type Handler struct {
 	fails       map[string]int
 	lockedUntil map[string]time.Time
 	rl          map[string][]time.Time
+	jobsMu      sync.Mutex
+	jobs        map[string]*SystemJob
 }
 
 func NewHandler(repo *db.Repository, collector *snmp.Collector, system *SystemService, jwtSecret string) *Handler {
 	return &Handler{
 		repo: repo, collector: collector, system: system, jwtSecret: jwtSecret,
 		fails: map[string]int{}, lockedUntil: map[string]time.Time{}, rl: map[string][]time.Time{},
+		jobs: map[string]*SystemJob{},
 	}
 }
 
@@ -75,7 +78,12 @@ func (h *Handler) Router() http.Handler {
 		pr.With(h.adminOnly).Get("/api/system/ops", h.handleSystemOps)
 		pr.With(h.adminOnly).Get("/api/system/inspection-bundle", h.handleInspectionBundle)
 		pr.Get("/api/system/backup", h.rateLimit("backup", 10, time.Minute, h.handleSystemBackup))
+		pr.With(h.adminOnly).Post("/api/system/backup/jobs", h.handleStartBackupJob)
+		pr.With(h.adminOnly).Get("/api/system/backup/jobs/{id}/download", h.handleDownloadBackupJob)
+		pr.With(h.adminOnly).Get("/api/system/jobs", h.handleListSystemJobs)
+		pr.With(h.adminOnly).Get("/api/system/jobs/{id}", h.handleGetSystemJob)
 		pr.With(h.auditMiddleware("RESTORE_SYSTEM")).Post("/api/system/restore", h.rateLimit("restore", 5, time.Minute, h.handleSystemRestore))
+		pr.With(h.adminOnly, h.auditMiddleware("RESTORE_SYSTEM")).Post("/api/system/restore/jobs", h.rateLimit("restore_job", 5, time.Minute, h.handleStartRestoreJob))
 		pr.With(h.adminOnly).Get("/api/audit-logs", h.handleAuditLogs)
 		pr.With(h.adminOnly).Get("/api/audit/logs", h.handleAuditLogs)
 		pr.With(h.adminOnly).Get("/api/users", h.handleListUsers)
@@ -95,6 +103,7 @@ func (h *Handler) Router() http.Handler {
 		pr.With(h.adminOnly).Post("/api/discovery/scan", h.handleDiscoveryScan)
 		pr.With(h.adminOnly).Post("/api/devices/{id}/config/snapshot", h.handleConfigSnapshot)
 		pr.With(h.adminOnly).Post("/api/system/backup/drill", h.handleBackupDrill)
+		pr.With(h.adminOnly).Post("/api/system/backup/drill/jobs", h.handleStartBackupDrillJob)
 		pr.With(h.adminOnly).Get("/api/system/backup/drill/reports", h.handleBackupDrillReports)
 		pr.With(h.adminOnly).Get("/api/settings/runtime", h.handleGetRuntimeSettings)
 		pr.With(h.adminOnly).Put("/api/settings/runtime", h.handleUpdateRuntimeSettings)
@@ -1179,19 +1188,29 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	code := "ERR_GENERIC"
+	hint := "如需排查，请导出自助诊断报告并提供给运维"
 	switch status {
 	case http.StatusBadRequest:
 		code = "ERR_BAD_REQUEST"
+		hint = "请检查请求参数格式和值是否正确"
 	case http.StatusUnauthorized:
 		code = "ERR_UNAUTHORIZED"
+		hint = "请重新登录后再试"
 	case http.StatusForbidden:
 		code = "ERR_FORBIDDEN"
+		hint = "当前账号权限不足，请联系管理员授权"
 	case http.StatusNotFound:
 		code = "ERR_NOT_FOUND"
+		hint = "目标资源不存在或已被删除"
 	case http.StatusConflict:
 		code = "ERR_CONFLICT"
+		hint = "当前状态暂不能执行该操作，请稍后重试"
 	case http.StatusTooManyRequests:
 		code = "ERR_RATE_LIMIT"
+		hint = "请求过于频繁，请稍后再试"
+	case http.StatusGatewayTimeout:
+		code = "ERR_TIMEOUT"
+		hint = "任务耗时较长，建议使用后台任务方式执行"
 	case http.StatusInternalServerError:
 		code = "ERR_INTERNAL"
 	}
@@ -1199,6 +1218,6 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 		"code":    code,
 		"error":   msg,
 		"message": msg,
-		"hint":    "如需排查，请导出自助诊断报告并提供给运维",
+		"hint":    hint,
 	})
 }
