@@ -8,6 +8,24 @@ defineProps({
   alerts: { type: Array, default: () => [] },
   severityTag: { type: Function, required: true }
 });
+
+function portLabel(item) {
+  const raw = String(item?.interface_raw_name || item?.port_base_name || "").trim();
+  const name = String(item?.interface_name || item?.port_name || "").trim();
+  const idx = Number(item?.interface_index || 0);
+  const base = raw || (idx > 0 ? `ifIndex=${idx}` : "");
+  if (base && name && name !== base) return `${base} / ${name}`;
+  return name || base;
+}
+
+function eventText(item) {
+  const msg = String(item?.message || `${item?.action || ""} ${item?.target || ""}`.trim() || "-");
+  const label = portLabel(item);
+  if (!label) return msg;
+  const isPortEvent = String(item?.type || item?.event_type || "").includes("port") || /\[PORT_/i.test(msg);
+  if (!isPortEvent || msg.includes(label)) return msg;
+  return `${label} · ${msg}`;
+}
 </script>
 
 <template>
@@ -32,7 +50,11 @@ defineProps({
               <el-tag size="small" :type="severityTag(a.severity)">{{ a.severity === "critical" ? "严重" : (a.severity === "warning" ? "警告" : "正常") }}</el-tag>
               <div class="text-xs text-slate-500">{{ a.timestamp || a.created_at || '-' }}</div>
             </div>
-            <div class="mt-1 text-sm text-slate-700">{{ a.device_name || a.device_ip || "-" }} · {{ a.message || (a.action + " " + (a.target || "")) }}</div>
+            <div class="mt-1 flex flex-wrap items-center gap-1 text-sm text-slate-700">
+              <span class="font-medium text-slate-800">{{ a.device_name || a.device_ip || "-" }}</span>
+              <span>·</span>
+              <span class="break-all">{{ eventText(a) }}</span>
+            </div>
           </div>
           <el-empty v-if="!alerts.length" description="暂无事件" :image-size="64" />
         </div>

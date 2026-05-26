@@ -35,6 +35,10 @@ const eventDetailVisible = ref(false);
 const eventDetail = ref(null);
 const eventPage = ref(1);
 const eventPageSize = ref(20);
+const eventFilterKeyword = ref("");
+const eventFilterType = ref("all");
+const eventFilterLevel = ref("all");
+const eventFilterRange = ref([]);
 const statusQuickFilter = ref("all");
 const healthRef = ref(null);
 const topNRef = ref(null);
@@ -77,8 +81,40 @@ const top100M = computed(() => rankedPortsBySpeed(95, 1000));
 const top1G = computed(() => rankedPortsBySpeed(1000, 10000));
 const top10G = computed(() => rankedPortsBySpeed(10000, 0));
 
+const filteredAlerts = computed(() => {
+  const kw = eventFilterKeyword.value.trim().toLowerCase();
+  const type = eventFilterType.value;
+  const level = eventFilterLevel.value;
+  const range = Array.isArray(eventFilterRange.value) ? eventFilterRange.value : [];
+  const start = range[0] ? new Date(range[0]).getTime() : 0;
+  const end = range[1] ? new Date(range[1]).getTime() : 0;
+  return (ops.realtimeAlerts || []).filter((item) => {
+    if (type !== "all" && String(item.type || item.event_type || "") !== type) return false;
+    if (level !== "all") {
+      const sev = String(item.severity || "").toLowerCase();
+      const rawLevel = String(item.level || "").toLowerCase();
+      if (sev !== level && rawLevel !== level) return false;
+    }
+    const ts = new Date(item.timestamp || item.created_at || 0).getTime() || 0;
+    if (start && ts < start) return false;
+    if (end && ts > end) return false;
+    if (!kw) return true;
+    return [
+      item.device_name,
+      item.device_ip,
+      item.interface_name,
+      item.interface_raw_name,
+      item.interface_remark,
+      item.message,
+      item.code,
+      item.type,
+      item.level
+    ].join(" ").toLowerCase().includes(kw);
+  });
+});
+
 const pagedAlerts = computed(() => {
-  const list = (ops.realtimeAlerts || []).slice(0, 100);
+  const list = filteredAlerts.value.slice(0, 100);
   const start = (eventPage.value - 1) * eventPageSize.value;
   return list.slice(start, start + eventPageSize.value);
 });
@@ -210,6 +246,18 @@ async function loadAlerts(opts = {}) {
   }
 }
 
+function resetEventFilters() {
+  eventFilterKeyword.value = "";
+  eventFilterType.value = "all";
+  eventFilterLevel.value = "all";
+  eventFilterRange.value = [];
+  eventPage.value = 1;
+}
+
+function applyEventFilters() {
+  eventPage.value = 1;
+}
+
 async function refreshAll(opts = {}) {
   if (refreshInFlight) return;
   if (document.visibilityState === "hidden") return;
@@ -219,7 +267,7 @@ async function refreshAll(opts = {}) {
     await Promise.all([loadDevices({ silent }), loadAlerts({ silent }), loadHealthTrend({ silent }), loadTopology({ silent })]);
     lastRefreshedAt.value = new Date().toLocaleTimeString("zh-CN", { hour12: false });
     chartRefreshKey.value += 1;
-    const totalPages = Math.max(1, Math.ceil(Math.min((ops.realtimeAlerts || []).length, 100) / eventPageSize.value));
+    const totalPages = Math.max(1, Math.ceil(Math.min(filteredAlerts.value.length, 100) / eventPageSize.value));
     if (eventPage.value > totalPages) eventPage.value = 1;
   } finally {
     refreshInFlight = false;
@@ -475,6 +523,43 @@ watch(activeDashboardModule, async () => {
       <el-card class="np-module-card">
         <el-tabs v-model="activeDashboardModule" class="np-dashboard-tabs">
           <el-tab-pane label="实时事件流" name="events">
+            <div class="np-event-query mb-3 rounded-xl border border-slate-200 bg-slate-50/80 p-3">
+              <div class="grid grid-cols-1 gap-2 xl:grid-cols-[minmax(220px,1fr)_150px_150px_minmax(280px,360px)_auto]">
+                <el-input
+                  v-model="eventFilterKeyword"
+                  placeholder="查询资产名称 / IP / 端口名称 / 事件内容"
+                  clearable
+                  @keyup.enter="applyEventFilters"
+                />
+                <el-select v-model="eventFilterType">
+                  <el-option label="全部类型" value="all" />
+                  <el-option label="设备状态" value="device_status" />
+                  <el-option label="端口状态" value="port_status" />
+                  <el-option label="设备日志" value="log" />
+                  <el-option label="告警事件" value="alert" />
+                  <el-option label="轮询异常" value="polling" />
+                </el-select>
+                <el-select v-model="eventFilterLevel">
+                  <el-option label="全部级别" value="all" />
+                  <el-option label="正常/信息" value="info" />
+                  <el-option label="警告" value="warning" />
+                  <el-option label="严重" value="critical" />
+                </el-select>
+                <el-date-picker
+                  v-model="eventFilterRange"
+                  type="datetimerange"
+                  start-placeholder="开始时间"
+                  end-placeholder="结束时间"
+                  range-separator="至"
+                  value-format="YYYY-MM-DDTHH:mm:ssZ"
+                  class="w-full"
+                />
+                <div class="flex items-center gap-2">
+                  <el-button type="primary" @click="applyEventFilters">查询</el-button>
+                  <el-button @click="resetEventFilters">重置</el-button>
+                </div>
+              </div>
+            </div>
             <el-alert
               v-if="feedLoadError"
               class="mb-3"
@@ -496,7 +581,7 @@ watch(activeDashboardModule, async () => {
               :severity-tag="severityTag"
               :page="eventPage"
               :page-size="eventPageSize"
-              :total="Math.min((ops.realtimeAlerts || []).length, 100)"
+              :total="Math.min(filteredAlerts.length, 100)"
               @update:page="(p) => (eventPage = p)"
               @open-event="openEventDetail"
             />

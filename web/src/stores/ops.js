@@ -32,10 +32,10 @@ export const useOpsStore = defineStore("ops", {
     searchReqSeq: 0
   }),
   actions: {
-    async refreshRealtimeAlerts(limit = 20) {
+    async refreshRealtimeAlerts(limit = 20, params = {}) {
       this.loadingAlerts = true;
       try {
-        const res = await api.listRecentEvents(limit);
+        const res = await api.listRecentEvents(limit, params);
         const src = res.data?.data || res.data || [];
         const rows = src.slice(0, limit).map((x) => ({
           ...x,

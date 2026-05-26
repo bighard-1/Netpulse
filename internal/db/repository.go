@@ -3074,12 +3074,42 @@ func (r *Repository) QueryRecentEvents(ctx context.Context, f EventFilter) ([]Re
 			v := interfaceID.Int64
 			e.InterfaceID = &v
 		}
+		enrichRecentPortEvent(&e)
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate recent events: %w", err)
 	}
 	return out, nil
+}
+
+func enrichRecentPortEvent(e *RecentEvent) {
+	if e == nil || e.Type != "port_status" {
+		return
+	}
+	rawName := strings.TrimSpace(e.InterfaceRawName)
+	displayName := strings.TrimSpace(e.InterfaceName)
+	if rawName == "" && displayName == "" && e.InterfaceIndex <= 0 {
+		return
+	}
+	if displayName != "" && strings.Contains(e.Message, displayName) {
+		return
+	}
+	label := rawName
+	if label == "" && e.InterfaceIndex > 0 {
+		label = fmt.Sprintf("ifIndex=%d", e.InterfaceIndex)
+	}
+	if displayName != "" {
+		if label == "" || displayName == label {
+			label = displayName
+		} else {
+			label = fmt.Sprintf("%s / %s", label, displayName)
+		}
+	}
+	if label == "" || strings.Contains(e.Message, label) {
+		return
+	}
+	e.Message = fmt.Sprintf("%s · %s", label, e.Message)
 }
 
 func (r *Repository) GetDeviceHistory(
