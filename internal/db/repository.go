@@ -1034,17 +1034,21 @@ type TrafficSampleSummary struct {
 }
 
 type RecentEvent struct {
-	ID          int64     `json:"id"`
-	DeviceID    int64     `json:"device_id"`
-	DeviceIP    string    `json:"device_ip"`
-	DeviceName  string    `json:"device_name"`
-	InterfaceID *int64    `json:"interface_id,omitempty"`
-	Level       string    `json:"level"`
-	Type        string    `json:"type"`
-	Code        string    `json:"code,omitempty"`
-	Source      string    `json:"source"`
-	Message     string    `json:"message"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID               int64     `json:"id"`
+	DeviceID         int64     `json:"device_id"`
+	DeviceIP         string    `json:"device_ip"`
+	DeviceName       string    `json:"device_name"`
+	InterfaceID      *int64    `json:"interface_id,omitempty"`
+	InterfaceName    string    `json:"interface_name,omitempty"`
+	InterfaceRawName string    `json:"interface_raw_name,omitempty"`
+	InterfaceRemark  string    `json:"interface_remark,omitempty"`
+	InterfaceIndex   int       `json:"interface_index,omitempty"`
+	Level            string    `json:"level"`
+	Type             string    `json:"type"`
+	Code             string    `json:"code,omitempty"`
+	Source           string    `json:"source"`
+	Message          string    `json:"message"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 type EventFilter struct {
@@ -2701,6 +2705,35 @@ func (r *Repository) GetInterfaceByID(ctx context.Context, id int64) (*Interface
 	return &itf, nil
 }
 
+func (r *Repository) GetInterfaceByDeviceIndex(ctx context.Context, deviceID int64, ifIndex int) (*Interface, error) {
+	const q = `
+		SELECT id,
+		       device_id,
+		       "index",
+		       COALESCE(NULLIF(custom_name,''), name) AS display_name,
+		       name AS raw_name,
+		       COALESCE(remark, '')
+		FROM interfaces
+		WHERE device_id = $1 AND "index" = $2
+		LIMIT 1;
+	`
+	var itf Interface
+	if err := r.db.QueryRowContext(ctx, q, deviceID, ifIndex).Scan(
+		&itf.ID,
+		&itf.DeviceID,
+		&itf.Index,
+		&itf.Name,
+		&itf.RawName,
+		&itf.Remark,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get interface by device index: %w", err)
+	}
+	return &itf, nil
+}
+
 func (r *Repository) UpdateInterfaceProfile(ctx context.Context, id int64, name, remark *string) error {
 	const uq = `
 		SELECT i.device_id
@@ -2937,13 +2970,17 @@ func (r *Repository) QueryRecentEvents(ctx context.Context, f EventFilter) ([]Re
 		endArg = *f.End
 	}
 	const q = `
-		SELECT id, device_id, device_ip, device_name, interface_id, level, event_type, code, source, message, created_at
+		SELECT id, device_id, device_ip, device_name, interface_id, interface_name, interface_raw_name, interface_remark, interface_index, level, event_type, code, source, message, created_at
 		FROM (
 			SELECT l.id AS id,
 			       l.device_id AS device_id,
 			       host(d.ip) AS device_ip,
 			       COALESCE(d.name, host(d.ip)) AS device_name,
 			       i.id AS interface_id,
+			       COALESCE(NULLIF(i.custom_name,''), i.name, '') AS interface_name,
+			       COALESCE(i.name, '') AS interface_raw_name,
+			       COALESCE(i.remark, '') AS interface_remark,
+			       COALESCE(i."index", 0) AS interface_index,
 			       l.level AS level,
 			       CASE
 			         WHEN l.message LIKE '[DEVICE_%' THEN 'device_status'
@@ -2983,6 +3020,10 @@ func (r *Repository) QueryRecentEvents(ctx context.Context, f EventFilter) ([]Re
 			       host(d.ip) AS device_ip,
 			       COALESCE(d.name, host(d.ip)) AS device_name,
 			       NULL::bigint AS interface_id,
+			       ''::text AS interface_name,
+			       ''::text AS interface_raw_name,
+			       ''::text AS interface_remark,
+			       0::integer AS interface_index,
 			       UPPER(ae.level) AS level,
 			       'alert' AS event_type,
 			       COALESCE(ae.code, 'ALERT') AS code,
@@ -3010,7 +3051,23 @@ func (r *Repository) QueryRecentEvents(ctx context.Context, f EventFilter) ([]Re
 	for rows.Next() {
 		var e RecentEvent
 		var interfaceID sql.NullInt64
-		if err := rows.Scan(&e.ID, &e.DeviceID, &e.DeviceIP, &e.DeviceName, &interfaceID, &e.Level, &e.Type, &e.Code, &e.Source, &e.Message, &e.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&e.ID,
+			&e.DeviceID,
+			&e.DeviceIP,
+			&e.DeviceName,
+			&interfaceID,
+			&e.InterfaceName,
+			&e.InterfaceRawName,
+			&e.InterfaceRemark,
+			&e.InterfaceIndex,
+			&e.Level,
+			&e.Type,
+			&e.Code,
+			&e.Source,
+			&e.Message,
+			&e.CreatedAt,
+		); err != nil {
 			return nil, fmt.Errorf("scan recent event: %w", err)
 		}
 		if interfaceID.Valid {

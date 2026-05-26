@@ -501,12 +501,33 @@ func (w *Worker) trackPortState(ctx context.Context, d db.Device, ifIndex int, i
 		return
 	}
 	if prev != up {
+		portLabel := w.eventPortLabel(ctx, d.ID, ifIndex, ifName)
 		if up {
-			w.addDeviceEvent(ctx, d.ID, "INFO", fmt.Sprintf("[PORT_UP] 端口 %s(ifIndex=%d) 状态由down变为up", ifName, ifIndex), time.Minute)
+			w.addDeviceEvent(ctx, d.ID, "INFO", fmt.Sprintf("[PORT_UP] 端口 %s 状态由down变为up", portLabel), time.Minute)
 		} else {
-			w.addDeviceEvent(ctx, d.ID, "WARNING", fmt.Sprintf("[PORT_DOWN] 端口 %s(ifIndex=%d) 状态由up变为down", ifName, ifIndex), time.Minute)
+			w.addDeviceEvent(ctx, d.ID, "WARNING", fmt.Sprintf("[PORT_DOWN] 端口 %s 状态由up变为down", portLabel), time.Minute)
 		}
 	}
+}
+
+func (w *Worker) eventPortLabel(ctx context.Context, deviceID int64, ifIndex int, fallbackName string) string {
+	rawName := strings.TrimSpace(fallbackName)
+	displayName := rawName
+	if itf, err := w.repo.GetInterfaceByDeviceIndex(ctx, deviceID, ifIndex); err == nil && itf != nil {
+		if strings.TrimSpace(itf.RawName) != "" {
+			rawName = strings.TrimSpace(itf.RawName)
+		}
+		if strings.TrimSpace(itf.Name) != "" {
+			displayName = strings.TrimSpace(itf.Name)
+		}
+	}
+	if rawName == "" {
+		rawName = fmt.Sprintf("ifIndex=%d", ifIndex)
+	}
+	if displayName == "" || displayName == rawName {
+		return fmt.Sprintf("%s(ifIndex=%d)", rawName, ifIndex)
+	}
+	return fmt.Sprintf("%s / %s(ifIndex=%d)", rawName, displayName, ifIndex)
 }
 
 func (w *Worker) addDeviceEvent(ctx context.Context, deviceID int64, level, msg string, suppressWindow time.Duration) {
