@@ -24,6 +24,12 @@ const routes = [
     meta: { title: "告警与日志" }
   },
   {
+    path: "/topology",
+    name: "topology",
+    component: () => import("../views/Topology.vue"),
+    meta: { title: "拓扑图管理" }
+  },
+  {
     path: "/settings",
     name: "system-settings",
     component: () => import("../views/SystemSettings.vue"),

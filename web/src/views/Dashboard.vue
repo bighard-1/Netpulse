@@ -11,6 +11,7 @@ import StatsCards from "../components/dashboard/StatsCards.vue";
 import LiveEventFeed from "../components/dashboard/LiveEventFeed.vue";
 import HealthTrendArea from "../components/dashboard/HealthTrendArea.vue";
 import TrafficTopBar from "../components/dashboard/TrafficTopBar.vue";
+import TopologyCanvas from "../components/topology/TopologyCanvas.vue";
 
 const ops = useOpsStore();
 const router = useRouter();
@@ -37,38 +38,15 @@ const eventPageSize = ref(20);
 const statusQuickFilter = ref("all");
 const healthRef = ref(null);
 const topNRef = ref(null);
+const topologyRef = ref(null);
 const chartRefreshKey = ref(0);
 const topTab = ref("100m");
-const statusPreviewDevices = computed(() => {
-  const offline = [];
-  const rest = [];
-  for (const d of devices.value) {
-    const item = {
-      ...d,
-      statusText: statusLabel(d),
-      statusNorm: normalizeStatus(d.status)
-    };
-    if (item.statusNorm === "offline") {
-      offline.push(item);
-    } else {
-      rest.push(item);
-    }
-  }
-  // devices itself is already sorted by core -> aggregation -> access; splitting
-  // and concatenating only lifts offline assets to the top until they recover.
-  return offline.concat(rest);
-});
-const statusPreviewSummary = computed(() => {
-  const total = devices.value.length;
-  const online = onlineCount.value;
-  const offline = devices.value.filter((d) => normalizeStatus(d.status) === "offline").length;
-  return {
-    total,
-    online,
-    offline,
-    unknown: Math.max(0, total - online - offline)
-  };
-});
+const topologyGraph = ref({ nodes: [], edges: [] });
+const topologyLoading = ref(false);
+const topologyError = ref("");
+const topologyTooltipFontSize = ref(18);
+const topologyLabelDisplayMode = ref("hover");
+const topologyLabelDisplayTiers = ref(["core"]);
 const todoActions = computed(() => {
   const out = [];
   if (devices.value.length === 0) out.push({ key: "add", title: "添加首台资产", action: () => router.push("/assets") });
@@ -238,13 +216,28 @@ async function refreshAll(opts = {}) {
   refreshInFlight = true;
   const silent = Boolean(opts.silent);
   try {
-    await Promise.all([loadDevices({ silent }), loadAlerts({ silent }), loadHealthTrend({ silent })]);
+    await Promise.all([loadDevices({ silent }), loadAlerts({ silent }), loadHealthTrend({ silent }), loadTopology({ silent })]);
     lastRefreshedAt.value = new Date().toLocaleTimeString("zh-CN", { hour12: false });
     chartRefreshKey.value += 1;
     const totalPages = Math.max(1, Math.ceil(Math.min((ops.realtimeAlerts || []).length, 100) / eventPageSize.value));
     if (eventPage.value > totalPages) eventPage.value = 1;
   } finally {
     refreshInFlight = false;
+  }
+}
+
+async function loadTopology(opts = {}) {
+  const silent = Boolean(opts.silent);
+  if (!silent) topologyLoading.value = true;
+  try {
+    const res = await api.getTopology();
+    topologyGraph.value = { nodes: res.data?.nodes || [], edges: res.data?.edges || [] };
+    topologyError.value = "";
+  } catch (err) {
+    topologyError.value = err?.response?.data?.message || err?.response?.data?.error || err?.message || "拓扑加载失败";
+    if (!silent) fb.apiError(err, "加载拓扑失败");
+  } finally {
+    if (!silent) topologyLoading.value = false;
   }
 }
 
@@ -264,6 +257,9 @@ function openDeviceDetail(row) {
   if (!row?.id) return;
   router.push(`/device/${row.id}`);
 }
+function openTopologyNode(node) {
+  if (node?.device_id) router.push(`/device/${node.device_id}`);
+}
 function openPortDetail(row) {
   if (!row?.portId) return;
   router.push({
@@ -276,6 +272,17 @@ function openPortDetail(row) {
       speedMbps: String(row.speedMbps || 0)
     }
   });
+}
+
+function loadTopologyDisplaySettings() {
+  topologyTooltipFontSize.value = Math.max(16, Number(localStorage.getItem("np_topology_tooltip_font_size") || 18));
+  topologyLabelDisplayMode.value = localStorage.getItem("np_topology_label_display_mode") || "hover";
+  try {
+    const tiers = JSON.parse(localStorage.getItem("np_topology_label_display_tiers") || "[\"core\"]");
+    topologyLabelDisplayTiers.value = Array.isArray(tiers) ? tiers : ["core"];
+  } catch {
+    topologyLabelDisplayTiers.value = ["core"];
+  }
 }
 function rankedPortsBySpeed(min, max) {
   const points = [];
@@ -340,18 +347,24 @@ function jumpToEventPort() {
 }
 
 onMounted(async () => {
+  loadTopologyDisplaySettings();
   await refreshAll();
   timer = setInterval(() => {
     refreshAll({ silent: true });
   }, 20000);
   document.addEventListener("visibilitychange", onVisibilityChange);
+  window.addEventListener("np-topology-settings-changed", loadTopologyDisplaySettings);
 });
 
-onActivated(() => refreshAll({ silent: true }));
+onActivated(() => {
+  loadTopologyDisplaySettings();
+  refreshAll({ silent: true });
+});
 
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer);
   document.removeEventListener("visibilitychange", onVisibilityChange);
+  window.removeEventListener("np-topology-settings-changed", loadTopologyDisplaySettings);
 });
 
 function onVisibilityChange() {
@@ -416,42 +429,46 @@ watch(activeDashboardModule, async () => {
       </div>
     </el-card>
 
-    <el-card class="np-device-preview-card">
+    <el-card class="np-topology-preview-card">
       <template #header>
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <span class="np-section-title text-base font-semibold">设备状态预览</span>
-            <div class="mt-1 text-xs text-slate-500">简要展示全部资产在线状态，点击设备可进入详情</div>
+            <span class="np-section-title text-base font-semibold">拓扑图预览</span>
+            <div class="mt-1 text-xs text-slate-500">默认自适应显示手动拓扑，鼠标滚轮缩放、拖拽移动，10分钟自动恢复默认视图</div>
           </div>
-          <div class="np-preview-summary">
-            <span>总数 <b>{{ statusPreviewSummary.total }}</b></span>
-            <span class="is-online">在线 <b>{{ statusPreviewSummary.online }}</b></span>
-            <span class="is-offline">离线 <b>{{ statusPreviewSummary.offline }}</b></span>
-            <span class="is-unknown">未知 <b>{{ statusPreviewSummary.unknown }}</b></span>
+          <div class="flex flex-wrap items-center gap-2">
+            <el-button size="small" @click="topologyRef?.fit()">自适应</el-button>
+            <el-button size="small" type="primary" plain @click="$router.push('/topology')">拓扑管理</el-button>
           </div>
         </div>
       </template>
-      <el-skeleton :loading="loading" animated :rows="2">
+      <el-alert
+        v-if="topologyError"
+        class="mb-3"
+        type="warning"
+        show-icon
+        :closable="false"
+        title="拓扑图暂时加载失败"
+      >
         <template #default>
-          <div v-if="statusPreviewDevices.length" class="np-device-preview-grid">
-            <button
-              v-for="d in statusPreviewDevices"
-              :key="d.id"
-              class="np-device-preview-item"
-              :class="`is-${d.statusNorm}`"
-              type="button"
-              @click="openDeviceDetail(d)"
-            >
-              <span class="inline-block shrink-0" :class="deviceStatusClass(d)" />
-              <span class="min-w-0 flex-1 text-left">
-                <span class="block truncate text-[12px] font-semibold leading-tight text-slate-800">{{ d.name || d.ip }}</span>
-                <span class="block truncate text-[10px] leading-tight text-slate-500">{{ d.ip }} · {{ d.statusText }}</span>
-              </span>
-            </button>
+          <div class="flex flex-wrap items-center gap-2">
+            <span>{{ topologyError }}</span>
+            <el-button size="small" @click="loadTopology()">重试加载拓扑</el-button>
           </div>
-          <el-empty v-else description="暂无设备，前往资产中心添加后会自动显示" :image-size="72" />
         </template>
-      </el-skeleton>
+      </el-alert>
+      <TopologyCanvas
+        ref="topologyRef"
+        :nodes="topologyGraph.nodes"
+        :edges="topologyGraph.edges"
+        :loading="topologyLoading"
+        :height="460"
+        :tooltip-font-size="topologyTooltipFontSize"
+        :label-display-mode="topologyLabelDisplayMode"
+        :label-display-tiers="topologyLabelDisplayTiers"
+        auto-fit
+        @node-open="openTopologyNode"
+      />
     </el-card>
 
     <section class="np-dashboard-shell">
@@ -716,91 +733,8 @@ watch(activeDashboardModule, async () => {
   min-width: 0;
 }
 
-:deep(.np-device-preview-card .el-card__header) {
+:deep(.np-topology-preview-card .el-card__header) {
   padding-bottom: 12px;
-}
-
-.np-preview-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.np-preview-summary span {
-  border: 1px solid #e2e8f0;
-  border-radius: 999px;
-  background: #f8fafc;
-  padding: 5px 10px;
-}
-
-.np-preview-summary .is-online {
-  color: #047857;
-  border-color: rgba(16, 185, 129, 0.22);
-  background: rgba(16, 185, 129, 0.08);
-}
-
-.np-preview-summary .is-offline {
-  color: #b91c1c;
-  border-color: rgba(239, 68, 68, 0.22);
-  background: rgba(239, 68, 68, 0.08);
-}
-
-.np-preview-summary .is-unknown {
-  color: #92400e;
-  border-color: rgba(245, 158, 11, 0.22);
-  background: rgba(245, 158, 11, 0.08);
-}
-
-.np-device-preview-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
-  gap: 6px;
-}
-
-.np-device-preview-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.96)),
-    #fff;
-  padding: 5px 7px;
-  cursor: pointer;
-  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
-}
-
-.np-device-preview-item:hover {
-  transform: translateY(-1px);
-  border-color: rgba(99, 102, 241, 0.35);
-  background: linear-gradient(135deg, #ffffff, #eef2ff);
-  box-shadow: 0 14px 28px -22px rgba(15, 23, 42, 0.45);
-}
-
-.np-device-preview-item.is-online {
-  box-shadow: inset 3px 0 0 rgba(16, 185, 129, 0.78);
-}
-
-.np-device-preview-item.is-offline {
-  box-shadow: inset 3px 0 0 rgba(239, 68, 68, 0.78);
-}
-
-.np-device-preview-item.is-unknown {
-  box-shadow: inset 3px 0 0 rgba(245, 158, 11, 0.78);
-}
-
-:deep(.np-device-preview-item .status-dot-online),
-:deep(.np-device-preview-item .status-dot-offline),
-:deep(.np-device-preview-item .status-dot-unknown) {
-  width: 9px;
-  height: 9px;
-  border-width: 1px;
-  box-shadow: none;
-  animation: none;
 }
 
 @media (max-width: 1440px) {

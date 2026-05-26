@@ -121,6 +121,27 @@ export const api = {
     const params = { q, ...(options?.params || {}) };
     return http.get("/search", { ...options, params });
   },
+  getTopology() {
+    return http.get("/topology");
+  },
+  addTopologyNode(payload) {
+    return http.post("/topology/nodes", payload);
+  },
+  updateTopologyNode(id, payload) {
+    return http.put(`/topology/nodes/${id}`, payload);
+  },
+  deleteTopologyNode(id) {
+    return http.delete(`/topology/nodes/${id}`);
+  },
+  addTopologyEdge(payload) {
+    return http.post("/topology/edges", payload);
+  },
+  updateTopologyEdge(id, payload) {
+    return http.put(`/topology/edges/${id}`, payload);
+  },
+  deleteTopologyEdge(id) {
+    return http.delete(`/topology/edges/${id}`);
+  },
   async getDeviceById(id) {
     const res = await http.get(`/devices/${id}`);
     return res.data || null;

@@ -402,6 +402,30 @@ CREATE TABLE IF NOT EXISTS topology_links (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS topology_nodes (
+    id BIGSERIAL PRIMARY KEY,
+    device_id BIGINT NOT NULL UNIQUE REFERENCES devices(id) ON DELETE CASCADE,
+    label VARCHAR(128),
+    x NUMERIC(12,2) NOT NULL DEFAULT 0,
+    y NUMERIC(12,2) NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS topology_edges (
+    id BIGSERIAL PRIMARY KEY,
+    source_node_id BIGINT NOT NULL REFERENCES topology_nodes(id) ON DELETE CASCADE,
+    target_node_id BIGINT NOT NULL REFERENCES topology_nodes(id) ON DELETE CASCADE,
+    label VARCHAR(128),
+    remark TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (source_node_id <> target_node_id),
+    UNIQUE (source_node_id, target_node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_topology_edges_source ON topology_edges(source_node_id);
+CREATE INDEX IF NOT EXISTS idx_topology_edges_target ON topology_edges(target_node_id);
+
 CREATE TABLE IF NOT EXISTS alert_rules (
     id BIGSERIAL PRIMARY KEY,
     name VARCHAR(128) NOT NULL,
@@ -901,6 +925,37 @@ type TopologyLink struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+type TopologyNode struct {
+	ID           int64     `json:"id"`
+	DeviceID     int64     `json:"device_id"`
+	Label        string    `json:"label"`
+	X            float64   `json:"x"`
+	Y            float64   `json:"y"`
+	DeviceName   string    `json:"device_name"`
+	DeviceIP     string    `json:"device_ip"`
+	DeviceBrand  string    `json:"device_brand"`
+	DeviceTier   string    `json:"device_tier"`
+	DeviceStatus string    `json:"device_status"`
+	StatusReason string    `json:"status_reason,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type TopologyEdge struct {
+	ID           int64     `json:"id"`
+	SourceNodeID int64     `json:"source_node_id"`
+	TargetNodeID int64     `json:"target_node_id"`
+	Label        string    `json:"label"`
+	Remark       string    `json:"remark"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type TopologyGraph struct {
+	Nodes []TopologyNode `json:"nodes"`
+	Edges []TopologyEdge `json:"edges"`
+}
+
 type AlertRule struct {
 	ID               int64     `json:"id"`
 	Name             string    `json:"name"`
@@ -1097,6 +1152,37 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 	`
 	if _, err := r.db.ExecContext(ctx, mig5); err != nil {
 		return fmt.Errorf("apply migration v5 failed: %w", err)
+	}
+	// v6: manually managed topology graph. Independent tables only; avoid touching metrics/views.
+	const mig6 = `
+		CREATE TABLE IF NOT EXISTS topology_nodes (
+		    id BIGSERIAL PRIMARY KEY,
+		    device_id BIGINT NOT NULL UNIQUE REFERENCES devices(id) ON DELETE CASCADE,
+		    label VARCHAR(128),
+		    x NUMERIC(12,2) NOT NULL DEFAULT 0,
+		    y NUMERIC(12,2) NOT NULL DEFAULT 0,
+		    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		CREATE TABLE IF NOT EXISTS topology_edges (
+		    id BIGSERIAL PRIMARY KEY,
+		    source_node_id BIGINT NOT NULL REFERENCES topology_nodes(id) ON DELETE CASCADE,
+		    target_node_id BIGINT NOT NULL REFERENCES topology_nodes(id) ON DELETE CASCADE,
+		    label VARCHAR(128),
+		    remark TEXT,
+		    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    CHECK (source_node_id <> target_node_id),
+		    UNIQUE (source_node_id, target_node_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_topology_edges_source ON topology_edges(source_node_id);
+		CREATE INDEX IF NOT EXISTS idx_topology_edges_target ON topology_edges(target_node_id);
+		INSERT INTO schema_migrations(version, description)
+		VALUES (6, 'add manual topology graph tables')
+		ON CONFLICT (version) DO NOTHING;
+	`
+	if _, err := r.db.ExecContext(ctx, mig6); err != nil {
+		return fmt.Errorf("apply migration v6 failed: %w", err)
 	}
 	return nil
 }
@@ -1895,6 +1981,199 @@ func (r *Repository) ListTopologyLinks(ctx context.Context) ([]TopologyLink, err
 func (r *Repository) DeleteTopologyLink(ctx context.Context, id int64) error {
 	_, err := r.db.ExecContext(ctx, `DELETE FROM topology_links WHERE id=$1;`, id)
 	return err
+}
+
+func (r *Repository) GetTopologyGraph(ctx context.Context) (*TopologyGraph, error) {
+	runtime, _ := r.GetRuntimeSettings(ctx)
+	onlineWindow := time.Duration(runtime.StatusOnlineWindowSec) * time.Second
+	if onlineWindow <= 0 {
+		onlineWindow = 5 * time.Minute
+	}
+	const nq = `
+		SELECT n.id, n.device_id, COALESCE(NULLIF(n.label,''), d.name, host(d.ip)), n.x, n.y,
+		       COALESCE(d.name, host(d.ip)), host(d.ip), COALESCE(d.brand, ''), COALESCE(d.device_tier, 'access'),
+		       lm.last_ts, COALESCE(dl.message, ''), n.created_at, n.updated_at
+		FROM topology_nodes n
+		JOIN devices d ON d.id = n.device_id
+		LEFT JOIN (
+			SELECT device_id, MAX(ts) AS last_ts
+			FROM metrics
+			GROUP BY device_id
+		) lm ON lm.device_id = d.id
+		LEFT JOIN LATERAL (
+			SELECT message
+			FROM device_logs
+			WHERE device_id = d.id
+			ORDER BY created_at DESC
+			LIMIT 1
+		) dl ON TRUE
+		ORDER BY n.id;
+	`
+	rows, err := r.db.QueryContext(ctx, nq)
+	if err != nil {
+		return nil, fmt.Errorf("query topology nodes: %w", err)
+	}
+	defer rows.Close()
+	graph := &TopologyGraph{Nodes: []TopologyNode{}, Edges: []TopologyEdge{}}
+	now := time.Now()
+	for rows.Next() {
+		var n TopologyNode
+		var lastMetricAt *time.Time
+		if err := rows.Scan(&n.ID, &n.DeviceID, &n.Label, &n.X, &n.Y, &n.DeviceName, &n.DeviceIP, &n.DeviceBrand, &n.DeviceTier, &lastMetricAt, &n.StatusReason, &n.CreatedAt, &n.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan topology node: %w", err)
+		}
+		n.DeviceStatus = "unknown"
+		if lastMetricAt != nil {
+			if now.Sub(*lastMetricAt) <= onlineWindow {
+				n.DeviceStatus = "online"
+				n.StatusReason = ""
+			} else {
+				n.DeviceStatus = "offline"
+			}
+		}
+		graph.Nodes = append(graph.Nodes, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate topology nodes: %w", err)
+	}
+	const eq = `
+		SELECT id, source_node_id, target_node_id, COALESCE(label,''), COALESCE(remark,''), created_at, updated_at
+		FROM topology_edges
+		ORDER BY id;
+	`
+	eRows, err := r.db.QueryContext(ctx, eq)
+	if err != nil {
+		return nil, fmt.Errorf("query topology edges: %w", err)
+	}
+	defer eRows.Close()
+	for eRows.Next() {
+		var e TopologyEdge
+		if err := eRows.Scan(&e.ID, &e.SourceNodeID, &e.TargetNodeID, &e.Label, &e.Remark, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan topology edge: %w", err)
+		}
+		graph.Edges = append(graph.Edges, e)
+	}
+	if err := eRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate topology edges: %w", err)
+	}
+	return graph, nil
+}
+
+func (r *Repository) AddTopologyNode(ctx context.Context, n TopologyNode) (int64, error) {
+	if n.DeviceID <= 0 {
+		return 0, fmt.Errorf("device_id is required")
+	}
+	const q = `
+		INSERT INTO topology_nodes(device_id, label, x, y)
+		VALUES($1, NULLIF($2,''), $3, $4)
+		ON CONFLICT (device_id) DO UPDATE
+		SET label = COALESCE(NULLIF(EXCLUDED.label,''), topology_nodes.label),
+		    x = EXCLUDED.x,
+		    y = EXCLUDED.y,
+		    updated_at = NOW()
+		RETURNING id;
+	`
+	var id int64
+	if err := r.db.QueryRowContext(ctx, q, n.DeviceID, strings.TrimSpace(n.Label), n.X, n.Y).Scan(&id); err != nil {
+		return 0, fmt.Errorf("add topology node: %w", err)
+	}
+	return id, nil
+}
+
+func (r *Repository) UpdateTopologyNode(ctx context.Context, n TopologyNode) error {
+	if n.ID <= 0 {
+		return fmt.Errorf("invalid topology node id")
+	}
+	const q = `
+		UPDATE topology_nodes
+		SET label = NULLIF($2,''),
+		    x = $3,
+		    y = $4,
+		    updated_at = NOW()
+		WHERE id = $1;
+	`
+	res, err := r.db.ExecContext(ctx, q, n.ID, strings.TrimSpace(n.Label), n.X, n.Y)
+	if err != nil {
+		return fmt.Errorf("update topology node: %w", err)
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (r *Repository) DeleteTopologyNode(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("invalid topology node id")
+	}
+	_, err := r.db.ExecContext(ctx, `DELETE FROM topology_nodes WHERE id=$1;`, id)
+	if err != nil {
+		return fmt.Errorf("delete topology node: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) AddTopologyEdge(ctx context.Context, e TopologyEdge) (int64, error) {
+	if e.SourceNodeID <= 0 || e.TargetNodeID <= 0 {
+		return 0, fmt.Errorf("source_node_id and target_node_id are required")
+	}
+	if e.SourceNodeID == e.TargetNodeID {
+		return 0, fmt.Errorf("source and target nodes cannot be the same")
+	}
+	const q = `
+		INSERT INTO topology_edges(source_node_id, target_node_id, label, remark)
+		VALUES($1, $2, NULLIF($3,''), NULLIF($4,''))
+		ON CONFLICT (source_node_id, target_node_id) DO UPDATE
+		SET label = COALESCE(NULLIF(EXCLUDED.label,''), topology_edges.label),
+		    remark = COALESCE(NULLIF(EXCLUDED.remark,''), topology_edges.remark),
+		    updated_at = NOW()
+		RETURNING id;
+	`
+	var id int64
+	if err := r.db.QueryRowContext(ctx, q, e.SourceNodeID, e.TargetNodeID, strings.TrimSpace(e.Label), strings.TrimSpace(e.Remark)).Scan(&id); err != nil {
+		return 0, fmt.Errorf("add topology edge: %w", err)
+	}
+	return id, nil
+}
+
+func (r *Repository) UpdateTopologyEdge(ctx context.Context, e TopologyEdge) error {
+	if e.ID <= 0 {
+		return fmt.Errorf("invalid topology edge id")
+	}
+	if e.SourceNodeID <= 0 || e.TargetNodeID <= 0 {
+		return fmt.Errorf("source_node_id and target_node_id are required")
+	}
+	if e.SourceNodeID == e.TargetNodeID {
+		return fmt.Errorf("source and target nodes cannot be the same")
+	}
+	const q = `
+		UPDATE topology_edges
+		SET source_node_id=$2,
+		    target_node_id=$3,
+		    label=NULLIF($4,''),
+		    remark=NULLIF($5,''),
+		    updated_at=NOW()
+		WHERE id=$1;
+	`
+	res, err := r.db.ExecContext(ctx, q, e.ID, e.SourceNodeID, e.TargetNodeID, strings.TrimSpace(e.Label), strings.TrimSpace(e.Remark))
+	if err != nil {
+		return fmt.Errorf("update topology edge: %w", err)
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (r *Repository) DeleteTopologyEdge(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("invalid topology edge id")
+	}
+	_, err := r.db.ExecContext(ctx, `DELETE FROM topology_edges WHERE id=$1;`, id)
+	if err != nil {
+		return fmt.Errorf("delete topology edge: %w", err)
+	}
+	return nil
 }
 
 func (r *Repository) FindDeviceByIP(ctx context.Context, ip string) (*Device, error) {

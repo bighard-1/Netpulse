@@ -67,6 +67,7 @@ const menuItems = [
   { path: "/dashboard", label: "仪表盘" },
   { path: "/assets", label: "资产中心" },
   { path: "/alerts", label: "告警与日志" },
+  { path: "/topology", label: "拓扑图" },
   { path: "/settings", label: "设置" }
 ];
 
@@ -99,6 +100,7 @@ function highlightText(text) {
 const activeMenu = computed(() => {
   if (route.path.startsWith("/assets") || route.path.startsWith("/device/") || route.path.startsWith("/port/")) return "/assets";
   if (route.path.startsWith("/alerts")) return "/alerts";
+  if (route.path.startsWith("/topology")) return "/topology";
   if (route.path.startsWith("/settings")) return "/settings";
   return "/dashboard";
 });
@@ -353,6 +355,17 @@ watch(
   }
 );
 
+watch(
+  () => auth.isAdmin,
+  (ok) => {
+    if (ok) return;
+    editMode.value = false;
+    localStorage.setItem("np_edit_mode", "0");
+    window.dispatchEvent(new CustomEvent("np-edit-mode", { detail: { enabled: false } }));
+  },
+  { immediate: true }
+);
+
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
   window.removeEventListener("keydown", onGlobalKeydown);
@@ -391,9 +404,6 @@ onBeforeUnmount(() => {
             <el-button v-if="isAdmin" size="small" :type="editMode ? 'warning' : 'primary'" plain @click="toggleEditMode">
               {{ editMode ? "退出编辑模式" : "进入编辑模式" }}
             </el-button>
-            <el-tooltip v-if="!isAdmin" content="仅管理员可管理用户" placement="top">
-              <el-button size="small" disabled>用户管理</el-button>
-            </el-tooltip>
             <el-button v-if="isAdmin" size="small" @click="openUsers">用户管理</el-button>
             <el-button size="small" plain @click="openQuickSearch">Ctrl+K</el-button>
             <el-button size="small" type="danger" plain @click="logout">退出</el-button>
