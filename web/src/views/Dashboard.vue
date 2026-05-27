@@ -38,7 +38,8 @@ const eventPageSize = ref(20);
 const eventFilterKeyword = ref("");
 const eventFilterType = ref("all");
 const eventFilterLevel = ref("all");
-const eventFilterRange = ref([]);
+const eventFilterStart = ref("");
+const eventFilterEnd = ref("");
 const statusQuickFilter = ref("all");
 const healthRef = ref(null);
 const topNRef = ref(null);
@@ -85,9 +86,8 @@ const filteredAlerts = computed(() => {
   const kw = eventFilterKeyword.value.trim().toLowerCase();
   const type = eventFilterType.value;
   const level = eventFilterLevel.value;
-  const range = Array.isArray(eventFilterRange.value) ? eventFilterRange.value : [];
-  const start = range[0] ? new Date(range[0]).getTime() : 0;
-  const end = range[1] ? new Date(range[1]).getTime() : 0;
+  const start = eventFilterStart.value ? new Date(eventFilterStart.value).getTime() : 0;
+  const end = eventFilterEnd.value ? new Date(eventFilterEnd.value).getTime() : 0;
   return (ops.realtimeAlerts || []).filter((item) => {
     if (type !== "all" && String(item.type || item.event_type || "") !== type) return false;
     if (level !== "all") {
@@ -250,7 +250,8 @@ function resetEventFilters() {
   eventFilterKeyword.value = "";
   eventFilterType.value = "all";
   eventFilterLevel.value = "all";
-  eventFilterRange.value = [];
+  eventFilterStart.value = "";
+  eventFilterEnd.value = "";
   eventPage.value = 1;
 }
 
@@ -524,7 +525,7 @@ watch(activeDashboardModule, async () => {
         <el-tabs v-model="activeDashboardModule" class="np-dashboard-tabs">
           <el-tab-pane label="实时事件流" name="events">
             <div class="np-event-query mb-3 rounded-xl border border-slate-200 bg-slate-50/80 p-3">
-              <div class="grid grid-cols-1 gap-2 xl:grid-cols-[minmax(220px,1fr)_150px_150px_minmax(280px,360px)_auto]">
+              <div class="grid grid-cols-1 gap-2 2xl:grid-cols-[minmax(220px,1fr)_140px_140px_190px_190px_auto]">
                 <el-input
                   v-model="eventFilterKeyword"
                   placeholder="查询资产名称 / IP / 端口名称 / 事件内容"
@@ -546,15 +547,22 @@ watch(activeDashboardModule, async () => {
                   <el-option label="严重" value="critical" />
                 </el-select>
                 <el-date-picker
-                  v-model="eventFilterRange"
-                  type="datetimerange"
-                  start-placeholder="开始时间"
-                  end-placeholder="结束时间"
-                  range-separator="至"
-                  value-format="YYYY-MM-DDTHH:mm:ssZ"
+                  v-model="eventFilterStart"
+                  type="datetime"
+                  placeholder="开始时间"
+                  format="YYYY-MM-DD HH:mm"
+                  value-format="YYYY-MM-DD HH:mm:ss"
                   class="w-full"
                 />
-                <div class="flex items-center gap-2">
+                <el-date-picker
+                  v-model="eventFilterEnd"
+                  type="datetime"
+                  placeholder="结束时间"
+                  format="YYYY-MM-DD HH:mm"
+                  value-format="YYYY-MM-DD HH:mm:ss"
+                  class="w-full"
+                />
+                <div class="flex items-center gap-2 whitespace-nowrap">
                   <el-button type="primary" @click="applyEventFilters">查询</el-button>
                   <el-button @click="resetEventFilters">重置</el-button>
                 </div>
