@@ -15,7 +15,8 @@ const props = defineProps({
   labelDisplayTiers: { type: Array, default: () => ["core"] },
   autoResetMs: { type: Number, default: 600000 },
   fitMaxWidth: { type: Number, default: 0 },
-  fitMaxHeight: { type: Number, default: 0 }
+  fitMaxHeight: { type: Number, default: 0 },
+  wheelZoom: { type: Boolean, default: true }
 });
 
 const emit = defineEmits(["node-move", "node-open", "node-delete", "edge-delete"]);
@@ -161,6 +162,7 @@ function clientToSvg(e) {
 }
 
 function onWheel(e) {
+  if (!props.wheelZoom) return;
   if (!normalizedNodes.value.length) return;
   e.preventDefault();
   const factor = e.deltaY < 0 ? 0.88 : 1.14;

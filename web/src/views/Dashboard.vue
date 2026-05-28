@@ -40,6 +40,7 @@ const eventFilterType = ref("all");
 const eventFilterLevel = ref("all");
 const eventFilterStart = ref("");
 const eventFilterEnd = ref("");
+const showEventFilters = ref(false);
 const statusQuickFilter = ref("all");
 const healthRef = ref(null);
 const topNRef = ref(null);
@@ -52,6 +53,7 @@ const topologyError = ref("");
 const topologyTooltipFontSize = ref(18);
 const topologyLabelDisplayMode = ref("hover");
 const topologyLabelDisplayTiers = ref(["core"]);
+const topologyWheelZoomEnabled = ref(false);
 const todoActions = computed(() => {
   const out = [];
   if (devices.value.length === 0) out.push({ key: "add", title: "添加首台资产", action: () => router.push("/assets") });
@@ -483,9 +485,17 @@ watch(activeDashboardModule, async () => {
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div>
             <span class="np-section-title text-base font-semibold">拓扑图预览</span>
-            <div class="mt-1 text-xs text-slate-500">默认自适应显示手动拓扑，鼠标滚轮缩放、拖拽移动，10分钟自动恢复默认视图</div>
+            <div class="mt-1 text-xs text-slate-500">默认自适应显示手动拓扑，支持拖拽移动，滚轮缩放默认关闭，10分钟自动恢复默认视图</div>
           </div>
           <div class="flex flex-wrap items-center gap-2">
+            <el-button
+              size="small"
+              :type="topologyWheelZoomEnabled ? 'primary' : 'default'"
+              plain
+              @click="topologyWheelZoomEnabled = !topologyWheelZoomEnabled"
+            >
+              滚轮缩放{{ topologyWheelZoomEnabled ? "已开" : "已关" }}
+            </el-button>
             <el-button size="small" @click="topologyRef?.fit()">自适应</el-button>
             <el-button size="small" type="primary" plain @click="$router.push('/topology')">拓扑管理</el-button>
           </div>
@@ -515,6 +525,7 @@ watch(activeDashboardModule, async () => {
         :tooltip-font-size="topologyTooltipFontSize"
         :label-display-mode="topologyLabelDisplayMode"
         :label-display-tiers="topologyLabelDisplayTiers"
+        :wheel-zoom="topologyWheelZoomEnabled"
         auto-fit
         @node-open="openTopologyNode"
       />
@@ -524,7 +535,13 @@ watch(activeDashboardModule, async () => {
       <el-card class="np-module-card">
         <el-tabs v-model="activeDashboardModule" class="np-dashboard-tabs">
           <el-tab-pane label="实时事件流" name="events">
-            <div class="np-event-query mb-3 rounded-xl border border-slate-200 bg-slate-50/80 p-3">
+            <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div class="text-xs text-slate-500">默认展示最新事件，需要筛选时可展开查询条件</div>
+              <el-button size="small" @click="showEventFilters = !showEventFilters">
+                {{ showEventFilters ? "隐藏查询" : "展开查询" }}
+              </el-button>
+            </div>
+            <div v-show="showEventFilters" class="np-event-query mb-3 rounded-xl border border-slate-200 bg-slate-50/80 p-3">
               <div class="grid grid-cols-1 gap-2 2xl:grid-cols-[minmax(220px,1fr)_140px_140px_190px_190px_auto]">
                 <el-input
                   v-model="eventFilterKeyword"
