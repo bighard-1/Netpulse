@@ -1202,6 +1202,44 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 	if _, err := r.db.ExecContext(ctx, mig7); err != nil {
 		return fmt.Errorf("apply migration v7 failed: %w", err)
 	}
+	// v8: latest metric cache tables. Dashboard and device summary pages should
+	// not scan the historical Timescale hypertable to find one latest point per
+	// interface on every refresh.
+	const mig8 = `
+		CREATE TABLE IF NOT EXISTS device_latest_metrics (
+		    device_id BIGINT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+		    ts TIMESTAMPTZ NOT NULL,
+		    cpu_usage NUMERIC(5,2),
+		    memory_usage NUMERIC(5,2),
+		    storage_usage NUMERIC(5,2),
+		    storage_total NUMERIC(20,2),
+		    storage_free NUMERIC(20,2),
+		    uptime_sec BIGINT,
+		    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		CREATE TABLE IF NOT EXISTS interface_latest_metrics (
+		    interface_id BIGINT PRIMARY KEY REFERENCES interfaces(id) ON DELETE CASCADE,
+		    device_id BIGINT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+		    ts TIMESTAMPTZ NOT NULL,
+		    traffic_in_bps BIGINT,
+		    traffic_out_bps BIGINT,
+		    traffic_in_status VARCHAR(32),
+		    traffic_out_status VARCHAR(32),
+		    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS idx_interface_latest_metrics_device
+			ON interface_latest_metrics(device_id);
+		CREATE INDEX IF NOT EXISTS idx_interface_latest_metrics_ts
+			ON interface_latest_metrics(ts DESC);
+		CREATE INDEX IF NOT EXISTS idx_device_latest_metrics_ts
+			ON device_latest_metrics(ts DESC);
+		INSERT INTO schema_migrations(version, description)
+		VALUES (8, 'add latest metric cache tables')
+		ON CONFLICT (version) DO NOTHING;
+	`
+	if _, err := r.db.ExecContext(ctx, mig8); err != nil {
+		return fmt.Errorf("apply migration v8 failed: %w", err)
+	}
 	return nil
 }
 
@@ -1465,13 +1503,9 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 		       COALESCE(d.maintenance_mode, FALSE),
 		       COALESCE(NULLIF(d.device_tier,''), 'access'),
 		       COALESCE(d.poll_interval_sec,0), COALESCE(d.cpu_threshold,0), COALESCE(d.mem_threshold,0),
-		       COALESCE(d.remark, ''), d.created_at, lm.last_ts, COALESCE(dl.message, ''), COALESCE(lm2.uptime_sec, 0)
+		       COALESCE(d.remark, ''), d.created_at, lm.ts AS last_ts, COALESCE(dl.message, ''), COALESCE(lm.uptime_sec, 0)
 		FROM devices d
-		LEFT JOIN (
-			SELECT device_id, MAX(ts) AS last_ts
-			FROM metrics
-			GROUP BY device_id
-		) lm ON lm.device_id = d.id
+		LEFT JOIN device_latest_metrics lm ON lm.device_id = d.id
 		LEFT JOIN LATERAL (
 			SELECT message
 			FROM device_logs
@@ -1479,13 +1513,6 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 			ORDER BY created_at DESC
 			LIMIT 1
 		) dl ON TRUE
-		LEFT JOIN LATERAL (
-			SELECT uptime_sec
-			FROM metrics
-			WHERE device_id = d.id
-			ORDER BY ts DESC
-			LIMIT 1
-		) lm2 ON TRUE
 		WHERE d.id = $1;
 	`
 	var ds DeviceStatus
@@ -1527,13 +1554,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 		       COALESCE(m.traffic_in_bps, 0),
 		       COALESCE(m.traffic_out_bps, 0)
 		FROM interfaces i
-		LEFT JOIN LATERAL (
-			SELECT traffic_in_bps, traffic_out_bps
-			FROM metrics
-			WHERE interface_id = i.id
-			ORDER BY ts DESC
-			LIMIT 1
-		) m ON TRUE
+		LEFT JOIN interface_latest_metrics m ON m.interface_id = i.id
 		WHERE i.device_id = $1
 		ORDER BY i."index";
 	`
@@ -2350,18 +2371,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		onlineWindow = 5 * time.Minute
 	}
 	const q = `
-		WITH latest_device_metrics AS (
-			SELECT DISTINCT ON (device_id)
-			       device_id,
-			       ts AS last_ts,
-			       storage_usage,
-			       storage_total,
-			       storage_free,
-			       uptime_sec
-			FROM metrics
-			ORDER BY device_id, ts DESC
-		),
-		latest_device_logs AS (
+		WITH latest_device_logs AS (
 			SELECT DISTINCT ON (device_id)
 			       device_id,
 			       message
@@ -2374,10 +2384,10 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		       COALESCE(d.maintenance_mode,FALSE),
 		       COALESCE(NULLIF(d.device_tier,''), 'access'),
 		       COALESCE(d.poll_interval_sec,0), COALESCE(d.cpu_threshold,0), COALESCE(d.mem_threshold,0),
-		       COALESCE(d.remark, ''), d.created_at, lm.last_ts, COALESCE(dl.message, ''),
+		       COALESCE(d.remark, ''), d.created_at, lm.ts AS last_ts, COALESCE(dl.message, ''),
 		       COALESCE(lm.storage_usage, 0), COALESCE(lm.storage_total, 0), COALESCE(lm.storage_free, 0), COALESCE(lm.uptime_sec, 0)
 		FROM devices d
-		LEFT JOIN latest_device_metrics lm ON lm.device_id = d.id
+		LEFT JOIN device_latest_metrics lm ON lm.device_id = d.id
 		LEFT JOIN latest_device_logs dl ON dl.device_id = d.id
 		ORDER BY d.id;
 	`
@@ -2426,15 +2436,6 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 	}
 
 	const iq = `
-		WITH latest_metrics AS (
-			SELECT DISTINCT ON (interface_id)
-			       interface_id,
-			       traffic_in_bps,
-			       traffic_out_bps
-			FROM metrics
-			WHERE interface_id IS NOT NULL
-			ORDER BY interface_id, ts DESC
-		)
 		SELECT i.id, i.device_id, i."index",
 		       COALESCE(NULLIF(i.custom_name,''), i.name) AS display_name,
 		       i.name AS raw_name,
@@ -2445,7 +2446,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		       COALESCE(m.traffic_in_bps, 0),
 		       COALESCE(m.traffic_out_bps, 0)
 		FROM interfaces i
-		LEFT JOIN latest_metrics m ON m.interface_id = i.id
+		LEFT JOIN interface_latest_metrics m ON m.interface_id = i.id
 		ORDER BY i.device_id, i."index";
 	`
 	iRows, err := r.db.QueryContext(ctx, iq)
@@ -2572,11 +2573,29 @@ func (r *Repository) SaveMetrics(
 					ELSE interfaces.admin_status
 				END
 			RETURNING id
+		),
+		inserted_metric AS (
+			INSERT INTO metrics (
+				ts, device_id, interface_id, cpu_usage, memory_usage, storage_usage, storage_total, storage_free, uptime_sec, traffic_in_bps, traffic_out_bps, traffic_in_status, traffic_out_status
+			)
+			VALUES ($1, $2, (SELECT id FROM upsert_if LIMIT 1), $5, $6, $7, $8, $9, $10, $11, $12, $15, $16)
+			RETURNING interface_id
 		)
-		INSERT INTO metrics (
-			ts, device_id, interface_id, cpu_usage, memory_usage, storage_usage, storage_total, storage_free, uptime_sec, traffic_in_bps, traffic_out_bps, traffic_in_status, traffic_out_status
+		INSERT INTO interface_latest_metrics (
+			interface_id, device_id, ts, traffic_in_bps, traffic_out_bps, traffic_in_status, traffic_out_status, updated_at
 		)
-		VALUES ($1, $2, (SELECT id FROM upsert_if LIMIT 1), $5, $6, $7, $8, $9, $10, $11, $12, $15, $16);
+		SELECT interface_id, $2, $1, $11, $12, $15, $16, NOW()
+		FROM inserted_metric
+		ON CONFLICT (interface_id)
+		DO UPDATE SET
+			device_id = EXCLUDED.device_id,
+			ts = EXCLUDED.ts,
+			traffic_in_bps = EXCLUDED.traffic_in_bps,
+			traffic_out_bps = EXCLUDED.traffic_out_bps,
+			traffic_in_status = EXCLUDED.traffic_in_status,
+			traffic_out_status = EXCLUDED.traffic_out_status,
+			updated_at = NOW()
+		WHERE interface_latest_metrics.ts <= EXCLUDED.ts;
 	`
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2596,6 +2615,40 @@ func (r *Repository) SaveMetrics(
 			ctx, q, ts, deviceID, m.IfIndex, m.IfName, cpu, mem, clampPercent(m.StorageUsage), clampNonNegative(m.StorageTotal), clampNonNegative(m.StorageFree), m.UptimeSec, inBps, outBps, m.SpeedMbps, m.OperStatus, strings.TrimSpace(m.TrafficInStat), strings.TrimSpace(m.TrafficOutStat), m.AdminStatus,
 		); err != nil {
 			return fmt.Errorf("insert metric ifIndex=%d: %w", m.IfIndex, err)
+		}
+	}
+	if len(metrics) > 0 {
+		m := metrics[0]
+		const latestDeviceQ = `
+			INSERT INTO device_latest_metrics (
+				device_id, ts, cpu_usage, memory_usage, storage_usage, storage_total, storage_free, uptime_sec, updated_at
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+			ON CONFLICT (device_id)
+			DO UPDATE SET
+				ts = EXCLUDED.ts,
+				cpu_usage = EXCLUDED.cpu_usage,
+				memory_usage = EXCLUDED.memory_usage,
+				storage_usage = EXCLUDED.storage_usage,
+				storage_total = EXCLUDED.storage_total,
+				storage_free = EXCLUDED.storage_free,
+				uptime_sec = EXCLUDED.uptime_sec,
+				updated_at = NOW()
+			WHERE device_latest_metrics.ts <= EXCLUDED.ts;
+		`
+		if _, err := tx.ExecContext(
+			ctx,
+			latestDeviceQ,
+			deviceID,
+			ts,
+			clampPercent(m.CPUUsage),
+			clampPercent(m.MemoryUsage),
+			clampPercent(m.StorageUsage),
+			clampNonNegative(m.StorageTotal),
+			clampNonNegative(m.StorageFree),
+			m.UptimeSec,
+		); err != nil {
+			return fmt.Errorf("upsert device latest metric: %w", err)
 		}
 	}
 
@@ -2689,13 +2742,7 @@ func (r *Repository) GetInterfaceByID(ctx context.Context, id int64) (*Interface
 		       COALESCE(m.traffic_out_bps, 0)
 		FROM interfaces i
 		JOIN devices d ON d.id = i.device_id
-		LEFT JOIN LATERAL (
-			SELECT traffic_in_bps, traffic_out_bps
-			FROM metrics
-			WHERE interface_id = i.id
-			ORDER BY ts DESC
-			LIMIT 1
-		) m ON TRUE
+		LEFT JOIN interface_latest_metrics m ON m.interface_id = i.id
 		WHERE i.id = $1
 		LIMIT 1;
 	`
@@ -3512,13 +3559,6 @@ func (r *Repository) GetInterfaceTopBySpeedClass(ctx context.Context, speedMin, 
 		limit = 5
 	}
 	const q = `
-		WITH latest_metrics AS (
-			SELECT DISTINCT ON (interface_id)
-			       interface_id, traffic_in_bps, traffic_out_bps
-			FROM metrics
-			WHERE interface_id IS NOT NULL
-			ORDER BY interface_id, ts DESC
-		)
 		SELECT i.id, i.device_id, i."index",
 		       COALESCE(NULLIF(i.custom_name,''), i.name) AS display_name,
 		       i.name AS raw_name,
@@ -3529,7 +3569,7 @@ func (r *Repository) GetInterfaceTopBySpeedClass(ctx context.Context, speedMin, 
 		       COALESCE(m.traffic_in_bps, 0),
 		       COALESCE(m.traffic_out_bps, 0)
 		FROM interfaces i
-		LEFT JOIN latest_metrics m ON m.interface_id = i.id
+		LEFT JOIN interface_latest_metrics m ON m.interface_id = i.id
 		WHERE i.speed_mbps >= $1 AND ($2 = 0 OR i.speed_mbps < $2)
 		ORDER BY (COALESCE(m.traffic_in_bps, 0) + COALESCE(m.traffic_out_bps, 0)) DESC
 		LIMIT $3;

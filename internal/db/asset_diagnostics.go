@@ -104,12 +104,23 @@ func (r *Repository) DiagnoseAssetLoad(ctx context.Context) (*AssetLoadDiagnosti
 			"idx_metrics_device_ts",
 			"idx_device_logs_device_created_at",
 			"idx_interfaces_device_index",
+			"idx_interface_latest_metrics_device",
+			"idx_interface_latest_metrics_ts",
+			"idx_device_latest_metrics_ts",
 		}
 		rows, err := r.db.QueryContext(ctx, `
 			SELECT indexname
 			FROM pg_indexes
 			WHERE schemaname = 'public'
-			  AND indexname IN ('idx_metrics_interface_ts','idx_metrics_device_ts','idx_device_logs_device_created_at','idx_interfaces_device_index');
+			  AND indexname IN (
+			    'idx_metrics_interface_ts',
+			    'idx_metrics_device_ts',
+			    'idx_device_logs_device_created_at',
+			    'idx_interfaces_device_index',
+			    'idx_interface_latest_metrics_device',
+			    'idx_interface_latest_metrics_ts',
+			    'idx_device_latest_metrics_ts'
+			  );
 		`)
 		if err != nil {
 			return "", "请确认数据库用户具备读取 pg_indexes 的权限。", fmt.Errorf("检查索引失败: %w", err)
@@ -139,21 +150,20 @@ func (r *Repository) DiagnoseAssetLoad(ctx context.Context) (*AssetLoadDiagnosti
 	})
 
 	run("最新端口指标查询", 1500, 8000, func(ctx context.Context) (string, string, error) {
-		var count int
+		var total, recent int
 		err := r.db.QueryRowContext(ctx, `
-			WITH latest_metrics AS (
-				SELECT DISTINCT ON (interface_id)
-				       interface_id, traffic_in_bps, traffic_out_bps
-				FROM metrics
-				WHERE interface_id IS NOT NULL
-				ORDER BY interface_id, ts DESC
-			)
-			SELECT COUNT(*) FROM latest_metrics;
-		`).Scan(&count)
+			SELECT
+			  COUNT(*),
+			  COUNT(*) FILTER (WHERE ts >= NOW() - INTERVAL '10 minutes')
+			FROM interface_latest_metrics;
+		`).Scan(&total, &recent)
 		if err != nil {
-			return "", "这通常会直接拖慢首页资产加载，请检查 metrics 相关索引和 TimescaleDB 状态。", fmt.Errorf("查询最新端口指标失败: %w", err)
+			return "", "请确认自动迁移已创建 interface_latest_metrics，或重启 NetPulse 触发 schema migration。", fmt.Errorf("查询最新端口缓存失败: %w", err)
 		}
-		return fmt.Sprintf("可读取 %d 个端口的最新指标", count), "若此项耗时较高，优先检查 idx_metrics_interface_ts 是否存在，并观察数据库 IO/CPU。", nil
+		if report.InterfaceCount > 0 && total == 0 {
+			return "", "最新指标缓存需要至少等待一个轮询周期写入；若长时间为空，请检查 SNMP worker 是否正常。", fmt.Errorf("最新端口指标缓存为空")
+		}
+		return fmt.Sprintf("最新指标缓存 %d 个端口，其中近10分钟 %d 个端口", total, recent), "若缓存数量明显少于端口数量，请等待对应设备层级的轮询周期，或检查轮询失败日志。", nil
 	})
 
 	run("完整资产接口模拟", 3000, 12000, func(ctx context.Context) (string, string, error) {
