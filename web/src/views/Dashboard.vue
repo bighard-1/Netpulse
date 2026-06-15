@@ -463,6 +463,14 @@ watch(activeDashboardModule, async () => {
         <div class="flex flex-wrap items-center gap-2">
           <span>{{ deviceLoadError }}</span>
           <el-button size="small" @click="loadDevices()">重试加载资产</el-button>
+          <el-button
+            size="small"
+            type="primary"
+            plain
+            @click="$router.push({ path: '/alerts', query: { tab: 'asset-diagnosis' } })"
+          >
+            打开资产加载诊断
+          </el-button>
         </div>
       </template>
     </el-alert>

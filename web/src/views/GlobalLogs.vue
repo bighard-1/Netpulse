@@ -1,13 +1,19 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
+import { useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import { api, getApiError } from "../services/api";
+import { useAuthStore } from "../stores/auth";
 
+const route = useRoute();
+const auth = useAuthStore();
 const loadingAudit = ref(false);
 const loadingAlerts = ref(false);
+const loadingDiagnosis = ref(false);
 const activeTab = ref("alerts");
 const audits = ref([]);
 const alertEvents = ref([]);
+const assetDiagnosis = ref(null);
 const alertStatus = ref("");
 const workflowDialog = ref(false);
 const wfForm = ref({ id: null, action: "ack", assignee: "", note: "", silence_minutes: 30 });
@@ -20,6 +26,7 @@ const alertStatusOptions = [
   { label: "Resolved", value: "resolved" }
 ];
 
+const isAdmin = computed(() => Boolean(auth.isAdmin));
 const canUpdateWorkflow = computed(() => true);
 
 function levelTagType(level) {
@@ -30,6 +37,7 @@ function levelTagType(level) {
 }
 
 async function loadAuditLogs() {
+  if (!isAdmin.value) return;
   loadingAudit.value = true;
   try {
     const res = await api.listAuditLogs();
@@ -39,6 +47,32 @@ async function loadAuditLogs() {
   } finally {
     loadingAudit.value = false;
   }
+}
+
+async function runAssetDiagnosis() {
+  if (!isAdmin.value) return;
+  loadingDiagnosis.value = true;
+  try {
+    const res = await api.diagnoseAssetLoad();
+    assetDiagnosis.value = res.data || null;
+  } catch (err) {
+    ElMessage.error(getApiError(err, "资产加载诊断失败"));
+  } finally {
+    loadingDiagnosis.value = false;
+  }
+}
+
+function checkTagType(status) {
+  if (status === "critical") return "danger";
+  if (status === "warning") return "warning";
+  return "success";
+}
+
+function refreshActiveTab() {
+  if (activeTab.value === "alerts") return loadAlertEvents();
+  if (activeTab.value === "audit") return loadAuditLogs();
+  if (activeTab.value === "asset-diagnosis") return runAssetDiagnosis();
+  return Promise.resolve();
 }
 
 async function loadAlertEvents() {
@@ -81,7 +115,13 @@ async function saveWorkflow() {
 }
 
 onMounted(async () => {
+  if (route.query.tab === "asset-diagnosis" && isAdmin.value) {
+    activeTab.value = "asset-diagnosis";
+  }
   await Promise.all([loadAlertEvents(), loadAuditLogs()]);
+  if (activeTab.value === "asset-diagnosis") {
+    await runAssetDiagnosis();
+  }
 });
 </script>
 
@@ -94,14 +134,15 @@ onMounted(async () => {
           <el-select v-if="activeTab === 'alerts'" v-model="alertStatus" class="w-[140px]" @change="loadAlertEvents">
             <el-option v-for="x in alertStatusOptions" :key="x.value" :label="x.label" :value="x.value" />
           </el-select>
-          <el-button @click="activeTab === 'alerts' ? loadAlertEvents() : loadAuditLogs()">刷新</el-button>
+          <el-button @click="refreshActiveTab">刷新</el-button>
         </div>
       </div>
     </template>
 
     <el-tabs v-model="activeTab">
       <el-tab-pane label="事件工作台" name="alerts" />
-      <el-tab-pane label="审计日志" name="audit" />
+      <el-tab-pane v-if="isAdmin" label="资产加载诊断" name="asset-diagnosis" />
+      <el-tab-pane v-if="isAdmin" label="审计日志" name="audit" />
     </el-tabs>
 
     <el-table v-if="activeTab === 'alerts'" :data="alertEvents" v-loading="loadingAlerts" class="np-borderless-table" height="620">
@@ -123,6 +164,68 @@ onMounted(async () => {
         </template>
       </el-table-column>
     </el-table>
+
+    <div v-else-if="activeTab === 'asset-diagnosis'" v-loading="loadingDiagnosis" class="space-y-4">
+      <el-alert
+        type="info"
+        show-icon
+        :closable="false"
+        title="用于排查首页“资产数据暂时加载失败 / timeout of 20000ms exceeded”"
+      >
+        <template #default>
+          <div class="flex flex-wrap items-center gap-2">
+            <span>检测会评估资产规模、关键索引、最新端口指标查询、完整资产接口模拟和指标入库延迟。</span>
+            <el-button size="small" type="primary" @click="runAssetDiagnosis">开始检测</el-button>
+          </div>
+        </template>
+      </el-alert>
+
+      <el-empty v-if="!assetDiagnosis" description="尚未执行诊断，点击“开始检测”获取结果。" />
+
+      <template v-else>
+        <div class="grid grid-cols-1 gap-3 md:grid-cols-4">
+          <div class="rounded-xl bg-slate-50 p-4">
+            <div class="text-xs text-slate-500">总体状态</div>
+            <el-tag class="mt-2" :type="checkTagType(assetDiagnosis.overall_status)">
+              {{ assetDiagnosis.overall_status }}
+            </el-tag>
+          </div>
+          <div class="rounded-xl bg-slate-50 p-4">
+            <div class="text-xs text-slate-500">设备数量</div>
+            <div class="mt-1 text-2xl font-semibold">{{ assetDiagnosis.device_count || 0 }}</div>
+          </div>
+          <div class="rounded-xl bg-slate-50 p-4">
+            <div class="text-xs text-slate-500">端口数量</div>
+            <div class="mt-1 text-2xl font-semibold">{{ assetDiagnosis.interface_count || 0 }}</div>
+          </div>
+          <div class="rounded-xl bg-slate-50 p-4">
+            <div class="text-xs text-slate-500">近1小时指标样本</div>
+            <div class="mt-1 text-2xl font-semibold">{{ assetDiagnosis.recent_metric_count || 0 }}</div>
+          </div>
+        </div>
+
+        <el-table :data="assetDiagnosis.checks || []" class="np-borderless-table" height="380">
+          <el-table-column prop="name" label="检测项" width="180" />
+          <el-table-column label="状态" width="110">
+            <template #default="{ row }">
+              <el-tag size="small" :type="checkTagType(row.status)">{{ row.status }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="duration_ms" label="耗时(ms)" width="110" />
+          <el-table-column prop="detail" label="检测结果" min-width="280" />
+          <el-table-column prop="suggestion" label="建议" min-width="320" />
+        </el-table>
+
+        <el-card shadow="never">
+          <template #header><span class="font-semibold">综合建议</span></template>
+          <ul class="space-y-2 text-sm text-slate-700">
+            <li v-for="item in assetDiagnosis.suggestions || []" :key="item" class="rounded-lg bg-slate-50 p-3">
+              {{ item }}
+            </li>
+          </ul>
+        </el-card>
+      </template>
+    </div>
 
     <el-table v-else :data="audits" v-loading="loadingAudit" class="np-borderless-table" height="620">
       <el-table-column prop="timestamp" label="时间" width="190" />

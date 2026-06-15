@@ -81,6 +81,7 @@ func (h *Handler) Router() http.Handler {
 		pr.Get("/api/events/recent", h.handleRecentEvents)
 		pr.With(h.requirePermission("logs.read")).Get("/api/alerts/events", h.handleListAlertEvents)
 		pr.With(h.adminOnly).Put("/api/alerts/events/{id}", h.handleUpdateAlertEventWorkflow)
+		pr.With(h.adminOnly).Get("/api/diagnostics/asset-load", h.handleAssetLoadDiagnostics)
 		pr.Get("/api/system/health", h.handleSystemHealthTrend)
 		pr.With(h.adminOnly).Get("/api/system/ops", h.handleSystemOps)
 		pr.With(h.adminOnly).Get("/api/system/inspection-bundle", h.handleInspectionBundle)

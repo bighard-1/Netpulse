@@ -269,6 +269,9 @@ export const api = {
   listAlertEvents(limit = 200, status = "") {
     return http.get("/alerts/events", { params: { limit, status } });
   },
+  diagnoseAssetLoad() {
+    return http.get("/diagnostics/asset-load", { timeout: LONG_RUNNING_TIMEOUT_MS });
+  },
   updateAlertEvent(id, payload) {
     return http.put(`/alerts/events/${id}`, payload);
   },

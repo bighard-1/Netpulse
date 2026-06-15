@@ -1188,6 +1188,23 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 	if _, err := r.db.ExecContext(ctx, mig6); err != nil {
 		return fmt.Errorf("apply migration v6 failed: %w", err)
 	}
+	// v7: faster dashboard asset loading. These indexes are additive only and
+	// keep existing query semantics unchanged.
+	const mig7 = `
+		CREATE INDEX IF NOT EXISTS idx_metrics_interface_latest
+			ON metrics (interface_id, ts DESC)
+			WHERE interface_id IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS idx_device_logs_device_created_at
+			ON device_logs (device_id, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_interfaces_device_index
+			ON interfaces (device_id, "index");
+		INSERT INTO schema_migrations(version, description)
+		VALUES (7, 'add asset dashboard loading indexes')
+		ON CONFLICT (version) DO NOTHING;
+	`
+	if _, err := r.db.ExecContext(ctx, mig7); err != nil {
+		return fmt.Errorf("apply migration v7 failed: %w", err)
+	}
 	return nil
 }
 
@@ -2336,6 +2353,24 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		onlineWindow = 5 * time.Minute
 	}
 	const q = `
+		WITH latest_device_metrics AS (
+			SELECT DISTINCT ON (device_id)
+			       device_id,
+			       ts AS last_ts,
+			       storage_usage,
+			       storage_total,
+			       storage_free,
+			       uptime_sec
+			FROM metrics
+			ORDER BY device_id, ts DESC
+		),
+		latest_device_logs AS (
+			SELECT DISTINCT ON (device_id)
+			       device_id,
+			       message
+			FROM device_logs
+			ORDER BY device_id, created_at DESC
+		)
 		SELECT d.id, host(d.ip), COALESCE(d.name, host(d.ip)), d.template_id, d.brand, d.community, d.snmp_version, d.snmp_port,
 		       COALESCE(d.v3_username,''), COALESCE(d.v3_auth_protocol,''), COALESCE(d.v3_auth_password,''),
 		       COALESCE(d.v3_priv_protocol,''), COALESCE(d.v3_priv_password,''), COALESCE(d.v3_security_level,''),
@@ -2343,27 +2378,10 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		       COALESCE(NULLIF(d.device_tier,''), 'access'),
 		       COALESCE(d.poll_interval_sec,0), COALESCE(d.cpu_threshold,0), COALESCE(d.mem_threshold,0),
 		       COALESCE(d.remark, ''), d.created_at, lm.last_ts, COALESCE(dl.message, ''),
-		       COALESCE(lm2.storage_usage, 0), COALESCE(lm2.storage_total, 0), COALESCE(lm2.storage_free, 0), COALESCE(lm2.uptime_sec, 0)
+		       COALESCE(lm.storage_usage, 0), COALESCE(lm.storage_total, 0), COALESCE(lm.storage_free, 0), COALESCE(lm.uptime_sec, 0)
 		FROM devices d
-		LEFT JOIN (
-			SELECT device_id, MAX(ts) AS last_ts
-			FROM metrics
-			GROUP BY device_id
-		) lm ON lm.device_id = d.id
-		LEFT JOIN LATERAL (
-			SELECT storage_usage, storage_total, storage_free, uptime_sec
-			FROM metrics
-			WHERE device_id = d.id
-			ORDER BY ts DESC
-			LIMIT 1
-		) lm2 ON TRUE
-		LEFT JOIN LATERAL (
-			SELECT message
-			FROM device_logs
-			WHERE device_id = d.id
-			ORDER BY created_at DESC
-			LIMIT 1
-		) dl ON TRUE
+		LEFT JOIN latest_device_metrics lm ON lm.device_id = d.id
+		LEFT JOIN latest_device_logs dl ON dl.device_id = d.id
 		ORDER BY d.id;
 	`
 	rows, err := r.db.QueryContext(ctx, q)
@@ -2411,6 +2429,15 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 	}
 
 	const iq = `
+		WITH latest_metrics AS (
+			SELECT DISTINCT ON (interface_id)
+			       interface_id,
+			       traffic_in_bps,
+			       traffic_out_bps
+			FROM metrics
+			WHERE interface_id IS NOT NULL
+			ORDER BY interface_id, ts DESC
+		)
 		SELECT i.id, i.device_id, i."index",
 		       COALESCE(NULLIF(i.custom_name,''), i.name) AS display_name,
 		       i.name AS raw_name,
@@ -2421,13 +2448,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		       COALESCE(m.traffic_in_bps, 0),
 		       COALESCE(m.traffic_out_bps, 0)
 		FROM interfaces i
-		LEFT JOIN LATERAL (
-			SELECT traffic_in_bps, traffic_out_bps
-			FROM metrics
-			WHERE interface_id = i.id
-			ORDER BY ts DESC
-			LIMIT 1
-		) m ON TRUE
+		LEFT JOIN latest_metrics m ON m.interface_id = i.id
 		ORDER BY i.device_id, i."index";
 	`
 	iRows, err := r.db.QueryContext(ctx, iq)
