@@ -3252,14 +3252,21 @@ func (r *Repository) GetDeviceHistory(
 func (r *Repository) GetInterfaceHistory(
 	ctx context.Context, interfaceID int64, start, end time.Time, interval string, maxPoints int,
 ) ([]InterfaceHistoryPoint, error) {
-	useAgg := end.Sub(start) > 7*24*time.Hour
+	span := end.Sub(start)
+	// Keep common operator views (today / 7 days / 30 days) on the raw
+	// hypertable with interface_id+ts indexes. The continuous aggregate is kept
+	// for long-range views, where 1-minute granularity matters more than exact
+	// recent continuity.
+	useAgg := span > 31*24*time.Hour
 	interval = strings.TrimSpace(strings.ToLower(interval))
-	bucketInterval := resolveHistoryBucketInterval(end.Sub(start), interval, maxPoints, useAgg)
+	bucketInterval := resolveHistoryBucketInterval(span, interval, maxPoints, useAgg)
 
 	q := `
 		SELECT ts, traffic_in_bps, traffic_out_bps
 		FROM metrics
-		WHERE interface_id = $1 AND ts >= $2 AND ts <= $3
+		WHERE interface_id = $1
+		  AND ts >= $2 AND ts <= $3
+		  AND (traffic_in_bps IS NOT NULL OR traffic_out_bps IS NOT NULL)
 		ORDER BY ts;
 	`
 	if bucketInterval != "" {
@@ -3268,7 +3275,9 @@ func (r *Repository) GetInterfaceHistory(
 			       AVG(traffic_in_bps) AS traffic_in_bps,
 			       AVG(traffic_out_bps) AS traffic_out_bps
 			FROM metrics
-			WHERE interface_id = $1 AND ts >= $2 AND ts <= $3
+			WHERE interface_id = $1
+			  AND ts >= $2 AND ts <= $3
+			  AND (traffic_in_bps IS NOT NULL OR traffic_out_bps IS NOT NULL)
 			GROUP BY 1
 			ORDER BY 1;
 		`, bucketInterval)
@@ -3277,7 +3286,9 @@ func (r *Repository) GetInterfaceHistory(
 		q = `
 			SELECT bucket AS ts, avg_traffic_in_bps AS traffic_in_bps, avg_traffic_out_bps AS traffic_out_bps
 			FROM metrics_1m
-			WHERE interface_id = $1 AND bucket >= $2 AND bucket <= $3
+			WHERE interface_id = $1
+			  AND bucket >= $2 AND bucket <= $3
+			  AND (avg_traffic_in_bps IS NOT NULL OR avg_traffic_out_bps IS NOT NULL)
 			ORDER BY bucket;
 		`
 	}
@@ -3287,7 +3298,9 @@ func (r *Repository) GetInterfaceHistory(
 			       AVG(avg_traffic_in_bps) AS traffic_in_bps,
 			       AVG(avg_traffic_out_bps) AS traffic_out_bps
 			FROM metrics_1m
-			WHERE interface_id = $1 AND bucket >= $2 AND bucket <= $3
+			WHERE interface_id = $1
+			  AND bucket >= $2 AND bucket <= $3
+			  AND (avg_traffic_in_bps IS NOT NULL OR avg_traffic_out_bps IS NOT NULL)
 			GROUP BY 1
 			ORDER BY 1;
 		`, bucketInterval)
@@ -3319,7 +3332,7 @@ func (r *Repository) GetInterfaceHistory(
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate interface history: %w", err)
 	}
-	return decimateInterfaceHistory(out, end.Sub(start), maxPoints), nil
+	return decimateInterfaceHistory(out, span, maxPoints), nil
 }
 
 func (r *Repository) GetDeviceStorageHistory(

@@ -176,7 +176,8 @@ export const api = {
       params.max_points = Number(maxPoints);
     }
     return http.get("/metrics/history", {
-      params
+      params,
+      timeout: 60000
     });
   },
   precheckDevice(payload) {

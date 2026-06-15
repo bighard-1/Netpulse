@@ -347,12 +347,13 @@ function calcFetchPlan(start, end) {
   const spanMs = end.getTime() - start.getTime();
   let interval = "";
   const highSpeedStable = isHighSpeedCacheSensitive();
-  if (highSpeedStable && spanMs <= 7 * 24 * 3600 * 1000) interval = "2m";
-  else if (spanMs > 180 * 24 * 3600 * 1000) interval = "1h";
-  else if (spanMs > 30 * 24 * 3600 * 1000) interval = "5m";
-  else if (spanMs > 7 * 24 * 3600 * 1000) interval = "2m";
-  // Low-speed ports keep <=7 days on raw points; high-speed cached devices use
-  // a short bucket so the visual curve remains comparable across poll settings.
+  if (spanMs > 180 * 24 * 3600 * 1000) interval = "1h";
+  else if (spanMs > 30 * 24 * 3600 * 1000) interval = "1h";
+  else if (spanMs > 7 * 24 * 3600 * 1000) interval = "30m";
+  else if (spanMs > 24 * 3600 * 1000) interval = "5m";
+  else if (highSpeedStable) interval = "2m";
+  // Low-speed ports keep same-day views on raw points; wider ranges use
+  // explicit buckets so the database returns display-ready data.
   else interval = "";
   const agg = highSpeedStable && interval ? "高速端口稳健聚合" : (interval ? "time_bucket聚合" : "原始采样点");
   return { interval, agg };
@@ -647,25 +648,33 @@ async function loadAllCharts() {
     const d7Start = startOfServerDay(new Date(now.getTime() - 6 * 24 * 3600 * 1000));
     const d30Start = startOfServerDay(new Date(now.getTime() - 29 * 24 * 3600 * 1000));
 
-    const [todayRes, d7Res, d30Res] = await Promise.all([
+    const results = await Promise.allSettled([
       fetchRange(todayStart, now),
       fetchRange(d7Start, now),
       fetchRange(d30Start, now)
     ]);
     if (seq !== fullChartRequestSeq) return;
-    lastSeriesCache.value.today = todayRes.data;
-    lastSeriesCache.value.d7 = d7Res.data;
-    lastSeriesCache.value.d30 = d30Res.data;
-    chartMeta.value.today = todayRes.plan;
-    chartMeta.value.d7 = d7Res.plan;
-    chartMeta.value.d30 = d30Res.plan;
-    chartSource.value.today = todayRes.source || "metrics";
-    chartSource.value.d7 = d7Res.source || "metrics";
-    chartSource.value.d30 = d30Res.source || "metrics_1m";
-
-    applyChart(charts.today, "当日流量", todayRes.data, "today");
-    applyChart(charts.d7, "近7天流量", d7Res.data, "d7");
-    applyChart(charts.d30, "近30天流量", d30Res.data, "d30");
+    const keys = ["today", "d7", "d30"];
+    const titles = { today: "当日流量", d7: "近7天流量", d30: "近30天流量" };
+    const failed = [];
+    results.forEach((res, index) => {
+      const key = keys[index];
+      if (res.status !== "fulfilled") {
+        failed.push(titles[key]);
+        return;
+      }
+      const value = res.value;
+      lastSeriesCache.value[key] = value.data;
+      chartMeta.value[key] = value.plan;
+      chartSource.value[key] = value.source || "metrics";
+      applyChart(charts[key], titles[key], value.data, key);
+    });
+    if (failed.length && failed.length < results.length) {
+      chartLoadError.value = `${failed.join("、")}暂时加载失败，其余图表已正常显示`;
+      fb.warn(chartLoadError.value);
+    } else if (failed.length === results.length) {
+      throw results.find((res) => res.status === "rejected")?.reason || new Error("端口流量加载失败");
+    }
     if (customRange.value?.length === 2) {
       await loadCustomChart({ keepLoading: true });
     }
