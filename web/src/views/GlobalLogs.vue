@@ -141,7 +141,7 @@ onMounted(async () => {
 
     <el-tabs v-model="activeTab">
       <el-tab-pane label="事件工作台" name="alerts" />
-      <el-tab-pane v-if="isAdmin" label="资产加载诊断" name="asset-diagnosis" />
+      <el-tab-pane v-if="isAdmin" label="资产/数据库诊断" name="asset-diagnosis" />
       <el-tab-pane v-if="isAdmin" label="审计日志" name="audit" />
     </el-tabs>
 
@@ -170,11 +170,11 @@ onMounted(async () => {
         type="info"
         show-icon
         :closable="false"
-        title="用于排查首页“资产数据暂时加载失败 / timeout of 20000ms exceeded”"
+        title="用于排查首页资产加载、图表慢查询和 TimescaleDB 聚合状态"
       >
         <template #default>
           <div class="flex flex-wrap items-center gap-2">
-            <span>检测会评估资产规模、关键索引、最新端口指标查询、完整资产接口模拟和指标入库延迟。</span>
+            <span>检测会评估资产规模、关键索引、连续聚合、最新端口指标查询、完整资产接口模拟和指标入库延迟。</span>
             <el-button size="small" type="primary" @click="runAssetDiagnosis">开始检测</el-button>
           </div>
         </template>

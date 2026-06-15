@@ -469,7 +469,7 @@ watch(activeDashboardModule, async () => {
             plain
             @click="$router.push({ path: '/alerts', query: { tab: 'asset-diagnosis' } })"
           >
-            打开资产加载诊断
+            打开资产/数据库诊断
           </el-button>
         </div>
       </template>

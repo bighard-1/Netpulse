@@ -33,13 +33,46 @@ type Handler struct {
 	rl          map[string][]time.Time
 	jobsMu      sync.Mutex
 	jobs        map[string]*SystemJob
+	cacheMu     sync.Mutex
+	topology    topologyCacheEntry
+	history     map[string]historyCacheEntry
+	cacheStats  cacheStats
+	slowMu      sync.Mutex
+	slowAPIs    []slowAPIRecord
+}
+
+type topologyCacheEntry struct {
+	graph     *db.TopologyGraph
+	expiresAt time.Time
+}
+
+type historyCacheEntry struct {
+	payload   map[string]any
+	expiresAt time.Time
+}
+
+type cacheStats struct {
+	TopologyHits   int64 `json:"topology_hits"`
+	TopologyMiss   int64 `json:"topology_miss"`
+	HistoryHits    int64 `json:"history_hits"`
+	HistoryMiss    int64 `json:"history_miss"`
+	HistoryEntries int   `json:"history_entries"`
+}
+
+type slowAPIRecord struct {
+	Timestamp  time.Time `json:"timestamp"`
+	Method     string    `json:"method"`
+	Path       string    `json:"path"`
+	StatusCode int       `json:"status_code"`
+	DurationMS int64     `json:"duration_ms"`
+	IP         string    `json:"ip"`
 }
 
 func NewHandler(repo *db.Repository, collector *snmp.Collector, system *SystemService, jwtSecret string) *Handler {
 	return &Handler{
 		repo: repo, collector: collector, system: system, jwtSecret: jwtSecret,
 		fails: map[string]int{}, lockedUntil: map[string]time.Time{}, rl: map[string][]time.Time{},
-		jobs: map[string]*SystemJob{},
+		jobs: map[string]*SystemJob{}, history: map[string]historyCacheEntry{},
 	}
 }
 
@@ -137,13 +170,45 @@ func (h *Handler) slowRequestMiddleware(threshold time.Duration) func(http.Handl
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			next.ServeHTTP(w, r)
+			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			next.ServeHTTP(rec, r)
 			cost := time.Since(start)
 			if cost >= threshold {
-				log.Printf("[slow-api] method=%s path=%s cost_ms=%d ip=%s", r.Method, r.URL.Path, cost.Milliseconds(), clientIP(r))
+				h.recordSlowAPI(slowAPIRecord{
+					Timestamp:  time.Now(),
+					Method:     r.Method,
+					Path:       r.URL.Path,
+					StatusCode: rec.status,
+					DurationMS: cost.Milliseconds(),
+					IP:         clientIP(r),
+				})
+				log.Printf("[slow-api] method=%s path=%s status=%d cost_ms=%d ip=%s", r.Method, r.URL.Path, rec.status, cost.Milliseconds(), clientIP(r))
 			}
 		})
 	}
+}
+
+func (h *Handler) recordSlowAPI(item slowAPIRecord) {
+	h.slowMu.Lock()
+	defer h.slowMu.Unlock()
+	h.slowAPIs = append([]slowAPIRecord{item}, h.slowAPIs...)
+	if len(h.slowAPIs) > 80 {
+		h.slowAPIs = h.slowAPIs[:80]
+	}
+}
+
+func (h *Handler) recentSlowAPIs(limit int) []slowAPIRecord {
+	if limit <= 0 || limit > 80 {
+		limit = 30
+	}
+	h.slowMu.Lock()
+	defer h.slowMu.Unlock()
+	if len(h.slowAPIs) < limit {
+		limit = len(h.slowAPIs)
+	}
+	out := make([]slowAPIRecord, limit)
+	copy(out, h.slowAPIs[:limit])
+	return out
 }
 
 func (h *Handler) rateLimit(key string, limit int, window time.Duration, next http.HandlerFunc) http.HandlerFunc {
@@ -801,6 +866,11 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			"data":      items,
 		})
 	case "traffic":
+		cacheKey := historyCacheKey(metricType, id, start, end, interval, maxPoints)
+		if cached, ok := h.getCachedHistory(cacheKey); ok {
+			writeJSON(w, http.StatusOK, cached)
+			return
+		}
 		items, err := h.repo.GetInterfaceHistory(r.Context(), id, start, end, interval, maxPoints)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -818,7 +888,7 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 				sampledInterval = "原始(自动)"
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		payload := map[string]any{
 			"type":             metricType,
 			"id":               id,
 			"start":            start,
@@ -828,7 +898,9 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			"source_table":     sourceTable,
 			"maxPoints":        maxPoints,
 			"data":             items,
-		})
+		}
+		h.setCachedHistory(cacheKey, payload)
+		writeJSON(w, http.StatusOK, payload)
 	case "storage":
 		items, err := h.repo.GetDeviceStorageHistory(r.Context(), id, start, end, interval, maxPoints)
 		if err != nil {
@@ -847,6 +919,80 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusBadRequest, "type must be one of: cpu, mem, traffic, storage")
 	}
+}
+
+const historyCacheTTL = 20 * time.Second
+const historyCacheMaxEntries = 128
+
+func historyCacheKey(metricType string, id int64, start, end time.Time, interval string, maxPoints int) string {
+	// Round end time slightly so repeated refreshes within one short UI cycle can
+	// reuse the same result without changing the public API contract.
+	endBucket := end.Unix() / 15
+	return fmt.Sprintf("%s:%d:%d:%d:%s:%d", metricType, id, start.Unix(), endBucket, strings.TrimSpace(interval), maxPoints)
+}
+
+func (h *Handler) getCachedHistory(key string) (map[string]any, bool) {
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	if h.history == nil {
+		h.history = map[string]historyCacheEntry{}
+	}
+	entry, ok := h.history[key]
+	if !ok || time.Now().After(entry.expiresAt) {
+		if ok {
+			delete(h.history, key)
+		}
+		h.cacheStats.HistoryMiss++
+		return nil, false
+	}
+	h.cacheStats.HistoryHits++
+	return entry.payload, true
+}
+
+func (h *Handler) setCachedHistory(key string, payload map[string]any) {
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	if h.history == nil {
+		h.history = map[string]historyCacheEntry{}
+	}
+	now := time.Now()
+	for k, entry := range h.history {
+		if now.After(entry.expiresAt) {
+			delete(h.history, k)
+		}
+	}
+	if len(h.history) >= historyCacheMaxEntries {
+		var oldestKey string
+		var oldest time.Time
+		for k, entry := range h.history {
+			if oldestKey == "" || entry.expiresAt.Before(oldest) {
+				oldestKey = k
+				oldest = entry.expiresAt
+			}
+		}
+		if oldestKey != "" {
+			delete(h.history, oldestKey)
+		}
+	}
+	h.history[key] = historyCacheEntry{payload: payload, expiresAt: now.Add(historyCacheTTL)}
+	h.cacheStats.HistoryEntries = len(h.history)
+}
+
+func (h *Handler) snapshotCacheStats() cacheStats {
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	if h.history == nil {
+		h.history = map[string]historyCacheEntry{}
+	}
+	now := time.Now()
+	for k, entry := range h.history {
+		if now.After(entry.expiresAt) {
+			delete(h.history, k)
+		}
+	}
+	out := h.cacheStats
+	out.HistoryEntries = len(h.history)
+	return out
 }
 
 func (h *Handler) handleDeviceLogs(w http.ResponseWriter, r *http.Request) {

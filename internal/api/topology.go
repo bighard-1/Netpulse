@@ -6,11 +6,14 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"netpulse/internal/db"
 )
+
+const topologyCacheTTL = 30 * time.Second
 
 type topologyNodeRequest struct {
 	DeviceID int64   `json:"device_id"`
@@ -27,12 +30,40 @@ type topologyEdgeRequest struct {
 }
 
 func (h *Handler) handleGetTopology(w http.ResponseWriter, r *http.Request) {
+	if graph, ok := h.getCachedTopology(); ok {
+		writeJSON(w, http.StatusOK, graph)
+		return
+	}
 	graph, err := h.repo.GetTopologyGraph(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.setCachedTopology(graph)
 	writeJSON(w, http.StatusOK, graph)
+}
+
+func (h *Handler) getCachedTopology() (*db.TopologyGraph, bool) {
+	h.cacheMu.Lock()
+	defer h.cacheMu.Unlock()
+	if h.topology.graph == nil || time.Now().After(h.topology.expiresAt) {
+		h.cacheStats.TopologyMiss++
+		return nil, false
+	}
+	h.cacheStats.TopologyHits++
+	return h.topology.graph, true
+}
+
+func (h *Handler) setCachedTopology(graph *db.TopologyGraph) {
+	h.cacheMu.Lock()
+	h.topology = topologyCacheEntry{graph: graph, expiresAt: time.Now().Add(topologyCacheTTL)}
+	h.cacheMu.Unlock()
+}
+
+func (h *Handler) invalidateTopologyCache() {
+	h.cacheMu.Lock()
+	h.topology = topologyCacheEntry{}
+	h.cacheMu.Unlock()
 }
 
 func (h *Handler) handleCreateTopologyNode(w http.ResponseWriter, r *http.Request) {
@@ -51,6 +82,7 @@ func (h *Handler) handleCreateTopologyNode(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.invalidateTopologyCache()
 	writeJSON(w, http.StatusOK, map[string]any{"id": id})
 }
 
@@ -74,6 +106,7 @@ func (h *Handler) handleUpdateTopologyNode(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.invalidateTopologyCache()
 	writeJSON(w, http.StatusOK, map[string]any{"message": "topology node updated"})
 }
 
@@ -87,6 +120,7 @@ func (h *Handler) handleDeleteTopologyNode(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.invalidateTopologyCache()
 	writeJSON(w, http.StatusOK, map[string]any{"message": "topology node deleted"})
 }
 
@@ -106,6 +140,7 @@ func (h *Handler) handleCreateTopologyEdge(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.invalidateTopologyCache()
 	writeJSON(w, http.StatusOK, map[string]any{"id": id})
 }
 
@@ -135,6 +170,7 @@ func (h *Handler) handleUpdateTopologyEdge(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.invalidateTopologyCache()
 	writeJSON(w, http.StatusOK, map[string]any{"message": "topology edge updated"})
 }
 
@@ -148,5 +184,6 @@ func (h *Handler) handleDeleteTopologyEdge(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.invalidateTopologyCache()
 	writeJSON(w, http.StatusOK, map[string]any{"message": "topology edge deleted"})
 }

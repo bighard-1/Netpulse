@@ -26,6 +26,8 @@ export const useOpsStore = defineStore("ops", {
   state: () => ({
     realtimeAlerts: [],
     loadingAlerts: false,
+    lastRealtimeError: "",
+    lastRealtimeLoadedAt: "",
     globalSearchResults: [],
     isDrawerOpen: false,
     activeDeviceId: null,
@@ -56,6 +58,12 @@ export const useOpsStore = defineStore("ops", {
           deduped.push(row);
         }
         this.realtimeAlerts = deduped;
+        this.lastRealtimeError = "";
+        this.lastRealtimeLoadedAt = new Date().toISOString();
+      } catch (err) {
+        this.lastRealtimeError = err?.response?.data?.message || err?.response?.data?.error || err?.message || "事件流加载失败";
+        // Keep the previous event list visible during transient API/database slowness.
+        throw err;
       } finally {
         this.loadingAlerts = false;
       }

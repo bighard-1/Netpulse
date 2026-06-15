@@ -55,6 +55,14 @@ const opsSummary = ref({
     initializing_samples: 0,
     window_minutes: 60
   },
+  cache_summary: {
+    topology_hits: 0,
+    topology_miss: 0,
+    history_hits: 0,
+    history_miss: 0,
+    history_entries: 0
+  },
+  slow_apis: [],
   recent_jobs: []
 });
 const opsDetailVisible = ref(false);
@@ -845,6 +853,22 @@ watch(activeTab, (tab) => {
           采样异常样本：
           <b>{{ opsSummary.traffic_summary?.anomaly_samples || 0 }}</b>
         </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          拓扑缓存命中：
+          <b>{{ opsSummary.cache_summary?.topology_hits || 0 }}</b>
+          /
+          <span>{{ opsSummary.cache_summary?.topology_miss || 0 }}</span>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          图表缓存命中：
+          <b>{{ opsSummary.cache_summary?.history_hits || 0 }}</b>
+          /
+          <span>{{ opsSummary.cache_summary?.history_miss || 0 }}</span>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          图表缓存条目：
+          <b>{{ opsSummary.cache_summary?.history_entries || 0 }}</b>
+        </div>
       </div>
       <el-alert
         class="mt-3"
@@ -854,6 +878,19 @@ watch(activeTab, (tab) => {
         title="观测说明"
         description="这里展示最近1小时的采集健康度和图表采样状态，仅用于定位慢设备、断点样本和入库延迟，不会改变现有采集计算结果。"
       />
+      <div class="mt-4 rounded-lg border border-slate-200 p-3">
+        <div class="mb-2 flex items-center justify-between">
+          <span class="font-semibold">最近服务端慢请求</span>
+          <el-button size="small" @click="loadOpsSummary">刷新</el-button>
+        </div>
+        <el-table :data="opsSummary.slow_apis || []" size="small" max-height="260" class="np-borderless-table">
+          <el-table-column prop="timestamp" label="时间" min-width="190" />
+          <el-table-column prop="method" label="方法" width="90" />
+          <el-table-column prop="path" label="路径" min-width="220" />
+          <el-table-column prop="status_code" label="状态码" width="90" />
+          <el-table-column prop="duration_ms" label="耗时(ms)" width="110" />
+        </el-table>
+      </div>
       <div class="mt-4 rounded-lg border border-slate-200 p-3">
         <div class="mb-2 flex items-center justify-between">
           <span class="font-semibold">最近后台任务</span>

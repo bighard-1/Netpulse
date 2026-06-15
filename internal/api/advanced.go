@@ -441,6 +441,8 @@ func (h *Handler) handleSystemOps(w http.ResponseWriter, r *http.Request) {
 		"ingest_delay_sec":  ingestDelaySec,
 		"poll_summary":      pollSummary,
 		"traffic_summary":   trafficSummary,
+		"cache_summary":     h.snapshotCacheStats(),
+		"slow_apis":         h.recentSlowAPIs(30),
 		"recent_jobs":       h.listSystemJobs(10),
 	})
 }

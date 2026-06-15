@@ -149,6 +149,36 @@ func (r *Repository) DiagnoseAssetLoad(ctx context.Context) (*AssetLoadDiagnosti
 		return "关键索引已存在", "", nil
 	})
 
+	run("Timescale连续聚合检查", 800, 3000, func(ctx context.Context) (string, string, error) {
+		var exists bool
+		if err := r.db.QueryRowContext(ctx, `
+			SELECT EXISTS (
+			  SELECT 1
+			  FROM pg_matviews
+			  WHERE schemaname = 'public'
+			    AND matviewname = 'metrics_1m'
+			);
+		`).Scan(&exists); err != nil {
+			return "", "请确认数据库用户具备读取 pg_matviews 的权限。", fmt.Errorf("检查 metrics_1m 失败: %w", err)
+		}
+		if !exists {
+			return "", "请重启 NetPulse 触发 schema migration，或检查启动日志中的 TimescaleDB 连续聚合创建错误。", fmt.Errorf("metrics_1m 连续聚合不存在")
+		}
+		var recentBuckets int
+		if err := r.db.QueryRowContext(ctx, `
+			SELECT COUNT(*)
+			FROM metrics_1m
+			WHERE bucket >= NOW() - INTERVAL '2 hours';
+		`).Scan(&recentBuckets); err != nil {
+			return "", "metrics_1m 存在但不可查询，请检查 TimescaleDB 连续聚合刷新策略。", fmt.Errorf("查询 metrics_1m 失败: %w", err)
+		}
+		suggestion := ""
+		if report.RecentMetricCount > 0 && recentBuckets == 0 {
+			suggestion = "近2小时连续聚合暂无数据，长周期图表可能退化或变慢；请检查 TimescaleDB policy 是否正常刷新。"
+		}
+		return fmt.Sprintf("metrics_1m 已存在，近2小时聚合桶 %d 个", recentBuckets), suggestion, nil
+	})
+
 	run("最新端口指标查询", 1500, 8000, func(ctx context.Context) (string, string, error) {
 		var total, recent int
 		err := r.db.QueryRowContext(ctx, `
