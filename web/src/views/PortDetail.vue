@@ -48,6 +48,12 @@ const lastSeriesCache = ref({
   d30: [],
   custom: []
 });
+const chartLoaded = ref({
+  today: false,
+  d7: false,
+  d30: false,
+  custom: false
+});
 const chartMeta = ref({
   today: { interval: "-", agg: "-" },
   d7: { interval: "-", agg: "-" },
@@ -638,46 +644,42 @@ function exportChartCSV(chartKey, title) {
   URL.revokeObjectURL(a.href);
 }
 
-async function loadAllCharts() {
+function getPresetRange(key) {
+  const now = new Date();
+  if (key === "today") {
+    return [startOfServerDay(now), now];
+  }
+  if (key === "d7") {
+    return [startOfServerDay(new Date(now.getTime() - 6 * 24 * 3600 * 1000)), now];
+  }
+  if (key === "d30") {
+    return [startOfServerDay(new Date(now.getTime() - 29 * 24 * 3600 * 1000)), now];
+  }
+  return null;
+}
+
+async function loadPresetChart(key, options = {}) {
+  const range = getPresetRange(key);
+  if (!range) return;
+  if (chartLoaded.value[key] && !options.force) {
+    await nextTick();
+    charts[key]?.resize();
+    return;
+  }
   const seq = ++fullChartRequestSeq;
   loading.value = true;
   try {
     chartLoadError.value = "";
-    const now = new Date();
-    const todayStart = startOfServerDay(now);
-    const d7Start = startOfServerDay(new Date(now.getTime() - 6 * 24 * 3600 * 1000));
-    const d30Start = startOfServerDay(new Date(now.getTime() - 29 * 24 * 3600 * 1000));
-
-    const results = await Promise.allSettled([
-      fetchRange(todayStart, now),
-      fetchRange(d7Start, now),
-      fetchRange(d30Start, now)
-    ]);
-    if (seq !== fullChartRequestSeq) return;
-    const keys = ["today", "d7", "d30"];
     const titles = { today: "当日流量", d7: "近7天流量", d30: "近30天流量" };
-    const failed = [];
-    results.forEach((res, index) => {
-      const key = keys[index];
-      if (res.status !== "fulfilled") {
-        failed.push(titles[key]);
-        return;
-      }
-      const value = res.value;
-      lastSeriesCache.value[key] = value.data;
-      chartMeta.value[key] = value.plan;
-      chartSource.value[key] = value.source || "metrics";
-      applyChart(charts[key], titles[key], value.data, key);
-    });
-    if (failed.length && failed.length < results.length) {
-      chartLoadError.value = `${failed.join("、")}暂时加载失败，其余图表已正常显示`;
-      fb.warn(chartLoadError.value);
-    } else if (failed.length === results.length) {
-      throw results.find((res) => res.status === "rejected")?.reason || new Error("端口流量加载失败");
-    }
-    if (customRange.value?.length === 2) {
-      await loadCustomChart({ keepLoading: true });
-    }
+    const res = await fetchRange(range[0], range[1]);
+    if (seq !== fullChartRequestSeq) return;
+    lastSeriesCache.value[key] = res.data;
+    chartMeta.value[key] = res.plan;
+    chartSource.value[key] = res.source || "metrics";
+    chartLoaded.value[key] = true;
+    await nextTick();
+    applyChart(charts[key], titles[key], res.data, key);
+    charts[key]?.resize();
   } catch (err) {
     if (seq === fullChartRequestSeq) {
       chartLoadError.value = err?.response?.data?.message || err?.response?.data?.error || err?.message || "端口流量加载失败";
@@ -688,6 +690,14 @@ async function loadAllCharts() {
       loading.value = false;
     }
   }
+}
+
+async function loadAllCharts() {
+  if (chartCardActive.value === "custom") {
+    await loadCustomChart();
+    return;
+  }
+  await loadPresetChart(chartCardActive.value || "today", { force: true });
 }
 
 async function loadCustomChart(options = {}) {
@@ -705,6 +715,7 @@ async function loadCustomChart(options = {}) {
     lastSeriesCache.value.custom = res.data;
     chartMeta.value.custom = res.plan;
     chartSource.value.custom = res.source || "metrics";
+    chartLoaded.value.custom = true;
     chartCardActive.value = "custom";
     await nextTick();
     applyChart(charts.custom, "自定义时间段流量", res.data, "custom");
@@ -757,9 +768,38 @@ function applyThresholdToAllCharts() {
   applyChart(charts.custom, "自定义时间段流量", lastSeriesCache.value.custom || [], "custom");
 }
 
+function resetChartCaches() {
+  lastSeriesCache.value = { today: [], d7: [], d30: [], custom: [] };
+  chartLoaded.value = { today: false, d7: false, d30: false, custom: false };
+  chartMeta.value = {
+    today: { interval: "-", agg: "-" },
+    d7: { interval: "-", agg: "-" },
+    d30: { interval: "-", agg: "-" },
+    custom: { interval: "-", agg: "-" }
+  };
+  chartSource.value = { today: "metrics", d7: "metrics", d30: "metrics", custom: "metrics" };
+  applyChart(charts.today, "当日流量", [], "today");
+  applyChart(charts.d7, "近7天流量", [], "d7");
+  applyChart(charts.d30, "近30天流量", [], "d30");
+  applyChart(charts.custom, "自定义时间段流量", [], "custom");
+}
+
 function switchChartCard(name) {
   chartCardActive.value = name;
-  nextTick(() => resizeCharts());
+  nextTick(async () => {
+    resizeCharts();
+    if (name !== "custom") {
+      await loadPresetChart(name);
+    }
+  });
+}
+
+async function retryActiveChart() {
+  if (chartCardActive.value === "custom") {
+    await loadCustomChart();
+    return;
+  }
+  await loadPresetChart(chartCardActive.value || "today", { force: true });
 }
 
 async function loadPortMeta() {
@@ -902,6 +942,10 @@ onMounted(async () => {
 });
 
 watch(() => props.id, async () => {
+  fullChartRequestSeq += 1;
+  customChartRequestSeq += 1;
+  resetChartCaches();
+  chartCardActive.value = "today";
   await loadPortMeta();
   await loadRuntimePollSec();
   await loadSiblingPorts();
@@ -1022,7 +1066,7 @@ function onEditModeEvent(e) {
         <template #default>
           <div class="flex flex-wrap items-center gap-2">
             <span>{{ chartLoadError }}</span>
-            <el-button size="small" @click="chartCardActive === 'custom' ? loadCustomChart() : loadAllCharts()">重试加载图表</el-button>
+            <el-button size="small" @click="retryActiveChart">重试加载图表</el-button>
           </div>
         </template>
       </el-alert>

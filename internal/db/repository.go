@@ -2031,14 +2031,10 @@ func (r *Repository) GetTopologyGraph(ctx context.Context) (*TopologyGraph, erro
 	const nq = `
 		SELECT n.id, n.device_id, COALESCE(NULLIF(n.label,''), d.name, host(d.ip)), n.x, n.y,
 		       COALESCE(d.name, host(d.ip)), host(d.ip), COALESCE(d.brand, ''), COALESCE(d.device_tier, 'access'),
-		       lm.last_ts, COALESCE(dl.message, ''), n.created_at, n.updated_at
+		       lm.ts, COALESCE(dl.message, ''), n.created_at, n.updated_at
 		FROM topology_nodes n
 		JOIN devices d ON d.id = n.device_id
-		LEFT JOIN (
-			SELECT device_id, MAX(ts) AS last_ts
-			FROM metrics
-			GROUP BY device_id
-		) lm ON lm.device_id = d.id
+		LEFT JOIN device_latest_metrics lm ON lm.device_id = d.id
 		LEFT JOIN LATERAL (
 			SELECT message
 			FROM device_logs
@@ -3465,50 +3461,66 @@ func decimateInterfaceHistory(in []InterfaceHistoryPoint, span time.Duration, ma
 }
 
 func resolveHistoryBucketInterval(span time.Duration, requested string, maxPoints int, useAgg bool) string {
+	minSec := 0
+	switch {
+	case span > 31*24*time.Hour:
+		minSec = 3600
+	case span > 7*24*time.Hour:
+		minSec = 1800
+	case span > 24*time.Hour:
+		minSec = 300
+	}
+	if useAgg && minSec < 60 {
+		minSec = 60
+	}
+	formatSec := func(sec int) string {
+		if sec < minSec {
+			sec = minSec
+		}
+		if useAgg && sec < 60 {
+			sec = 60
+		}
+		switch {
+		case sec >= 3600:
+			h := int(math.Ceil(float64(sec) / 3600.0))
+			return fmt.Sprintf("%d hours", h)
+		case sec >= 60:
+			m := int(math.Ceil(float64(sec) / 60.0))
+			return fmt.Sprintf("%d minutes", m)
+		default:
+			return fmt.Sprintf("%d seconds", sec)
+		}
+	}
 	if strings.HasSuffix(requested, "s") {
 		if v, err := strconv.Atoi(strings.TrimSuffix(requested, "s")); err == nil && v > 0 {
-			sec := v
-			if useAgg && sec < 60 {
-				sec = 60
-			}
-			return fmt.Sprintf("%d seconds", sec)
+			return formatSec(v)
 		}
 	}
 	switch requested {
 	case "1m":
-		return "1 minute"
+		return formatSec(60)
 	case "2m":
-		return "2 minutes"
+		return formatSec(120)
 	case "5m":
-		return "5 minutes"
+		return formatSec(300)
 	case "10m":
-		return "10 minutes"
+		return formatSec(600)
 	case "30m":
-		return "30 minutes"
+		return formatSec(1800)
 	case "1h":
-		return "1 hour"
+		return formatSec(3600)
 	}
 	if maxPoints <= 0 || span <= 0 {
+		if minSec > 0 {
+			return formatSec(minSec)
+		}
 		return ""
 	}
 	sec := int(math.Ceil(span.Seconds() / float64(maxPoints)))
 	if sec < 1 {
 		sec = 1
 	}
-	// metrics_1m has 1-minute base granularity.
-	if useAgg && sec < 60 {
-		sec = 60
-	}
-	switch {
-	case sec >= 3600:
-		h := int(math.Ceil(float64(sec) / 3600.0))
-		return fmt.Sprintf("%d hours", h)
-	case sec >= 60:
-		m := int(math.Ceil(float64(sec) / 60.0))
-		return fmt.Sprintf("%d minutes", m)
-	default:
-		return fmt.Sprintf("%d seconds", sec)
-	}
+	return formatSec(sec)
 }
 
 func (r *Repository) GetDeviceLogs(ctx context.Context, deviceID int64) ([]DeviceLog, error) {
