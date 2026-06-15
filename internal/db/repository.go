@@ -1088,7 +1088,7 @@ func NewRepository(db *sql.DB) *Repository {
 
 // EnsureSchema auto-bootstraps database objects for a blank database.
 func (r *Repository) EnsureSchema() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	if _, err := r.db.ExecContext(ctx, bootstrapSchemaSQL); err != nil {
@@ -1191,15 +1191,12 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 	// v7: faster dashboard asset loading. These indexes are additive only and
 	// keep existing query semantics unchanged.
 	const mig7 = `
-		CREATE INDEX IF NOT EXISTS idx_metrics_interface_latest
-			ON metrics (interface_id, ts DESC)
-			WHERE interface_id IS NOT NULL;
 		CREATE INDEX IF NOT EXISTS idx_device_logs_device_created_at
 			ON device_logs (device_id, created_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_interfaces_device_index
 			ON interfaces (device_id, "index");
 		INSERT INTO schema_migrations(version, description)
-		VALUES (7, 'add asset dashboard loading indexes')
+		VALUES (7, 'add lightweight asset dashboard loading indexes')
 		ON CONFLICT (version) DO NOTHING;
 	`
 	if _, err := r.db.ExecContext(ctx, mig7); err != nil {

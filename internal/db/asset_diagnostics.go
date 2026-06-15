@@ -100,7 +100,6 @@ func (r *Repository) DiagnoseAssetLoad(ctx context.Context) (*AssetLoadDiagnosti
 
 	run("关键索引检查", 500, 2000, func(ctx context.Context) (string, string, error) {
 		required := []string{
-			"idx_metrics_interface_latest",
 			"idx_metrics_interface_ts",
 			"idx_metrics_device_ts",
 			"idx_device_logs_device_created_at",
@@ -110,7 +109,7 @@ func (r *Repository) DiagnoseAssetLoad(ctx context.Context) (*AssetLoadDiagnosti
 			SELECT indexname
 			FROM pg_indexes
 			WHERE schemaname = 'public'
-			  AND indexname IN ('idx_metrics_interface_latest','idx_metrics_interface_ts','idx_metrics_device_ts','idx_device_logs_device_created_at','idx_interfaces_device_index');
+			  AND indexname IN ('idx_metrics_interface_ts','idx_metrics_device_ts','idx_device_logs_device_created_at','idx_interfaces_device_index');
 		`)
 		if err != nil {
 			return "", "请确认数据库用户具备读取 pg_indexes 的权限。", fmt.Errorf("检查索引失败: %w", err)
@@ -154,7 +153,7 @@ func (r *Repository) DiagnoseAssetLoad(ctx context.Context) (*AssetLoadDiagnosti
 		if err != nil {
 			return "", "这通常会直接拖慢首页资产加载，请检查 metrics 相关索引和 TimescaleDB 状态。", fmt.Errorf("查询最新端口指标失败: %w", err)
 		}
-		return fmt.Sprintf("可读取 %d 个端口的最新指标", count), "若此项耗时较高，优先检查 idx_metrics_interface_latest 是否创建成功。", nil
+		return fmt.Sprintf("可读取 %d 个端口的最新指标", count), "若此项耗时较高，优先检查 idx_metrics_interface_ts 是否存在，并观察数据库 IO/CPU。", nil
 	})
 
 	run("完整资产接口模拟", 3000, 12000, func(ctx context.Context) (string, string, error) {
