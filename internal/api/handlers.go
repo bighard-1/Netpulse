@@ -877,12 +877,12 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sourceTable := "metrics"
-		if end.Sub(start) > 31*24*time.Hour {
-			sourceTable = "metrics_1m"
+		if end.Sub(start) >= 7*24*time.Hour {
+			sourceTable = "metrics_1m(优先)"
 		}
 		sampledInterval := strings.TrimSpace(interval)
 		if sampledInterval == "" {
-			if sourceTable == "metrics_1m" {
+			if strings.HasPrefix(sourceTable, "metrics_1m") {
 				sampledInterval = "1m(自动)"
 			} else {
 				sampledInterval = "原始(自动)"

@@ -198,6 +198,9 @@ FROM metrics
 GROUP BY bucket, device_id, interface_id
 WITH NO DATA;
 
+CREATE INDEX IF NOT EXISTS idx_metrics_1m_interface_bucket ON metrics_1m (interface_id, bucket DESC);
+CREATE INDEX IF NOT EXISTS idx_metrics_1m_device_bucket ON metrics_1m (device_id, bucket DESC);
+
 SELECT remove_continuous_aggregate_policy(
     'metrics_1m',
     if_exists => TRUE
@@ -1239,6 +1242,20 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 	`
 	if _, err := r.db.ExecContext(ctx, mig8); err != nil {
 		return fmt.Errorf("apply migration v8 failed: %w", err)
+	}
+	// v9: long-range chart acceleration for the 1-minute aggregate. Additive
+	// indexes only; query results and SNMP calculation semantics remain intact.
+	const mig9 = `
+		CREATE INDEX IF NOT EXISTS idx_metrics_1m_interface_bucket
+			ON metrics_1m (interface_id, bucket DESC);
+		CREATE INDEX IF NOT EXISTS idx_metrics_1m_device_bucket
+			ON metrics_1m (device_id, bucket DESC);
+		INSERT INTO schema_migrations(version, description)
+		VALUES (9, 'add metrics_1m long-range chart indexes')
+		ON CONFLICT (version) DO NOTHING;
+	`
+	if _, err := r.db.ExecContext(ctx, mig9); err != nil {
+		return fmt.Errorf("apply migration v9 failed: %w", err)
 	}
 	return nil
 }

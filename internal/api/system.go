@@ -28,8 +28,29 @@ func NewSystemService(db DBConfig) *SystemService {
 }
 
 func (s *SystemService) Backup(ctx context.Context) (string, string, error) {
+	return s.pgDumpGzip(ctx, "")
+}
+
+func (s *SystemService) BackupSchemaOnly(ctx context.Context) (string, string, error) {
+	return s.pgDumpGzip(ctx, "schema")
+}
+
+func (s *SystemService) pgDumpGzip(ctx context.Context, mode string) (string, string, error) {
 	ts := time.Now().Format("20060102_150405")
-	filename := fmt.Sprintf("netpulse_backup_%s.sql.gz", ts)
+	suffix := "backup"
+	args := []string{
+		"-h", s.db.Host,
+		"-p", s.db.Port,
+		"-U", s.db.User,
+		"-d", s.db.Name,
+		"--no-owner",
+		"--no-privileges",
+	}
+	if mode == "schema" {
+		suffix = "schema_drill"
+		args = append(args, "--schema-only")
+	}
+	filename := fmt.Sprintf("netpulse_%s_%s.sql.gz", suffix, ts)
 	path := filepath.Join(os.TempDir(), filename)
 
 	outFile, err := os.Create(path)
@@ -41,16 +62,7 @@ func (s *SystemService) Backup(ctx context.Context) (string, string, error) {
 	gz := gzip.NewWriter(outFile)
 	defer gz.Close()
 
-	cmd := exec.CommandContext(
-		ctx,
-		"pg_dump",
-		"-h", s.db.Host,
-		"-p", s.db.Port,
-		"-U", s.db.User,
-		"-d", s.db.Name,
-		"--no-owner",
-		"--no-privileges",
-	)
+	cmd := exec.CommandContext(ctx, "pg_dump", args...)
 	cmd.Env = append(os.Environ(), "PGPASSWORD="+s.db.Password)
 
 	stdout, err := cmd.StdoutPipe()

@@ -314,7 +314,7 @@ func (h *Handler) handleStartBackupDrillJob(w http.ResponseWriter, r *http.Reque
 					h.updateSystemJob(jobID, func(job *SystemJob) {
 						if job.Status == "running" && job.Progress < 50 {
 							job.Progress = progress
-							job.Message = "正在生成临时备份文件，请稍候"
+							job.Message = "正在生成轻量演练备份文件，请稍候"
 						}
 					})
 				}
