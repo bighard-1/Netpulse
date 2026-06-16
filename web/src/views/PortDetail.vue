@@ -70,6 +70,7 @@ const runtimePollSec = ref(60);
 let charts = { today: null, d7: null, d30: null, custom: null };
 let fullChartRequestSeq = 0;
 let customChartRequestSeq = 0;
+let prefetchTimer = null;
 
 const pickerShortcuts = [
   { text: "本周", value: () => [startOfServerWeek(new Date()), new Date()] },
@@ -698,6 +699,37 @@ async function loadAllCharts() {
     return;
   }
   await loadPresetChart(chartCardActive.value || "today", { force: true });
+  schedulePresetPrefetch();
+}
+
+function schedulePresetPrefetch() {
+  if (prefetchTimer) clearTimeout(prefetchTimer);
+  const portID = Number(props.id);
+  prefetchTimer = setTimeout(() => {
+    prefetchPresetCharts(portID);
+  }, 800);
+}
+
+async function prefetchPresetCharts(portID) {
+  for (const key of ["d7", "d30"]) {
+    if (Number(props.id) !== portID || chartLoaded.value[key]) continue;
+    const range = getPresetRange(key);
+    if (!range) continue;
+    try {
+      const titles = { d7: "近7天流量", d30: "近30天流量" };
+      const res = await fetchRange(range[0], range[1]);
+      if (Number(props.id) !== portID || chartLoaded.value[key]) continue;
+      lastSeriesCache.value[key] = res.data;
+      chartMeta.value[key] = res.plan;
+      chartSource.value[key] = res.source || "metrics";
+      chartLoaded.value[key] = true;
+      await nextTick();
+      applyChart(charts[key], titles[key], res.data, key);
+      charts[key]?.resize();
+    } catch {
+      // Silent prefetch should never disturb the currently visible chart.
+    }
+  }
 }
 
 async function loadCustomChart(options = {}) {
@@ -956,6 +988,7 @@ watch(() => props.id, async () => {
 onBeforeUnmount(() => {
   fullChartRequestSeq += 1;
   customChartRequestSeq += 1;
+  if (prefetchTimer) clearTimeout(prefetchTimer);
   window.removeEventListener("resize", resizeCharts);
   window.removeEventListener("np-edit-mode", onEditModeEvent);
   charts.today?.dispose();

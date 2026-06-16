@@ -1362,6 +1362,33 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 	if _, err := r.db.ExecContext(ctx, mig9); err != nil {
 		return fmt.Errorf("apply migration v9 failed: %w", err)
 	}
+	// v10: lightweight per-interface traffic rollups owned by NetPulse. This is
+	// intentionally separate from Timescale continuous aggregates so long-range
+	// charts can be accelerated without blocking startup or relying on heavy
+	// hypertable index maintenance.
+	const mig10 = `
+		CREATE TABLE IF NOT EXISTS interface_traffic_rollups (
+		    bucket TIMESTAMPTZ NOT NULL,
+		    interface_id BIGINT NOT NULL REFERENCES interfaces(id) ON DELETE CASCADE,
+		    device_id BIGINT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+		    in_samples INTEGER NOT NULL DEFAULT 0,
+		    out_samples INTEGER NOT NULL DEFAULT 0,
+		    sum_traffic_in_bps NUMERIC(24,2) NOT NULL DEFAULT 0,
+		    sum_traffic_out_bps NUMERIC(24,2) NOT NULL DEFAULT 0,
+		    avg_traffic_in_bps NUMERIC(20,2),
+		    avg_traffic_out_bps NUMERIC(20,2),
+		    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    PRIMARY KEY (interface_id, bucket)
+		);
+		CREATE INDEX IF NOT EXISTS idx_interface_traffic_rollups_device_bucket
+			ON interface_traffic_rollups(device_id, bucket DESC);
+		INSERT INTO schema_migrations(version, description)
+		VALUES (10, 'add interface traffic rollup cache')
+		ON CONFLICT (version) DO NOTHING;
+	`
+	if _, err := r.db.ExecContext(ctx, mig10); err != nil {
+		return fmt.Errorf("apply migration v10 failed: %w", err)
+	}
 	return nil
 }
 
@@ -2698,22 +2725,58 @@ func (r *Repository) SaveMetrics(
 			)
 			VALUES ($1, $2, (SELECT id FROM upsert_if LIMIT 1), $5, $6, $7, $8, $9, $10, $11, $12, $15, $16)
 			RETURNING interface_id
+		),
+		latest_upsert AS (
+			INSERT INTO interface_latest_metrics (
+				interface_id, device_id, ts, traffic_in_bps, traffic_out_bps, traffic_in_status, traffic_out_status, updated_at
+			)
+			SELECT interface_id, $2, $1, $11, $12, $15, $16, NOW()
+			FROM inserted_metric
+			ON CONFLICT (interface_id)
+			DO UPDATE SET
+				device_id = EXCLUDED.device_id,
+				ts = EXCLUDED.ts,
+				traffic_in_bps = EXCLUDED.traffic_in_bps,
+				traffic_out_bps = EXCLUDED.traffic_out_bps,
+				traffic_in_status = EXCLUDED.traffic_in_status,
+				traffic_out_status = EXCLUDED.traffic_out_status,
+				updated_at = NOW()
+			WHERE interface_latest_metrics.ts <= EXCLUDED.ts
+			RETURNING interface_id
 		)
-		INSERT INTO interface_latest_metrics (
-			interface_id, device_id, ts, traffic_in_bps, traffic_out_bps, traffic_in_status, traffic_out_status, updated_at
+		SELECT interface_id FROM inserted_metric
+		UNION ALL
+		SELECT interface_id FROM latest_upsert
+		LIMIT 1;
+	`
+	const rollupQ = `
+		INSERT INTO interface_traffic_rollups (
+			bucket, interface_id, device_id, in_samples, out_samples, sum_traffic_in_bps, sum_traffic_out_bps, avg_traffic_in_bps, avg_traffic_out_bps, updated_at
 		)
-		SELECT interface_id, $2, $1, $11, $12, $15, $16, NOW()
-		FROM inserted_metric
-		ON CONFLICT (interface_id)
+		VALUES (
+			date_trunc('minute', $1::timestamptz), $2, $3, $4, $5, $6, $7,
+			CASE WHEN $4 > 0 THEN $6 ELSE NULL END,
+			CASE WHEN $5 > 0 THEN $7 ELSE NULL END,
+			NOW()
+		)
+		ON CONFLICT (interface_id, bucket)
 		DO UPDATE SET
 			device_id = EXCLUDED.device_id,
-			ts = EXCLUDED.ts,
-			traffic_in_bps = EXCLUDED.traffic_in_bps,
-			traffic_out_bps = EXCLUDED.traffic_out_bps,
-			traffic_in_status = EXCLUDED.traffic_in_status,
-			traffic_out_status = EXCLUDED.traffic_out_status,
-			updated_at = NOW()
-		WHERE interface_latest_metrics.ts <= EXCLUDED.ts;
+			in_samples = interface_traffic_rollups.in_samples + EXCLUDED.in_samples,
+			out_samples = interface_traffic_rollups.out_samples + EXCLUDED.out_samples,
+			sum_traffic_in_bps = interface_traffic_rollups.sum_traffic_in_bps + EXCLUDED.sum_traffic_in_bps,
+			sum_traffic_out_bps = interface_traffic_rollups.sum_traffic_out_bps + EXCLUDED.sum_traffic_out_bps,
+			avg_traffic_in_bps = CASE
+				WHEN interface_traffic_rollups.in_samples + EXCLUDED.in_samples > 0
+				THEN (interface_traffic_rollups.sum_traffic_in_bps + EXCLUDED.sum_traffic_in_bps) / (interface_traffic_rollups.in_samples + EXCLUDED.in_samples)
+				ELSE NULL
+			END,
+			avg_traffic_out_bps = CASE
+				WHEN interface_traffic_rollups.out_samples + EXCLUDED.out_samples > 0
+				THEN (interface_traffic_rollups.sum_traffic_out_bps + EXCLUDED.sum_traffic_out_bps) / (interface_traffic_rollups.out_samples + EXCLUDED.out_samples)
+				ELSE NULL
+			END,
+			updated_at = NOW();
 	`
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2729,10 +2792,28 @@ func (r *Repository) SaveMetrics(
 		inBps := clampTrafficBpsNullable(m.TrafficInBps)
 		outBps := clampTrafficBpsNullable(m.TrafficOutBps)
 
-		if _, err := tx.ExecContext(
+		var interfaceID int64
+		if err := tx.QueryRowContext(
 			ctx, q, ts, deviceID, m.IfIndex, m.IfName, cpu, mem, clampPercent(m.StorageUsage), clampNonNegative(m.StorageTotal), clampNonNegative(m.StorageFree), m.UptimeSec, inBps, outBps, m.SpeedMbps, m.OperStatus, strings.TrimSpace(m.TrafficInStat), strings.TrimSpace(m.TrafficOutStat), m.AdminStatus,
-		); err != nil {
+		).Scan(&interfaceID); err != nil {
 			return fmt.Errorf("insert metric ifIndex=%d: %w", m.IfIndex, err)
+		}
+		if inBps.Valid || outBps.Valid {
+			inSamples := 0
+			outSamples := 0
+			inSum := int64(0)
+			outSum := int64(0)
+			if inBps.Valid {
+				inSamples = 1
+				inSum = inBps.Int64
+			}
+			if outBps.Valid {
+				outSamples = 1
+				outSum = outBps.Int64
+			}
+			if _, err := tx.ExecContext(ctx, rollupQ, ts, interfaceID, deviceID, inSamples, outSamples, inSum, outSum); err != nil {
+				return fmt.Errorf("upsert traffic rollup ifIndex=%d: %w", m.IfIndex, err)
+			}
 		}
 	}
 	if len(metrics) > 0 {
@@ -3373,6 +3454,17 @@ func (r *Repository) GetInterfaceHistory(
 	span := end.Sub(start)
 	interval = strings.TrimSpace(strings.ToLower(interval))
 
+	if span > 24*time.Hour {
+		if out, err := r.queryInterfaceTrafficRollups(ctx, interfaceID, start, end, interval, maxPoints); err == nil && rollupHistoryCoversRange(out, start, end) {
+			return out, nil
+		}
+		if err := r.populateInterfaceTrafficRollups(ctx, interfaceID, start, end); err == nil {
+			if out, queryErr := r.queryInterfaceTrafficRollups(ctx, interfaceID, start, end, interval, maxPoints); queryErr == nil && len(out) > 0 {
+				return out, nil
+			}
+		}
+	}
+
 	query := func(useAgg bool) ([]InterfaceHistoryPoint, error) {
 		bucketInterval := resolveHistoryBucketInterval(span, interval, maxPoints, useAgg)
 		q := `
@@ -3460,6 +3552,109 @@ func (r *Repository) GetInterfaceHistory(
 		}
 	}
 	return query(false)
+}
+
+func rollupHistoryCoversRange(points []InterfaceHistoryPoint, start, end time.Time) bool {
+	if len(points) < 2 {
+		return false
+	}
+	span := end.Sub(start)
+	if span <= 0 {
+		return false
+	}
+	tolerance := span / 20
+	if tolerance < 2*time.Hour {
+		tolerance = 2 * time.Hour
+	}
+	first := points[0].Timestamp
+	last := points[len(points)-1].Timestamp
+	return !first.After(start.Add(tolerance)) && !last.Before(end.Add(-tolerance))
+}
+
+func (r *Repository) queryInterfaceTrafficRollups(
+	ctx context.Context, interfaceID int64, start, end time.Time, interval string, maxPoints int,
+) ([]InterfaceHistoryPoint, error) {
+	span := end.Sub(start)
+	bucketInterval := resolveHistoryBucketInterval(span, interval, maxPoints, true)
+	if bucketInterval == "" {
+		bucketInterval = "15 minutes"
+	}
+	q := fmt.Sprintf(`
+		SELECT time_bucket('%s', bucket) AS ts,
+		       AVG(avg_traffic_in_bps) AS traffic_in_bps,
+		       AVG(avg_traffic_out_bps) AS traffic_out_bps
+		FROM interface_traffic_rollups
+		WHERE interface_id = $1
+		  AND bucket >= $2 AND bucket <= $3
+		  AND (avg_traffic_in_bps IS NOT NULL OR avg_traffic_out_bps IS NOT NULL)
+		GROUP BY 1
+		ORDER BY 1;
+	`, bucketInterval)
+	rows, err := r.db.QueryContext(ctx, q, interfaceID, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("query interface traffic rollups: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]InterfaceHistoryPoint, 0)
+	for rows.Next() {
+		var p InterfaceHistoryPoint
+		var in, outB sql.NullFloat64
+		if err := rows.Scan(&p.Timestamp, &in, &outB); err != nil {
+			return nil, fmt.Errorf("scan interface traffic rollup: %w", err)
+		}
+		if in.Valid {
+			v := in.Float64
+			p.TrafficInBps = &v
+		}
+		if outB.Valid {
+			v := outB.Float64
+			p.TrafficOutBps = &v
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate interface traffic rollups: %w", err)
+	}
+	return decimateInterfaceHistory(out, span, maxPoints), nil
+}
+
+func (r *Repository) populateInterfaceTrafficRollups(ctx context.Context, interfaceID int64, start, end time.Time) error {
+	const q = `
+		INSERT INTO interface_traffic_rollups (
+			bucket, interface_id, device_id, in_samples, out_samples, sum_traffic_in_bps, sum_traffic_out_bps, avg_traffic_in_bps, avg_traffic_out_bps, updated_at
+		)
+		SELECT
+			date_trunc('minute', ts) AS bucket,
+			interface_id,
+			device_id,
+			COUNT(traffic_in_bps)::INTEGER AS in_samples,
+			COUNT(traffic_out_bps)::INTEGER AS out_samples,
+			COALESCE(SUM(traffic_in_bps), 0)::NUMERIC(24,2) AS sum_traffic_in_bps,
+			COALESCE(SUM(traffic_out_bps), 0)::NUMERIC(24,2) AS sum_traffic_out_bps,
+			AVG(traffic_in_bps)::NUMERIC(20,2) AS avg_traffic_in_bps,
+			AVG(traffic_out_bps)::NUMERIC(20,2) AS avg_traffic_out_bps,
+			NOW()
+		FROM metrics
+		WHERE interface_id = $1
+		  AND ts >= $2 AND ts <= $3
+		  AND (traffic_in_bps IS NOT NULL OR traffic_out_bps IS NOT NULL)
+		GROUP BY 1, interface_id, device_id
+		ON CONFLICT (interface_id, bucket)
+		DO UPDATE SET
+			device_id = EXCLUDED.device_id,
+			in_samples = EXCLUDED.in_samples,
+			out_samples = EXCLUDED.out_samples,
+			sum_traffic_in_bps = EXCLUDED.sum_traffic_in_bps,
+			sum_traffic_out_bps = EXCLUDED.sum_traffic_out_bps,
+			avg_traffic_in_bps = EXCLUDED.avg_traffic_in_bps,
+			avg_traffic_out_bps = EXCLUDED.avg_traffic_out_bps,
+			updated_at = NOW();
+	`
+	if _, err := r.db.ExecContext(ctx, q, interfaceID, start, end); err != nil {
+		return fmt.Errorf("populate interface traffic rollups: %w", err)
+	}
+	return nil
 }
 
 func (r *Repository) GetDeviceStorageHistory(
