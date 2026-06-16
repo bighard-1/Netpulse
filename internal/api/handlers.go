@@ -877,7 +877,7 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sourceTable := "metrics"
-		if end.Sub(start) >= 7*24*time.Hour {
+		if end.Sub(start) > 31*24*time.Hour {
 			sourceTable = "metrics_1m(优先)"
 		}
 		sampledInterval := strings.TrimSpace(interval)

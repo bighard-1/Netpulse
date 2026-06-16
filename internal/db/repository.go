@@ -198,9 +198,6 @@ FROM metrics
 GROUP BY bucket, device_id, interface_id
 WITH NO DATA;
 
-CREATE INDEX IF NOT EXISTS idx_metrics_1m_interface_bucket ON metrics_1m (interface_id, bucket DESC);
-CREATE INDEX IF NOT EXISTS idx_metrics_1m_device_bucket ON metrics_1m (device_id, bucket DESC);
-
 SELECT remove_continuous_aggregate_policy(
     'metrics_1m',
     if_exists => TRUE
@@ -1243,15 +1240,13 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 	if _, err := r.db.ExecContext(ctx, mig8); err != nil {
 		return fmt.Errorf("apply migration v8 failed: %w", err)
 	}
-	// v9: long-range chart acceleration for the 1-minute aggregate. Additive
-	// indexes only; query results and SNMP calculation semantics remain intact.
+	// v9: reserved marker for long-range chart hardening. Heavy indexes on
+	// existing Timescale continuous aggregates must not run in the blocking
+	// startup migration path; keep this version lightweight so service startup
+	// remains reliable on large production databases.
 	const mig9 = `
-		CREATE INDEX IF NOT EXISTS idx_metrics_1m_interface_bucket
-			ON metrics_1m (interface_id, bucket DESC);
-		CREATE INDEX IF NOT EXISTS idx_metrics_1m_device_bucket
-			ON metrics_1m (device_id, bucket DESC);
 		INSERT INTO schema_migrations(version, description)
-		VALUES (9, 'add metrics_1m long-range chart indexes')
+		VALUES (9, 'reserve non-blocking long-range chart hardening marker')
 		ON CONFLICT (version) DO NOTHING;
 	`
 	if _, err := r.db.ExecContext(ctx, mig9); err != nil {
@@ -3344,10 +3339,11 @@ func (r *Repository) GetInterfaceHistory(
 		return decimateInterfaceHistory(out, span, maxPoints), nil
 	}
 
-	// Long-range views are noticeably faster from the 1-minute aggregate. Keep a
-	// raw-table fallback so an unhealthy/empty continuous aggregate never turns
-	// into a blank chart.
-	if span >= 7*24*time.Hour {
+	// Keep common operator views (today / 7 days / 30 days) on the raw
+	// hypertable with interface_id+ts indexes. The continuous aggregate is kept
+	// for longer ranges, where 1-minute granularity matters more than exact
+	// recent continuity.
+	if span > 31*24*time.Hour {
 		out, err := query(true)
 		if err == nil && len(out) > 0 {
 			return out, nil
