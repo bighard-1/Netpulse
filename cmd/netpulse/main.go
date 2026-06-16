@@ -105,6 +105,7 @@ func main() {
 	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	repo.StartBackgroundMaintenance(runCtx)
 	go worker.Start(runCtx)
 	go snmp.StartSyslogServer(runCtx, repo, syslogAddr)
 	go snmp.StartTrapServer(runCtx, repo, trapAddr)

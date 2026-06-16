@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"os"
 	"strconv"
@@ -1084,6 +1085,95 @@ func NewRepository(db *sql.DB) *Repository {
 		key = nil
 	}
 	return &Repository{db: db, credKey: key}
+}
+
+func (r *Repository) StartBackgroundMaintenance(ctx context.Context) {
+	go r.ensureOptionalIndexes(ctx)
+}
+
+func (r *Repository) ensureOptionalIndexes(ctx context.Context) {
+	timer := time.NewTimer(15 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-timer.C:
+	}
+
+	indexes := []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "idx_metrics_1m_interface_bucket",
+			sql:  `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_metrics_1m_interface_bucket ON metrics_1m (interface_id, bucket DESC);`,
+		},
+		{
+			name: "idx_metrics_1m_device_bucket",
+			sql:  `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_metrics_1m_device_bucket ON metrics_1m (device_id, bucket DESC);`,
+		},
+	}
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		failed := 0
+		for _, idx := range indexes {
+			if ctx.Err() != nil {
+				return
+			}
+			if r.indexExists(ctx, idx.name) {
+				continue
+			}
+			if err := r.createOptionalIndex(ctx, idx.sql); err != nil {
+				failed++
+				log.Printf("optional index %s attempt %d skipped: %v", idx.name, attempt, err)
+				continue
+			}
+			log.Printf("optional index %s ready", idx.name)
+		}
+		if failed == 0 {
+			return
+		}
+		if attempt == 3 {
+			return
+		}
+		retry := time.NewTimer(5 * time.Minute)
+		select {
+		case <-ctx.Done():
+			retry.Stop()
+			return
+		case <-retry.C:
+		}
+	}
+}
+
+func (r *Repository) createOptionalIndex(ctx context.Context, query string) error {
+	conn, err := r.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, `SET lock_timeout = '2s'`); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `SET statement_timeout = '20min'`); err != nil {
+		return err
+	}
+	_, err = conn.ExecContext(ctx, query)
+	return err
+}
+
+func (r *Repository) indexExists(ctx context.Context, name string) bool {
+	var exists bool
+	err := r.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_indexes
+			WHERE schemaname = 'public'
+			  AND indexname = $1
+		);
+	`, name).Scan(&exists)
+	return err == nil && exists
 }
 
 // EnsureSchema auto-bootstraps database objects for a blank database.
@@ -3339,11 +3429,11 @@ func (r *Repository) GetInterfaceHistory(
 		return decimateInterfaceHistory(out, span, maxPoints), nil
 	}
 
-	// Keep common operator views (today / 7 days / 30 days) on the raw
-	// hypertable with interface_id+ts indexes. The continuous aggregate is kept
-	// for longer ranges, where 1-minute granularity matters more than exact
-	// recent continuity.
-	if span > 31*24*time.Hour {
+	// Prefer the 1-minute continuous aggregate for multi-day charts only after
+	// its optional index exists. This keeps startup migrations non-blocking while
+	// allowing 7/30-day views to become fast automatically after maintenance.
+	useAggregate := span >= 7*24*time.Hour && r.indexExists(ctx, "idx_metrics_1m_interface_bucket")
+	if useAggregate || span > 31*24*time.Hour {
 		out, err := query(true)
 		if err == nil && len(out) > 0 {
 			return out, nil
