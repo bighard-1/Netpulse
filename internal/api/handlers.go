@@ -871,7 +871,13 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, cached)
 			return
 		}
-		items, err := h.repo.GetInterfaceHistory(r.Context(), id, start, end, interval, maxPoints)
+		queryCtx := r.Context()
+		cancel := func() {}
+		if end.Sub(start) > 24*time.Hour {
+			queryCtx, cancel = context.WithTimeout(r.Context(), 18*time.Second)
+		}
+		defer cancel()
+		items, err := h.repo.GetInterfaceHistory(queryCtx, id, start, end, interval, maxPoints)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
