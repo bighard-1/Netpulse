@@ -152,14 +152,9 @@ func (r *Repository) DiagnoseAssetLoad(ctx context.Context) (*AssetLoadDiagnosti
 	run("Timescale连续聚合检查", 800, 3000, func(ctx context.Context) (string, string, error) {
 		var exists bool
 		if err := r.db.QueryRowContext(ctx, `
-			SELECT EXISTS (
-			  SELECT 1
-			  FROM pg_matviews
-			  WHERE schemaname = 'public'
-			    AND matviewname = 'metrics_1m'
-			);
+			SELECT to_regclass('public.metrics_1m') IS NOT NULL;
 		`).Scan(&exists); err != nil {
-			return "", "请确认数据库用户具备读取 pg_matviews 的权限。", fmt.Errorf("检查 metrics_1m 失败: %w", err)
+			return "", "请确认数据库用户具备读取系统目录的权限。", fmt.Errorf("检查 metrics_1m 失败: %w", err)
 		}
 		if !exists {
 			return "", "请重启 NetPulse 触发 schema migration，或检查启动日志中的 TimescaleDB 连续聚合创建错误。", fmt.Errorf("metrics_1m 连续聚合不存在")
@@ -176,7 +171,24 @@ func (r *Repository) DiagnoseAssetLoad(ctx context.Context) (*AssetLoadDiagnosti
 		if report.RecentMetricCount > 0 && recentBuckets == 0 {
 			suggestion = "近2小时连续聚合暂无数据，长周期图表可能退化或变慢；请检查 TimescaleDB policy 是否正常刷新。"
 		}
-		return fmt.Sprintf("metrics_1m 已存在，近2小时聚合桶 %d 个", recentBuckets), suggestion, nil
+		meta := "连续聚合元数据可读"
+		var isContinuous bool
+		if err := r.db.QueryRowContext(ctx, `
+			SELECT EXISTS (
+			  SELECT 1
+			  FROM timescaledb_information.continuous_aggregates
+			  WHERE view_schema = 'public'
+			    AND view_name = 'metrics_1m'
+			);
+		`).Scan(&isContinuous); err != nil {
+			meta = "连续聚合元数据不可读，已按 metrics_1m 可查询状态判断"
+		} else if !isContinuous {
+			meta = "metrics_1m 可查询，但未在 continuous_aggregates 元数据中识别"
+			if suggestion == "" {
+				suggestion = "若长周期图表持续变慢，请检查 metrics_1m 是否为 Timescale 连续聚合。"
+			}
+		}
+		return fmt.Sprintf("metrics_1m 已存在且可查询，近2小时聚合桶 %d 个，%s", recentBuckets, meta), suggestion, nil
 	})
 
 	run("最新端口指标查询", 1500, 8000, func(ctx context.Context) (string, string, error) {

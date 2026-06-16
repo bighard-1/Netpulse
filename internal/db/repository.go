@@ -3249,86 +3249,94 @@ func (r *Repository) GetInterfaceHistory(
 	ctx context.Context, interfaceID int64, start, end time.Time, interval string, maxPoints int,
 ) ([]InterfaceHistoryPoint, error) {
 	span := end.Sub(start)
-	// Keep common operator views (today / 7 days / 30 days) on the raw
-	// hypertable with interface_id+ts indexes. The continuous aggregate is kept
-	// for long-range views, where 1-minute granularity matters more than exact
-	// recent continuity.
-	useAgg := span > 31*24*time.Hour
 	interval = strings.TrimSpace(strings.ToLower(interval))
-	bucketInterval := resolveHistoryBucketInterval(span, interval, maxPoints, useAgg)
 
-	q := `
-		SELECT ts, traffic_in_bps, traffic_out_bps
-		FROM metrics
-		WHERE interface_id = $1
-		  AND ts >= $2 AND ts <= $3
-		  AND (traffic_in_bps IS NOT NULL OR traffic_out_bps IS NOT NULL)
-		ORDER BY ts;
-	`
-	if bucketInterval != "" {
-		q = fmt.Sprintf(`
-			SELECT time_bucket('%[1]s', ts) AS ts,
-			       AVG(traffic_in_bps) AS traffic_in_bps,
-			       AVG(traffic_out_bps) AS traffic_out_bps
+	query := func(useAgg bool) ([]InterfaceHistoryPoint, error) {
+		bucketInterval := resolveHistoryBucketInterval(span, interval, maxPoints, useAgg)
+		q := `
+			SELECT ts, traffic_in_bps, traffic_out_bps
 			FROM metrics
 			WHERE interface_id = $1
 			  AND ts >= $2 AND ts <= $3
 			  AND (traffic_in_bps IS NOT NULL OR traffic_out_bps IS NOT NULL)
-			GROUP BY 1
-			ORDER BY 1;
-		`, bucketInterval)
-	}
-	if useAgg && bucketInterval == "" {
-		q = `
-			SELECT bucket AS ts, avg_traffic_in_bps AS traffic_in_bps, avg_traffic_out_bps AS traffic_out_bps
-			FROM metrics_1m
-			WHERE interface_id = $1
-			  AND bucket >= $2 AND bucket <= $3
-			  AND (avg_traffic_in_bps IS NOT NULL OR avg_traffic_out_bps IS NOT NULL)
-			ORDER BY bucket;
+			ORDER BY ts;
 		`
-	}
-	if useAgg && bucketInterval != "" {
-		q = fmt.Sprintf(`
-			SELECT time_bucket('%[1]s', bucket) AS ts,
-			       AVG(avg_traffic_in_bps) AS traffic_in_bps,
-			       AVG(avg_traffic_out_bps) AS traffic_out_bps
-			FROM metrics_1m
-			WHERE interface_id = $1
-			  AND bucket >= $2 AND bucket <= $3
-			  AND (avg_traffic_in_bps IS NOT NULL OR avg_traffic_out_bps IS NOT NULL)
-			GROUP BY 1
-			ORDER BY 1;
-		`, bucketInterval)
+		if bucketInterval != "" {
+			q = fmt.Sprintf(`
+				SELECT time_bucket('%[1]s', ts) AS ts,
+				       AVG(traffic_in_bps) AS traffic_in_bps,
+				       AVG(traffic_out_bps) AS traffic_out_bps
+				FROM metrics
+				WHERE interface_id = $1
+				  AND ts >= $2 AND ts <= $3
+				  AND (traffic_in_bps IS NOT NULL OR traffic_out_bps IS NOT NULL)
+				GROUP BY 1
+				ORDER BY 1;
+			`, bucketInterval)
+		}
+		if useAgg && bucketInterval == "" {
+			q = `
+				SELECT bucket AS ts, avg_traffic_in_bps AS traffic_in_bps, avg_traffic_out_bps AS traffic_out_bps
+				FROM metrics_1m
+				WHERE interface_id = $1
+				  AND bucket >= $2 AND bucket <= $3
+				  AND (avg_traffic_in_bps IS NOT NULL OR avg_traffic_out_bps IS NOT NULL)
+				ORDER BY bucket;
+			`
+		}
+		if useAgg && bucketInterval != "" {
+			q = fmt.Sprintf(`
+				SELECT time_bucket('%[1]s', bucket) AS ts,
+				       AVG(avg_traffic_in_bps) AS traffic_in_bps,
+				       AVG(avg_traffic_out_bps) AS traffic_out_bps
+				FROM metrics_1m
+				WHERE interface_id = $1
+				  AND bucket >= $2 AND bucket <= $3
+				  AND (avg_traffic_in_bps IS NOT NULL OR avg_traffic_out_bps IS NOT NULL)
+				GROUP BY 1
+				ORDER BY 1;
+			`, bucketInterval)
+		}
+
+		rows, err := r.db.QueryContext(ctx, q, interfaceID, start, end)
+		if err != nil {
+			return nil, fmt.Errorf("get interface history: %w", err)
+		}
+		defer rows.Close()
+
+		out := make([]InterfaceHistoryPoint, 0)
+		for rows.Next() {
+			var p InterfaceHistoryPoint
+			var in, outB sql.NullFloat64
+			if err := rows.Scan(&p.Timestamp, &in, &outB); err != nil {
+				return nil, fmt.Errorf("scan interface history: %w", err)
+			}
+			if in.Valid {
+				v := in.Float64
+				p.TrafficInBps = &v
+			}
+			if outB.Valid {
+				v := outB.Float64
+				p.TrafficOutBps = &v
+			}
+			out = append(out, p)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate interface history: %w", err)
+		}
+		return decimateInterfaceHistory(out, span, maxPoints), nil
 	}
 
-	rows, err := r.db.QueryContext(ctx, q, interfaceID, start, end)
-	if err != nil {
-		return nil, fmt.Errorf("get interface history: %w", err)
-	}
-	defer rows.Close()
-
-	out := make([]InterfaceHistoryPoint, 0)
-	for rows.Next() {
-		var p InterfaceHistoryPoint
-		var in, outB sql.NullFloat64
-		if err := rows.Scan(&p.Timestamp, &in, &outB); err != nil {
-			return nil, fmt.Errorf("scan interface history: %w", err)
+	// Long-range views are noticeably faster from the 1-minute aggregate. Keep a
+	// raw-table fallback so an unhealthy/empty continuous aggregate never turns
+	// into a blank chart.
+	if span >= 7*24*time.Hour {
+		out, err := query(true)
+		if err == nil && len(out) > 0 {
+			return out, nil
 		}
-		if in.Valid {
-			v := in.Float64
-			p.TrafficInBps = &v
-		}
-		if outB.Valid {
-			v := outB.Float64
-			p.TrafficOutBps = &v
-		}
-		out = append(out, p)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate interface history: %w", err)
-	}
-	return decimateInterfaceHistory(out, span, maxPoints), nil
+	return query(false)
 }
 
 func (r *Repository) GetDeviceStorageHistory(

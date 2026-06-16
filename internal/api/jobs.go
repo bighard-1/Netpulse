@@ -296,10 +296,48 @@ func (h *Handler) handleStartBackupDrillJob(w http.ResponseWriter, r *http.Reque
 		h.markJobRunning(jobID, "正在执行备份可恢复性演练")
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
-		if err := RunBackupDrill(ctx, h.system, h.repo); err != nil {
+		heartbeatDone := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			progress := 15
+			for {
+				select {
+				case <-heartbeatDone:
+					return
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if progress < 45 {
+						progress += 5
+					}
+					h.updateSystemJob(jobID, func(job *SystemJob) {
+						if job.Status == "running" && job.Progress < 50 {
+							job.Progress = progress
+							job.Message = "正在生成临时备份文件，请稍候"
+						}
+					})
+				}
+			}
+		}()
+		progress := func(percent int, message string) {
+			if percent < 10 {
+				percent = 10
+			}
+			if percent > 99 {
+				percent = 99
+			}
+			h.updateSystemJob(jobID, func(job *SystemJob) {
+				job.Progress = percent
+				job.Message = message
+			})
+		}
+		if err := RunBackupDrillWithProgress(ctx, h.system, h.repo, progress); err != nil {
+			close(heartbeatDone)
 			h.markJobFailed(jobID, err)
 			return
 		}
+		close(heartbeatDone)
 		h.markJobDone(jobID, "备份演练完成")
 	}(job.ID)
 	writeJSON(w, http.StatusAccepted, job)
