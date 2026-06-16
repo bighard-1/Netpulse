@@ -3381,7 +3381,7 @@ func (r *Repository) GetInterfaceHistory(
 	span := end.Sub(start)
 	interval = strings.TrimSpace(strings.ToLower(interval))
 
-	query := func(useAgg bool) ([]InterfaceHistoryPoint, error) {
+	query := func(qctx context.Context, useAgg bool) ([]InterfaceHistoryPoint, error) {
 		bucketInterval := resolveHistoryBucketInterval(span, interval, maxPoints, useAgg)
 		q := `
 			SELECT ts, traffic_in_bps, traffic_out_bps
@@ -3428,7 +3428,7 @@ func (r *Repository) GetInterfaceHistory(
 			`, bucketInterval)
 		}
 
-		rows, err := r.db.QueryContext(ctx, q, interfaceID, start, end)
+		rows, err := r.db.QueryContext(qctx, q, interfaceID, start, end)
 		if err != nil {
 			return nil, fmt.Errorf("get interface history: %w", err)
 		}
@@ -3457,17 +3457,70 @@ func (r *Repository) GetInterfaceHistory(
 		return decimateInterfaceHistory(out, span, maxPoints), nil
 	}
 
-	// Prefer the 1-minute continuous aggregate for multi-day charts only after
-	// its optional index exists. This keeps startup migrations non-blocking while
-	// allowing 7/30-day views to become fast automatically after maintenance.
-	useAggregate := span >= 7*24*time.Hour && r.indexExists(ctx, "idx_metrics_1m_interface_bucket")
-	if useAggregate || span > 31*24*time.Hour {
-		out, err := query(true)
+	queryIndexedBuckets := func() ([]InterfaceHistoryPoint, error) {
+		bucketInterval := resolveHistoryBucketInterval(span, interval, maxPoints, false)
+		if bucketInterval == "" {
+			bucketInterval = "5 minutes"
+		}
+		q := fmt.Sprintf(`
+			WITH buckets AS (
+				SELECT generate_series($2::timestamptz, $3::timestamptz, '%[1]s'::interval) AS bucket
+			)
+			SELECT b.bucket AS ts,
+			       agg.traffic_in_bps,
+			       agg.traffic_out_bps
+			FROM buckets b
+			LEFT JOIN LATERAL (
+				SELECT AVG(traffic_in_bps) AS traffic_in_bps,
+				       AVG(traffic_out_bps) AS traffic_out_bps
+				FROM metrics
+				WHERE interface_id = $1
+				  AND ts >= b.bucket
+				  AND ts < LEAST(b.bucket + '%[1]s'::interval, $3::timestamptz)
+				  AND (traffic_in_bps IS NOT NULL OR traffic_out_bps IS NOT NULL)
+			) agg ON TRUE
+			WHERE agg.traffic_in_bps IS NOT NULL OR agg.traffic_out_bps IS NOT NULL
+			ORDER BY b.bucket;
+		`, bucketInterval)
+		rows, err := r.db.QueryContext(ctx, q, interfaceID, start, end)
+		if err != nil {
+			return nil, fmt.Errorf("get interface history indexed buckets: %w", err)
+		}
+		defer rows.Close()
+
+		out := make([]InterfaceHistoryPoint, 0)
+		for rows.Next() {
+			var p InterfaceHistoryPoint
+			var in, outB sql.NullFloat64
+			if err := rows.Scan(&p.Timestamp, &in, &outB); err != nil {
+				return nil, fmt.Errorf("scan interface history indexed buckets: %w", err)
+			}
+			if in.Valid {
+				v := in.Float64
+				p.TrafficInBps = &v
+			}
+			if outB.Valid {
+				v := outB.Float64
+				p.TrafficOutBps = &v
+			}
+			out = append(out, p)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate interface history indexed buckets: %w", err)
+		}
+		return decimateInterfaceHistory(out, span, maxPoints), nil
+	}
+
+	if span > 24*time.Hour {
+		aggCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		out, err := query(aggCtx, true)
+		cancel()
 		if err == nil && len(out) > 0 {
 			return out, nil
 		}
+		return queryIndexedBuckets()
 	}
-	return query(false)
+	return query(ctx, false)
 }
 
 func (r *Repository) GetDeviceStorageHistory(
