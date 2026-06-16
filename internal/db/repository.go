@@ -1101,16 +1101,19 @@ func (r *Repository) ensureOptionalIndexes(ctx context.Context) {
 	}
 
 	indexes := []struct {
-		name string
-		sql  string
+		name        string
+		concurrent  string
+		nonBlocking string
 	}{
 		{
-			name: "idx_metrics_1m_interface_bucket",
-			sql:  `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_metrics_1m_interface_bucket ON metrics_1m (interface_id, bucket DESC);`,
+			name:        "idx_metrics_1m_interface_bucket",
+			concurrent:  `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_metrics_1m_interface_bucket ON metrics_1m (interface_id, bucket DESC);`,
+			nonBlocking: `CREATE INDEX IF NOT EXISTS idx_metrics_1m_interface_bucket ON metrics_1m (interface_id, bucket DESC);`,
 		},
 		{
-			name: "idx_metrics_1m_device_bucket",
-			sql:  `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_metrics_1m_device_bucket ON metrics_1m (device_id, bucket DESC);`,
+			name:        "idx_metrics_1m_device_bucket",
+			concurrent:  `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_metrics_1m_device_bucket ON metrics_1m (device_id, bucket DESC);`,
+			nonBlocking: `CREATE INDEX IF NOT EXISTS idx_metrics_1m_device_bucket ON metrics_1m (device_id, bucket DESC);`,
 		},
 	}
 
@@ -1123,7 +1126,7 @@ func (r *Repository) ensureOptionalIndexes(ctx context.Context) {
 			if r.indexExists(ctx, idx.name) {
 				continue
 			}
-			if err := r.createOptionalIndex(ctx, idx.sql); err != nil {
+			if err := r.createOptionalIndex(ctx, idx.concurrent, idx.nonBlocking); err != nil {
 				failed++
 				log.Printf("optional index %s attempt %d skipped: %v", idx.name, attempt, err)
 				continue
@@ -1146,7 +1149,7 @@ func (r *Repository) ensureOptionalIndexes(ctx context.Context) {
 	}
 }
 
-func (r *Repository) createOptionalIndex(ctx context.Context, query string) error {
+func (r *Repository) createOptionalIndex(ctx context.Context, concurrentQuery, fallbackQuery string) error {
 	conn, err := r.db.Conn(ctx)
 	if err != nil {
 		return err
@@ -1159,8 +1162,21 @@ func (r *Repository) createOptionalIndex(ctx context.Context, query string) erro
 	if _, err := conn.ExecContext(ctx, `SET statement_timeout = '20min'`); err != nil {
 		return err
 	}
-	_, err = conn.ExecContext(ctx, query)
-	return err
+	if _, err := conn.ExecContext(ctx, concurrentQuery); err != nil {
+		// TimescaleDB hypertables and continuous aggregates do not support
+		// CREATE INDEX CONCURRENTLY. Fall back only inside this background task;
+		// startup migrations remain fast and safe.
+		if strings.Contains(err.Error(), "hypertables do not support concurrent index creation") ||
+			strings.Contains(err.Error(), "SQLSTATE 0A000") {
+			_, fallbackErr := conn.ExecContext(ctx, fallbackQuery)
+			if fallbackErr != nil {
+				return fallbackErr
+			}
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *Repository) indexExists(ctx context.Context, name string) bool {
