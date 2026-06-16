@@ -353,10 +353,10 @@ function calcFetchPlan(start, end) {
   const spanMs = end.getTime() - start.getTime();
   let interval = "";
   const highSpeedStable = isHighSpeedCacheSensitive();
-  if (spanMs > 180 * 24 * 3600 * 1000) interval = "1h";
-  else if (spanMs > 30 * 24 * 3600 * 1000) interval = "1h";
-  else if (spanMs > 7 * 24 * 3600 * 1000) interval = "30m";
-  else if (spanMs > 24 * 3600 * 1000) interval = "5m";
+  if (spanMs > 180 * 24 * 3600 * 1000) interval = "6h";
+  else if (spanMs > 30 * 24 * 3600 * 1000) interval = "2h";
+  else if (spanMs > 7 * 24 * 3600 * 1000) interval = "1h";
+  else if (spanMs > 24 * 3600 * 1000) interval = "15m";
   else if (highSpeedStable) interval = "2m";
   // Low-speed ports keep same-day views on raw points; wider ranges use
   // explicit buckets so the database returns display-ready data.
@@ -389,7 +389,7 @@ function xAxisLabelFormatter(value, metaKey) {
 async function fetchRange(start, end) {
   const plan = calcFetchPlan(start, end);
   const spanMs = end.getTime() - start.getTime();
-  const maxPoints = spanMs > 365 * 24 * 3600 * 1000 ? 1500 : 2500;
+  const maxPoints = spanMs > 30 * 24 * 3600 * 1000 ? 1000 : (spanMs > 24 * 3600 * 1000 ? 1200 : 2500);
   const res = await api.getHistory("traffic", props.id, start.toISOString(), end.toISOString(), plan.interval, maxPoints);
   return {
     data: res.data.data || [],

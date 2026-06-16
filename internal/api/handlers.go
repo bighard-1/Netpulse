@@ -899,7 +899,7 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			"maxPoints":        maxPoints,
 			"data":             items,
 		}
-		h.setCachedHistory(cacheKey, payload)
+		h.setCachedHistory(cacheKey, payload, historyCacheTTLFor(start, end))
 		writeJSON(w, http.StatusOK, payload)
 	case "storage":
 		items, err := h.repo.GetDeviceStorageHistory(r.Context(), id, start, end, interval, maxPoints)
@@ -927,8 +927,28 @@ const historyCacheMaxEntries = 128
 func historyCacheKey(metricType string, id int64, start, end time.Time, interval string, maxPoints int) string {
 	// Round end time slightly so repeated refreshes within one short UI cycle can
 	// reuse the same result without changing the public API contract.
-	endBucket := end.Unix() / 15
+	bucketSeconds := int64(15)
+	span := end.Sub(start)
+	switch {
+	case span > 7*24*time.Hour:
+		bucketSeconds = 300
+	case span > 24*time.Hour:
+		bucketSeconds = 120
+	}
+	endBucket := end.Unix() / bucketSeconds
 	return fmt.Sprintf("%s:%d:%d:%d:%s:%d", metricType, id, start.Unix(), endBucket, strings.TrimSpace(interval), maxPoints)
+}
+
+func historyCacheTTLFor(start, end time.Time) time.Duration {
+	span := end.Sub(start)
+	switch {
+	case span > 7*24*time.Hour:
+		return 10 * time.Minute
+	case span > 24*time.Hour:
+		return 2 * time.Minute
+	default:
+		return historyCacheTTL
+	}
 }
 
 func (h *Handler) getCachedHistory(key string) (map[string]any, bool) {
@@ -949,7 +969,7 @@ func (h *Handler) getCachedHistory(key string) (map[string]any, bool) {
 	return entry.payload, true
 }
 
-func (h *Handler) setCachedHistory(key string, payload map[string]any) {
+func (h *Handler) setCachedHistory(key string, payload map[string]any, ttl time.Duration) {
 	h.cacheMu.Lock()
 	defer h.cacheMu.Unlock()
 	if h.history == nil {
@@ -974,7 +994,10 @@ func (h *Handler) setCachedHistory(key string, payload map[string]any) {
 			delete(h.history, oldestKey)
 		}
 	}
-	h.history[key] = historyCacheEntry{payload: payload, expiresAt: now.Add(historyCacheTTL)}
+	if ttl <= 0 {
+		ttl = historyCacheTTL
+	}
+	h.history[key] = historyCacheEntry{payload: payload, expiresAt: now.Add(ttl)}
 	h.cacheStats.HistoryEntries = len(h.history)
 }
 

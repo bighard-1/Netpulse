@@ -1088,6 +1088,10 @@ func NewRepository(db *sql.DB) *Repository {
 }
 
 func (r *Repository) StartBackgroundMaintenance(ctx context.Context) {
+	if strings.ToLower(strings.TrimSpace(os.Getenv("NETPULSE_ENABLE_OPTIONAL_INDEX_MAINTENANCE"))) != "true" {
+		log.Printf("optional index maintenance disabled; set NETPULSE_ENABLE_OPTIONAL_INDEX_MAINTENANCE=true to run it during a maintenance window")
+		return
+	}
 	go r.ensureOptionalIndexes(ctx)
 }
 
@@ -1159,7 +1163,7 @@ func (r *Repository) createOptionalIndex(ctx context.Context, concurrentQuery, f
 	if _, err := conn.ExecContext(ctx, `SET lock_timeout = '2s'`); err != nil {
 		return err
 	}
-	if _, err := conn.ExecContext(ctx, `SET statement_timeout = '20min'`); err != nil {
+	if _, err := conn.ExecContext(ctx, `SET statement_timeout = '10min'`); err != nil {
 		return err
 	}
 	if _, err := conn.ExecContext(ctx, concurrentQuery); err != nil {
