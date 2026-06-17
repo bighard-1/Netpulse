@@ -17,7 +17,7 @@ final class PortDetailViewModel: ObservableObject {
 
     func loadCustom(portID: String) {
         let now = Date()
-        let minStart = Calendar.current.date(byAdding: .year, value: -3, to: now) ?? now
+        let minStart = Calendar.current.date(byAdding: .year, value: -2, to: now) ?? now
         let rawStart = max(customStart, minStart)
         let rawEnd = min(customEnd, now)
         guard rawEnd > rawStart else {

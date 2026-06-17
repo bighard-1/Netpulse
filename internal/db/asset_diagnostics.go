@@ -107,21 +107,25 @@ func (r *Repository) DiagnoseAssetLoad(ctx context.Context) (*AssetLoadDiagnosti
 			"idx_interface_latest_metrics_device",
 			"idx_interface_latest_metrics_ts",
 			"idx_device_latest_metrics_ts",
+			"idx_traffic_5m_device_bucket",
+			"idx_traffic_1h_device_bucket",
 		}
 		rows, err := r.db.QueryContext(ctx, `
 			SELECT indexname
 			FROM pg_indexes
 			WHERE schemaname = 'public'
-			  AND indexname IN (
-			    'idx_metrics_interface_ts',
-			    'idx_metrics_device_ts',
-			    'idx_device_logs_device_created_at',
-			    'idx_interfaces_device_index',
-			    'idx_interface_latest_metrics_device',
-			    'idx_interface_latest_metrics_ts',
-			    'idx_device_latest_metrics_ts'
-			  );
-		`)
+				  AND indexname IN (
+				    'idx_metrics_interface_ts',
+				    'idx_metrics_device_ts',
+				    'idx_device_logs_device_created_at',
+				    'idx_interfaces_device_index',
+				    'idx_interface_latest_metrics_device',
+				    'idx_interface_latest_metrics_ts',
+				    'idx_device_latest_metrics_ts',
+				    'idx_traffic_5m_device_bucket',
+				    'idx_traffic_1h_device_bucket'
+				  );
+			`)
 		if err != nil {
 			return "", "请确认数据库用户具备读取 pg_indexes 的权限。", fmt.Errorf("检查索引失败: %w", err)
 		}
@@ -147,6 +151,22 @@ func (r *Repository) DiagnoseAssetLoad(ctx context.Context) (*AssetLoadDiagnosti
 			return "", "请重启 NetPulse 触发自动迁移，或检查启动日志中的 schema migration 错误。", fmt.Errorf("缺失索引: %s", strings.Join(missing, ", "))
 		}
 		return "关键索引已存在", "", nil
+	})
+
+	run("流量预聚合状态", 800, 3000, func(ctx context.Context) (string, string, error) {
+		var c5m, c1h int
+		err := r.db.QueryRowContext(ctx, `
+				SELECT
+				  (SELECT COUNT(*) FROM traffic_5m WHERE bucket >= NOW() - INTERVAL '7 days'),
+				  (SELECT COUNT(*) FROM traffic_1h WHERE bucket >= NOW() - INTERVAL '30 days');
+			`).Scan(&c5m, &c1h)
+		if err != nil {
+			return "", "请确认新版本已完成启动迁移，并观察 traffic_rollup_state 是否有错误。", fmt.Errorf("检查流量预聚合失败: %w", err)
+		}
+		if c5m == 0 {
+			return fmt.Sprintf("近7天5分钟聚合点 %d 条，近30天1小时聚合点 %d 条", c5m, c1h), "流量预聚合正在回填或未运行，请等待后台任务完成；长周期图表会优先依赖预聚合数据。", nil
+		}
+		return fmt.Sprintf("近7天5分钟聚合点 %d 条，近30天1小时聚合点 %d 条", c5m, c1h), "", nil
 	})
 
 	run("Timescale连续聚合检查", 800, 3000, func(ctx context.Context) (string, string, error) {

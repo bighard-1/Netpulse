@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,7 +88,8 @@ func (s *SystemService) pgDumpGzip(ctx context.Context, mode string) (string, st
 
 	errOut, _ := io.ReadAll(stderr)
 	if err := cmd.Wait(); err != nil {
-		return "", "", fmt.Errorf("pg_dump failed: %v (%s)", err, string(errOut))
+		log.Printf("pg_dump failed mode=%s: %v stderr=%s", mode, err, string(errOut))
+		return "", "", fmt.Errorf("pg_dump failed: %w", err)
 	}
 
 	return path, filename, nil
@@ -141,7 +143,8 @@ func (s *SystemService) Restore(ctx context.Context, gzSQL io.Reader) error {
 
 	errOut, _ := io.ReadAll(stderr)
 	if err := psql.Wait(); err != nil {
-		return fmt.Errorf("psql restore failed: %v (%s)", err, string(errOut))
+		log.Printf("psql restore failed: %v stderr=%s", err, string(errOut))
+		return fmt.Errorf("psql restore failed: %w", err)
 	}
 
 	return nil

@@ -32,6 +32,10 @@ final class DeviceDetailViewModel: ObservableObject {
         }
     }
 
+    func refresh(deviceID: String) {
+        load(deviceID: deviceID)
+    }
+
     func loadHistory(deviceID: String) {
         historyTask?.cancel()
         historyTask = Task {

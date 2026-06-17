@@ -32,6 +32,12 @@ func getenv(key, fallback string) string {
 	return v
 }
 
+func warnDefaultSecret(key, value, defaultValue, hint string) {
+	if value == defaultValue {
+		log.Printf("SECURITY WARNING: %s is using the default value. %s", key, hint)
+	}
+}
+
 func main() {
 	host := getenv("DB_HOST", "netpulse-db")
 	port := getenv("DB_PORT", "5432")
@@ -47,6 +53,10 @@ func main() {
 	backupDrillHours := getenv("BACKUP_DRILL_EVERY_HOURS", "168")
 	pollIntervalSec := getenv("SNMP_POLL_INTERVAL_SEC", "60")
 	onlineWindowSec := getenv("STATUS_ONLINE_WINDOW_SEC", "300")
+
+	warnDefaultSecret("DB_PASSWORD", password, "netpulse123", "请在生产环境中通过环境变量设置强数据库密码。")
+	warnDefaultSecret("ADMIN_PASSWORD", adminPassword, "admin123", "请在生产环境中通过环境变量设置强管理员密码。")
+	warnDefaultSecret("JWT_SECRET", jwtSecret, "change-this-secret", "请在生产环境中设置随机且足够长的 JWT_SECRET。")
 
 	dsn := fmt.Sprintf(
 		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
@@ -106,6 +116,7 @@ func main() {
 	defer stop()
 
 	repo.StartBackgroundMaintenance(runCtx)
+	repo.StartTrafficRollupWorker(runCtx)
 	go worker.Start(runCtx)
 	go snmp.StartSyslogServer(runCtx, repo, syslogAddr)
 	go snmp.StartTrapServer(runCtx, repo, trapAddr)

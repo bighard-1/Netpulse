@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -29,6 +30,7 @@ type SystemJob struct {
 	CreatedAt  time.Time `json:"created_at"`
 	StartedAt  time.Time `json:"started_at,omitempty"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 func newJobID() string {
@@ -48,6 +50,7 @@ func (h *Handler) createSystemJob(jobType, message string) *SystemJob {
 		Progress:  0,
 		Message:   message,
 		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	h.jobsMu.Lock()
 	if h.jobs == nil {
@@ -64,6 +67,7 @@ func (h *Handler) updateSystemJob(id string, fn func(*SystemJob)) {
 	defer h.jobsMu.Unlock()
 	if job := h.jobs[id]; job != nil {
 		fn(job)
+		job.UpdatedAt = time.Now()
 	}
 }
 
@@ -132,7 +136,7 @@ func (h *Handler) markJobRunning(id, message string) {
 func (h *Handler) markJobFailed(id string, err error) {
 	msg := "任务执行失败"
 	if err != nil {
-		msg = err.Error()
+		msg = publicJobError(err)
 	}
 	h.updateSystemJob(id, func(job *SystemJob) {
 		job.Status = "failed"
@@ -141,6 +145,23 @@ func (h *Handler) markJobFailed(id string, err error) {
 		job.Error = msg
 		job.FinishedAt = time.Now()
 	})
+}
+
+func publicJobError(err error) string {
+	if err == nil {
+		return "任务执行失败"
+	}
+	raw := err.Error()
+	switch {
+	case strings.Contains(raw, "pg_dump"):
+		return "数据库备份失败，请在服务器日志中查看详细原因"
+	case strings.Contains(raw, "psql restore"):
+		return "数据库恢复失败，请确认备份文件完整并查看服务器日志"
+	case strings.Contains(raw, "context deadline exceeded"):
+		return "任务执行超时，请稍后重试或检查数据库负载"
+	default:
+		return raw
+	}
 }
 
 func (h *Handler) markJobDone(id, message string) {

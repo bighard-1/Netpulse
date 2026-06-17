@@ -12,7 +12,7 @@ enum TimePreset: String, CaseIterable {
     case sevenDays
     case thirtyDays
     case oneYear
-    case threeYears
+    case twoYears
 }
 
 enum HistoryQueryPlanner {
@@ -29,8 +29,8 @@ enum HistoryQueryPlanner {
         case .oneYear:
             let start = floorToHour(Calendar.current.date(byAdding: .year, value: -1, to: now) ?? now, hourStep: 6)
             return .init(start: start, end: now, interval: "6h", maxPoints: 1400)
-        case .threeYears:
-            let start = floorToHour(Calendar.current.date(byAdding: .year, value: -3, to: now) ?? now, hourStep: 24)
+        case .twoYears:
+            let start = floorToHour(Calendar.current.date(byAdding: .year, value: -2, to: now) ?? now, hourStep: 24)
             return .init(start: start, end: now, interval: "1h", maxPoints: 1200)
         }
     }

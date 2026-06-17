@@ -70,6 +70,7 @@ const runtimePollSec = ref(60);
 let charts = { today: null, d7: null, d30: null, custom: null };
 let fullChartRequestSeq = 0;
 let customChartRequestSeq = 0;
+const MAX_TRAFFIC_HISTORY_MS = 730 * 24 * 3600 * 1000;
 
 const pickerShortcuts = [
   { text: "本周", value: () => [startOfServerWeek(new Date()), new Date()] },
@@ -389,6 +390,9 @@ function xAxisLabelFormatter(value, metaKey) {
 async function fetchRange(start, end) {
   const plan = calcFetchPlan(start, end);
   const spanMs = end.getTime() - start.getTime();
+  if (spanMs > MAX_TRAFFIC_HISTORY_MS) {
+    throw new Error("流量历史最长仅支持查询近2年");
+  }
   const maxPoints = spanMs > 30 * 24 * 3600 * 1000 ? 1000 : (spanMs > 24 * 3600 * 1000 ? 1200 : 2500);
   const res = await api.getHistory("traffic", props.id, start.toISOString(), end.toISOString(), plan.interval, maxPoints);
   return {

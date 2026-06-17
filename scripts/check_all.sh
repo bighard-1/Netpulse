@@ -3,18 +3,20 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-echo "[1/4] go test"
+echo "[1/5] go test"
 cd "$ROOT_DIR"
 go test ./...
 
-echo "[2/4] go build"
+echo "[2/5] go vet"
+go vet ./...
+
+echo "[3/5] go build"
 go build ./...
 
-echo "[3/4] web lint"
-cd "$ROOT_DIR/web"
-pnpm lint
+echo "[4/5] web lint"
+npm --prefix "$ROOT_DIR/web" run lint
 
-echo "[4/4] web build"
-pnpm build
+echo "[5/5] web build"
+npm --prefix "$ROOT_DIR/web" run build
 
 echo "All checks passed."

@@ -17,12 +17,12 @@ struct PortDetailView: View {
                 Text("近7天").tag(TimePreset.sevenDays)
                 Text("近30天").tag(TimePreset.thirtyDays)
                 Text("近1年").tag(TimePreset.oneYear)
-                Text("近3年").tag(TimePreset.threeYears)
+                Text("近2年").tag(TimePreset.twoYears)
             }
             .pickerStyle(.segmented)
             .onChange(of: vm.preset) { _ in vm.load(portID: portID) }
 
-            GroupBox("自定义时间段（3年内）") {
+            GroupBox("自定义时间段（2年内）") {
                 VStack(spacing: 8) {
                     DatePicker("开始", selection: $vm.customStart, displayedComponents: [.date, .hourAndMinute])
                     DatePicker("结束", selection: $vm.customEnd, displayedComponents: [.date, .hourAndMinute])
