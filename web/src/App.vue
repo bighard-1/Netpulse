@@ -6,6 +6,7 @@ import { useOpsStore } from "./stores/ops";
 import { api } from "./services/api";
 import { zhCN } from "./i18n/zhCN";
 import { useFeedback } from "./composables/useFeedback";
+import { getServerTimezone } from "./utils/serverTime";
 
 const route = useRoute();
 const router = useRouter();
@@ -16,6 +17,8 @@ const fb = useFeedback();
 const isMobile = ref(false);
 const sidebarOpen = ref(true);
 const sidebarCollapsed = ref(localStorage.getItem("np_sidebar_collapsed") === "1");
+const themeMode = ref(localStorage.getItem("np_theme_mode") || "auto");
+const serverClock = ref(new Date());
 const loginVisible = ref(!auth.isAuthed);
 const loginForm = ref({ username: "", password: "" });
 
@@ -43,6 +46,7 @@ const quickSearchLoading = ref(false);
 const quickSearchCategory = ref("all");
 let quickSearchDebounce = null;
 let authExpiredNoticeAt = 0;
+let serverClockTimer = null;
 const quickPinned = ref(JSON.parse(localStorage.getItem("np_quick_pinned") || "[]"));
 const quickRecent = ref(JSON.parse(localStorage.getItem("np_quick_recent") || "[]"));
 const editMode = ref(localStorage.getItem("np_edit_mode") === "1");
@@ -62,6 +66,20 @@ const pageTitle = computed(() => String(route.meta?.title || zhCN.app.title));
 const isAuthed = computed(() => auth.isAuthed);
 const isAdmin = computed(() => auth.isAdmin);
 const currentUser = computed(() => auth.user);
+const serverHour = computed(() => {
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: getServerTimezone(),
+    hour12: false,
+    hour: "2-digit"
+  });
+  const hour = Number(fmt.format(serverClock.value));
+  return Number.isFinite(hour) ? hour : 8;
+});
+const resolvedTheme = computed(() => {
+  if (themeMode.value === "light" || themeMode.value === "dark") return themeMode.value;
+  // Auto mode follows server local time: 07:00-18:59 light, otherwise night.
+  return serverHour.value >= 7 && serverHour.value < 19 ? "light" : "dark";
+});
 
 const menuItems = [
   { path: "/dashboard", label: "仪表盘" },
@@ -155,6 +173,11 @@ function onResize() {
 function toggleSidebarCollapsed() {
   sidebarCollapsed.value = !sidebarCollapsed.value;
   localStorage.setItem("np_sidebar_collapsed", sidebarCollapsed.value ? "1" : "0");
+}
+
+function onThemeModeChange(v) {
+  themeMode.value = v || "auto";
+  localStorage.setItem("np_theme_mode", themeMode.value);
 }
 
 function onSelectMenu(idx) {
@@ -330,6 +353,9 @@ function onAuthExpired() {
 
 onMounted(() => {
   onResize();
+  serverClockTimer = window.setInterval(() => {
+    serverClock.value = new Date();
+  }, 60 * 1000);
   window.addEventListener("resize", onResize);
   window.addEventListener("keydown", onGlobalKeydown);
   window.addEventListener("netpulse-auth-expired", onAuthExpired);
@@ -372,6 +398,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("netpulse-auth-expired", onAuthExpired);
   if (quickSearchDebounce) clearTimeout(quickSearchDebounce);
   if (idleTimer) clearTimeout(idleTimer);
+  if (serverClockTimer) window.clearInterval(serverClockTimer);
   ["mousemove", "mousedown", "keydown", "touchstart", "scroll"].forEach((evt) => {
     window.removeEventListener(evt, resetIdleTimer);
   });
@@ -379,7 +406,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="np-app v2">
+  <div class="np-app v2" :class="[`np-theme-${resolvedTheme}`, `np-theme-mode-${themeMode}`]">
     <aside class="sidebar" :class="{ open: !isMobile || sidebarOpen, mobile: isMobile, collapsed: sidebarCollapsed && !isMobile }">
       <div class="px-4 pb-4 pt-5">
         <div class="flex items-start justify-between gap-2">
@@ -426,6 +453,20 @@ onBeforeUnmount(() => {
             <h2 class="np-page-title text-xl font-semibold text-slate-900">{{ pageTitle }}</h2>
             <div class="np-page-subtitle text-xs text-slate-500">深海蓝高密度运维工作台</div>
           </div>
+        </div>
+        <div class="np-theme-switcher">
+          <span>主题</span>
+          <el-select
+            v-model="themeMode"
+            size="small"
+            class="np-theme-select"
+            @change="onThemeModeChange"
+          >
+            <el-option label="自动" value="auto" />
+            <el-option label="亮色" value="light" />
+            <el-option label="夜间" value="dark" />
+          </el-select>
+          <span class="np-theme-clock">服务器 {{ serverHour }} 时</span>
         </div>
       </header>
 

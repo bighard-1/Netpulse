@@ -86,6 +86,16 @@ function persistentLabelY(node) {
   return 66;
 }
 
+function offlineMarkTransform(node) {
+  if (node.tier === "access") return "translate(16 -16)";
+  if (node.tier === "aggregation") return "translate(42 -34)";
+  return "translate(42 -42)";
+}
+
+function offlineMarkSize(node) {
+  return node.tier === "access" ? 13 : 15;
+}
+
 function fit() {
   if (!normalizedNodes.value.length) {
     viewBox.value = { x: 0, y: 0, w: 1000, h: 620 };
@@ -332,6 +342,14 @@ defineExpose({ fit, zoomIn, zoomOut });
             <path class="np-node-glyph np-core-link" d="M0 -32 V-10 M0 10 V32 M-28 -16 L-9 -5 M9 5 L28 16 M28 -16 L9 -5 M-9 5 L-28 16" />
           </g>
           <g
+            v-if="node.status === 'offline'"
+            class="np-node-offline-mark"
+            :transform="offlineMarkTransform(node)"
+          >
+            <circle :r="offlineMarkSize(node)" />
+            <path d="M-5 -5 L5 5 M5 -5 L-5 5" />
+          </g>
+          <g
             v-if="shouldShowPersistentLabel(node)"
             class="np-node-persistent-label"
             :style="{ '--np-label-font-size': `${Math.max(12, tooltipFontSize - 1)}px` }"
@@ -493,6 +511,24 @@ defineExpose({ fit, zoomIn, zoomOut });
 .np-core-link {
   stroke-width: 3.4;
   opacity: 0.9;
+}
+
+.np-node-offline-mark {
+  pointer-events: none;
+  filter: drop-shadow(0 6px 10px rgba(127, 29, 29, 0.35));
+}
+
+.np-node-offline-mark circle {
+  fill: #7f1d1d;
+  stroke: rgba(255, 255, 255, 0.96);
+  stroke-width: 2.6;
+}
+
+.np-node-offline-mark path {
+  fill: none;
+  stroke: #ffffff;
+  stroke-linecap: round;
+  stroke-width: 3;
 }
 
 .np-topology-node.is-clickable {
