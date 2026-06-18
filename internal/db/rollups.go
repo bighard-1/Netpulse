@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -40,20 +41,41 @@ func (r *Repository) runTrafficRollupOnce(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	r.aggregateTraffic5m(ctx)
+	for i := 0; i < trafficRollupChunksPerRun("NETPULSE_TRAFFIC_ROLLUP_5M_CHUNKS_PER_RUN", 4); i++ {
+		if !r.aggregateTraffic5m(ctx) || ctx.Err() != nil {
+			break
+		}
+	}
 	if ctx.Err() != nil {
 		return
 	}
-	r.aggregateTraffic1h(ctx)
+	for i := 0; i < trafficRollupChunksPerRun("NETPULSE_TRAFFIC_ROLLUP_1H_CHUNKS_PER_RUN", 4); i++ {
+		if !r.aggregateTraffic1h(ctx) || ctx.Err() != nil {
+			break
+		}
+	}
 	if ctx.Err() != nil {
 		return
 	}
 	r.cleanupTrafficRollups(ctx)
 }
-func (r *Repository) aggregateTraffic5m(ctx context.Context) {
+
+func trafficRollupChunksPerRun(envKey string, fallback int) int {
+	if s := strings.TrimSpace(os.Getenv(envKey)); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v > 0 {
+			if v > 24 {
+				return 24
+			}
+			return v
+		}
+	}
+	return fallback
+}
+
+func (r *Repository) aggregateTraffic5m(ctx context.Context) bool {
 	targetEnd := time.Now().UTC().Truncate(5 * time.Minute).Add(-5 * time.Minute)
 	if targetEnd.IsZero() {
-		return
+		return false
 	}
 	start := r.nextTrafficRollupStart(ctx, "5m", targetEnd.Add(-trafficRollup5mRange))
 	if start.Before(targetEnd.Add(-trafficRollup5mRange)) {
@@ -61,7 +83,7 @@ func (r *Repository) aggregateTraffic5m(ctx context.Context) {
 	}
 	if !start.Before(targetEnd) {
 		r.recordTrafficRollupState(ctx, "5m", targetEnd, time.Now(), 0, "")
-		return
+		return false
 	}
 	chunkEnd := start.Add(6 * time.Hour)
 	if chunkEnd.After(targetEnd) {
@@ -104,8 +126,9 @@ func (r *Repository) aggregateTraffic5m(ctx context.Context) {
 	if err != nil && ctx.Err() == nil {
 		log.Printf("traffic 5m rollup skipped %s..%s: %v", start.Format(time.RFC3339), chunkEnd.Format(time.RFC3339), err)
 	}
+	return err == nil && chunkEnd.Before(targetEnd)
 }
-func (r *Repository) aggregateTraffic1h(ctx context.Context) {
+func (r *Repository) aggregateTraffic1h(ctx context.Context) bool {
 	targetEnd := time.Now().UTC().Truncate(time.Hour).Add(-time.Hour)
 	start := r.nextTrafficRollupStart(ctx, "1h", targetEnd.Add(-trafficRollup1hRange))
 	if start.Before(targetEnd.Add(-trafficRollup1hRange)) {
@@ -113,7 +136,7 @@ func (r *Repository) aggregateTraffic1h(ctx context.Context) {
 	}
 	if !start.Before(targetEnd) {
 		r.recordTrafficRollupState(ctx, "1h", targetEnd, time.Now(), 0, "")
-		return
+		return false
 	}
 	chunkEnd := start.Add(7 * 24 * time.Hour)
 	if chunkEnd.After(targetEnd) {
@@ -156,6 +179,7 @@ func (r *Repository) aggregateTraffic1h(ctx context.Context) {
 	if err != nil && ctx.Err() == nil {
 		log.Printf("traffic 1h rollup skipped %s..%s: %v", start.Format(time.RFC3339), chunkEnd.Format(time.RFC3339), err)
 	}
+	return err == nil && chunkEnd.Before(targetEnd)
 }
 func (r *Repository) cleanupTrafficRollups(ctx context.Context) {
 	qctx, cancel := context.WithTimeout(ctx, 15*time.Second)

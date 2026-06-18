@@ -1,5 +1,5 @@
 import { ElNotification } from "element-plus";
-import { getApiErrorDetail } from "../services/api";
+import { formatApiErrorMessage, getApiErrorDetail } from "../utils/apiError";
 
 export function useFeedback() {
   function success(title, message = "") {
@@ -20,9 +20,7 @@ export function useFeedback() {
     if (msgLower.includes("invalid token") || msgLower.includes("missing bearer token")) {
       return;
     }
-    const msg = [d.message, d.code ? `错误码: ${d.code}` : "", d.hint ? `提示: ${d.hint}` : ""]
-      .filter(Boolean)
-      .join(" | ");
+    const msg = formatApiErrorMessage(d);
     ElNotification({ type: "error", title: fallback, message: msg, duration: 4200 });
   }
 

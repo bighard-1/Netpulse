@@ -22,62 +22,6 @@ func TestInMuteWindow(t *testing.T) {
 	}
 }
 
-func TestSafeDelta(t *testing.T) {
-	tests := []struct {
-		name      string
-		mode      string
-		curr      uint64
-		prev      uint64
-		wantDelta uint64
-		wantReset bool
-	}{
-		{name: "normal hc increase", mode: "hc", curr: 200, prev: 100, wantDelta: 100},
-		{name: "normal legacy increase", mode: "legacy", curr: 200, prev: 100, wantDelta: 100},
-		{name: "legacy wrap", mode: "legacy", curr: 10, prev: (uint64(1) << 32) - 5, wantDelta: 15},
-		{name: "hc decrease is reset", mode: "hc", curr: 10, prev: 20, wantDelta: 0, wantReset: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gotDelta, gotReset := safeDelta(tt.mode, tt.curr, tt.prev)
-			if gotDelta != tt.wantDelta || gotReset != tt.wantReset {
-				t.Fatalf("safeDelta()=(%d,%v), want (%d,%v)", gotDelta, gotReset, tt.wantDelta, tt.wantReset)
-			}
-		})
-	}
-}
-
-func TestRawBps(t *testing.T) {
-	if got := rawBps(125_000, 1); got != 1_000_000 {
-		t.Fatalf("rawBps()=%d, want 1000000", got)
-	}
-	if got := rawBps(125_000, 0); got != 0 {
-		t.Fatalf("rawBps zero seconds=%d, want 0", got)
-	}
-	if got := rawBps(125_000, -1); got != 0 {
-		t.Fatalf("rawBps negative seconds=%d, want 0", got)
-	}
-}
-
-func TestPickCounterPair(t *testing.T) {
-	in, out := pickCounterPair("legacy", 1, 2, 3, 4)
-	if in != 3 || out != 4 {
-		t.Fatalf("legacy pair=(%d,%d), want (3,4)", in, out)
-	}
-	in, out = pickCounterPair("hc", 1, 2, 3, 4)
-	if in != 1 || out != 2 {
-		t.Fatalf("hc pair=(%d,%d), want (1,2)", in, out)
-	}
-}
-
-func TestMaxReasonableBpsBySpeed(t *testing.T) {
-	if got := maxReasonableBpsBySpeed(1000); got != 1_100_000_000 {
-		t.Fatalf("maxReasonableBpsBySpeed(1000)=%f, want 1100000000", got)
-	}
-	if got := maxReasonableBpsBySpeed(0); got != 110_000_000_000 {
-		t.Fatalf("maxReasonableBpsBySpeed(0)=%f, want 110000000000", got)
-	}
-}
-
 func TestPickCounterMode(t *testing.T) {
 	w := &Worker{modes: map[string]string{}}
 	if got := w.pickCounterMode("d1:p1", 10_000, "2c", true, true); got != "hc" {
@@ -88,5 +32,97 @@ func TestPickCounterMode(t *testing.T) {
 	}
 	if got := w.pickCounterMode("d1:p3", 10, "", false, true); got != "legacy" {
 		t.Fatalf("legacy-only mode=%q, want legacy", got)
+	}
+}
+
+func newTestWorker() *Worker {
+	return &Worker{
+		last:  map[string]counterState{},
+		modes: map[string]string{},
+	}
+}
+
+func mustInt64Ptr(t *testing.T, got *int64, want int64) {
+	t.Helper()
+	if got == nil {
+		t.Fatalf("got nil, want %d", want)
+	}
+	if *got != want {
+		t.Fatalf("got %d, want %d", *got, want)
+	}
+}
+
+func TestCalcBpsInitializesBeforePersisting(t *testing.T) {
+	w := newTestWorker()
+	now := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	in, out, inStatus, outStatus := w.calcBps(1, 10, 1000, 2000, true, 0, 0, false, now, 100, 1000, "2c", 30*time.Second)
+	if in != nil || out != nil {
+		t.Fatalf("initial sample should not persist traffic, got in=%v out=%v", in, out)
+	}
+	if inStatus != "INITIALIZING" || outStatus != "INITIALIZING" {
+		t.Fatalf("status=(%s,%s), want INITIALIZING", inStatus, outStatus)
+	}
+}
+
+func TestCalcBpsUsesElapsedTimeBetweenCounterChanges(t *testing.T) {
+	w := newTestWorker()
+	base := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	w.calcBps(1, 10, 1_000, 2_000, true, 0, 0, false, base, 100, 100, "2c", 30*time.Second)
+
+	in, out, inStatus, outStatus := w.calcBps(1, 10, 126_000, 252_000, true, 0, 0, false, base.Add(30*time.Second), 130, 100, "2c", 30*time.Second)
+	if inStatus != "VALID" || outStatus != "VALID" {
+		t.Fatalf("status=(%s,%s), want VALID", inStatus, outStatus)
+	}
+	mustInt64Ptr(t, in, 33_333)
+	mustInt64Ptr(t, out, 66_666)
+}
+
+func TestCalcBpsSkipsCounterStalePollThenAveragesOverChangeWindow(t *testing.T) {
+	w := newTestWorker()
+	base := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	w.calcBps(1, 10, 1_000, 2_000, true, 0, 0, false, base, 100, 100, "2c", 30*time.Second)
+
+	in, out, inStatus, outStatus := w.calcBps(1, 10, 1_000, 2_000, true, 0, 0, false, base.Add(30*time.Second), 130, 100, "2c", 30*time.Second)
+	if inStatus != "VALID" || outStatus != "VALID" || in == nil || out == nil {
+		t.Fatalf("stale poll should keep a valid zero rate, got in=%v out=%v status=(%s,%s)", in, out, inStatus, outStatus)
+	}
+	mustInt64Ptr(t, in, 0)
+	mustInt64Ptr(t, out, 0)
+
+	in, out, inStatus, outStatus = w.calcBps(1, 10, 241_000, 362_000, true, 0, 0, false, base.Add(60*time.Second), 160, 100, "2c", 30*time.Second)
+	if inStatus != "VALID" || outStatus != "VALID" {
+		t.Fatalf("status=(%s,%s), want VALID after counter changes", inStatus, outStatus)
+	}
+	// Delta is calculated from the last real counter change at base, not from
+	// the stale poll at base+30s: (241000-1000)*8/60 = 32000.
+	mustInt64Ptr(t, in, 32_000)
+	mustInt64Ptr(t, out, 48_000)
+}
+
+func TestCalcBpsDetectsDeviceRebootAndResetsBaseline(t *testing.T) {
+	w := newTestWorker()
+	base := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	w.calcBps(1, 10, 10_000, 20_000, true, 0, 0, false, base, 500, 1000, "2c", 30*time.Second)
+
+	in, out, inStatus, outStatus := w.calcBps(1, 10, 1_000, 2_000, true, 0, 0, false, base.Add(30*time.Second), 10, 1000, "2c", 30*time.Second)
+	if in != nil || out != nil {
+		t.Fatalf("reboot sample should not persist traffic, got in=%v out=%v", in, out)
+	}
+	if inStatus != "DEVICE_REBOOT" || outStatus != "DEVICE_REBOOT" {
+		t.Fatalf("status=(%s,%s), want DEVICE_REBOOT", inStatus, outStatus)
+	}
+}
+
+func TestCalcBpsRejectsUnexpectedPollWindowGap(t *testing.T) {
+	w := newTestWorker()
+	base := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	w.calcBps(1, 10, 10_000, 20_000, true, 0, 0, false, base, 100, 1000, "2c", 30*time.Second)
+
+	in, out, inStatus, outStatus := w.calcBps(1, 10, 20_000, 40_000, true, 0, 0, false, base.Add(4*time.Minute), 340, 1000, "2c", 30*time.Second)
+	if in != nil || out != nil {
+		t.Fatalf("window gap should not persist traffic, got in=%v out=%v", in, out)
+	}
+	if inStatus != "WINDOW_GAP" || outStatus != "WINDOW_GAP" {
+		t.Fatalf("status=(%s,%s), want WINDOW_GAP", inStatus, outStatus)
 	}
 }

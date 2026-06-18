@@ -5,6 +5,7 @@ import { Edit } from "@element-plus/icons-vue";
 import { api } from "../services/api";
 import { useFeedback } from "../composables/useFeedback";
 import { npAxisLabel, npAxisLine, npSplitLine, npTooltip } from "../utils/chartTheme";
+import { getApiError } from "../utils/apiError";
 
 const props = defineProps({ id: { type: [String, Number], required: true } });
 const router = useRouter();
@@ -223,7 +224,7 @@ async function renderCpuMem() {
       ]
     });
   } catch (err) {
-    perfChartError.value = err?.response?.data?.message || err?.response?.data?.error || err?.message || "性能图表加载失败";
+    perfChartError.value = getApiError(err, "性能图表加载失败");
     fb.apiError(err, "加载性能图表失败");
   } finally {
     chartLoading.value = false;

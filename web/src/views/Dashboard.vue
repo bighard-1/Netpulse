@@ -3,10 +3,11 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, watch
 import { useRouter } from "vue-router";
 import { api } from "../services/api";
 import { useOpsStore } from "../stores/ops";
-import { formatBps } from "../utils/format";
 import { normalizeStatus, statusClass, statusLabel } from "../utils/status";
 import { useFeedback } from "../composables/useFeedback";
 import { sortAssets } from "../utils/sortAssets";
+import { getApiError } from "../utils/apiError";
+import { filterDashboardDevices, findDashboardPorts, rankPortsBySpeed } from "../utils/dashboard";
 import StatsCards from "../components/dashboard/StatsCards.vue";
 import LiveEventFeed from "../components/dashboard/LiveEventFeed.vue";
 import HealthTrendArea from "../components/dashboard/HealthTrendArea.vue";
@@ -80,9 +81,9 @@ const healthScore = computed(() => {
   return Math.max(0, Math.min(100, availability.value - penalty));
 });
 
-const top100M = computed(() => rankedPortsBySpeed(95, 1000));
-const top1G = computed(() => rankedPortsBySpeed(1000, 10000));
-const top10G = computed(() => rankedPortsBySpeed(10000, 0));
+const top100M = computed(() => rankPortsBySpeed(devices.value, 95, 1000));
+const top1G = computed(() => rankPortsBySpeed(devices.value, 1000, 10000));
+const top10G = computed(() => rankPortsBySpeed(devices.value, 10000, 0));
 
 const filteredAlerts = computed(() => {
   const kw = eventFilterKeyword.value.trim().toLowerCase();
@@ -122,49 +123,10 @@ const pagedAlerts = computed(() => {
 });
 
 const filteredDevices = computed(() => {
-  const kw = globalKeyword.value.trim().toLowerCase();
-  let list = devices.value;
-  if (statusQuickFilter.value !== "all") {
-    list = list.filter((d) => normalizeStatus(d.status) === statusQuickFilter.value);
-  }
-  if (!kw) return list;
-  return list.filter((d) => {
-    const ports = (d.interfaces || [])
-      .map((p) => `${p.name || ""} ${p.alias || ""} ${p.custom_name || ""} ${p.remark || ""} ${p.index || ""}`)
-      .join(" ");
-    return [d.ip, d.name, d.brand, d.remark, d.location, d.site, ports, d.status].join(" ").toLowerCase().includes(kw);
-  });
+  return filterDashboardDevices(devices.value, globalKeyword.value, statusQuickFilter.value);
 });
 const filteredPorts = computed(() => {
-  const kw = globalKeyword.value.trim().toLowerCase();
-  if (!kw) return [];
-  const out = [];
-  for (const d of devices.value) {
-    for (const p of d.interfaces || []) {
-      const text = [
-        p.name || "",
-        p.raw_name || "",
-        p.remark || "",
-        p.index || "",
-        p.id || "",
-        d.name || "",
-        d.ip || "",
-        d.brand || ""
-      ].join(" ").toLowerCase();
-      if (!text.includes(kw)) continue;
-      out.push({
-        portId: p.id,
-        portName: p.name || `ifIndex-${p.index}`,
-        portIndex: p.index,
-        deviceId: d.id,
-        deviceName: d.name || d.ip,
-        deviceIP: d.ip,
-        remark: p.remark || "",
-        speedMbps: Number(p.speed_mbps || 0)
-      });
-    }
-  }
-  return out.slice(0, 80);
+  return findDashboardPorts(devices.value, globalKeyword.value);
 });
 const showOnboarding = computed(() => onboardingReady.value && !loading.value && devices.value.length === 0);
 
@@ -225,7 +187,7 @@ async function loadDevices(opts = {}) {
     devices.value = sortAssets((res.data || []).map((x) => ({ ...x, location: x.location || "" })));
     deviceLoadError.value = "";
   } catch (err) {
-    deviceLoadError.value = err?.response?.data?.message || err?.response?.data?.error || err?.message || "资产列表加载失败";
+    deviceLoadError.value = getApiError(err, "资产列表加载失败");
     if (!silent) fb.apiError(err, "加载资产失败");
   } finally {
     if (!silent) loading.value = false;
@@ -241,7 +203,7 @@ async function loadAlerts(opts = {}) {
     await ops.refreshRealtimeAlerts(100);
     feedLoadError.value = "";
   } catch (err) {
-    feedLoadError.value = err?.response?.data?.message || err?.response?.data?.error || err?.message || "事件流加载失败";
+    feedLoadError.value = getApiError(err, "事件流加载失败");
     if (!silent) fb.apiError(err, "加载事件流失败");
   } finally {
     if (!silent) feedLoading.value = false;
@@ -285,7 +247,7 @@ async function loadTopology(opts = {}) {
     topologyGraph.value = { nodes: res.data?.nodes || [], edges: res.data?.edges || [] };
     topologyError.value = "";
   } catch (err) {
-    topologyError.value = err?.response?.data?.message || err?.response?.data?.error || err?.message || "拓扑加载失败";
+    topologyError.value = getApiError(err, "拓扑加载失败");
     if (!silent) fb.apiError(err, "加载拓扑失败");
   } finally {
     if (!silent) topologyLoading.value = false;
@@ -299,7 +261,7 @@ async function loadHealthTrend(opts = {}) {
     healthTrend.value = res?.data?.data || [];
     healthTrendError.value = "";
   } catch (err) {
-    healthTrendError.value = err?.response?.data?.message || err?.response?.data?.error || err?.message || "健康趋势加载失败";
+    healthTrendError.value = getApiError(err, "健康趋势加载失败");
     if (!silent) fb.apiError(err, "加载健康趋势失败");
   }
 }
@@ -335,35 +297,6 @@ function loadTopologyDisplaySettings() {
     topologyLabelDisplayTiers.value = ["core"];
   }
 }
-function rankedPortsBySpeed(min, max) {
-  const points = [];
-  for (const d of devices.value) {
-    for (const p of d.interfaces || []) {
-      const speed = Number(p.speed_mbps || 0);
-      if (speed < min) continue;
-      if (max > 0 && speed >= max) continue;
-      const inBps = Number(p.traffic_in_bps || 0);
-      const outBps = Number(p.traffic_out_bps || 0);
-      const heat = Math.max(inBps, outBps);
-      if (heat <= 0) continue;
-      points.push({
-        deviceName: d.name || d.ip,
-        deviceId: d.id,
-        deviceIp: d.ip,
-        interfaceName: p.name || `ifIndex-${p.index}`,
-        interfaceIndex: Number(p.index || 0),
-        interfaceId: p.id,
-        speedMbps: speed,
-        inBps,
-        outBps,
-        bps: inBps + outBps
-      });
-    }
-  }
-  points.sort((a, b) => b.bps - a.bps);
-  return points.slice(0, 10);
-}
-
 const activeTopHotspots = computed(() => {
   if (topTab.value === "1g") return top1G.value;
   if (topTab.value === "10g") return top10G.value;

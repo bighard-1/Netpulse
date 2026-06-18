@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { api } from "../services/api";
 import { useFeedback } from "../composables/useFeedback";
 import { useAuthStore } from "../stores/auth";
+import { isForbiddenError } from "../utils/apiError";
 
 const fb = useFeedback();
 const auth = useAuthStore();
@@ -72,9 +73,7 @@ const opsDetailType = ref("events");
 const slowApiLogs = ref([]);
 
 function isForbidden(err) {
-  const status = Number(err?.response?.status || 0);
-  const msg = String(err?.response?.data?.error || err?.message || "").toLowerCase();
-  return status === 401 || status === 403 || msg.includes("forbidden") || msg.includes("admin only");
+  return isForbiddenError(err);
 }
 
 function loadSlowApiLogs() {
@@ -635,6 +634,18 @@ watch(activeTab, (tab) => {
               <el-table-column prop="method" label="方法" width="90" />
               <el-table-column prop="url" label="路径" min-width="220" />
               <el-table-column prop="ms" label="耗时(ms)" width="110" />
+              <el-table-column prop="query_ms" label="查询(ms)" width="110" />
+              <el-table-column prop="history_range" label="周期" width="110" />
+              <el-table-column prop="history_source" label="数据源" width="130" />
+              <el-table-column prop="history_points" label="点数" width="90" />
+              <el-table-column label="缓存" width="80">
+                <template #default="{ row }">
+                  <el-tag v-if="row.history_source" size="small" :type="row.history_cache_hit ? 'success' : 'info'">
+                    {{ row.history_cache_hit ? "命中" : "未命中" }}
+                  </el-tag>
+                  <span v-else>-</span>
+                </template>
+              </el-table-column>
               <el-table-column label="结果" width="90">
                 <template #default="{ row }">
                   <el-tag size="small" :type="row.ok ? 'success' : 'danger'">{{ row.ok ? "成功" : "失败" }}</el-tag>

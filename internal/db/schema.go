@@ -3,6 +3,9 @@ package db
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
+	"strconv"
 	"time"
 )
 
@@ -784,17 +787,43 @@ ON CONFLICT (role, permission) DO NOTHING;
 `
 
 func (r *Repository) EnsureSchema() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), schemaBootstrapTimeout())
 	defer cancel()
 
+	started := time.Now()
 	if _, err := r.db.ExecContext(ctx, bootstrapSchemaSQL); err != nil {
 		return fmt.Errorf("schema bootstrap failed: %w", err)
 	}
+	log.Printf("schema bootstrap completed in %s", time.Since(started).Round(time.Millisecond))
 	if err := r.ensureSchemaVersion(ctx); err != nil {
 		return err
 	}
 	return nil
 }
+
+func schemaBootstrapTimeout() time.Duration {
+	const (
+		defaultSeconds = 180
+		minSeconds     = 30
+		maxSeconds     = 1800
+	)
+	raw := os.Getenv("NETPULSE_SCHEMA_TIMEOUT_SEC")
+	if raw == "" {
+		return defaultSeconds * time.Second
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil {
+		return defaultSeconds * time.Second
+	}
+	if seconds < minSeconds {
+		seconds = minSeconds
+	}
+	if seconds > maxSeconds {
+		seconds = maxSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
 func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 	const ensureBase = `
 		INSERT INTO schema_migrations(version, description)
@@ -812,7 +841,7 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 		VALUES (2, 'add interfaces.custom_name')
 		ON CONFLICT (version) DO NOTHING;
 	`
-	if _, err := r.db.ExecContext(ctx, mig2); err != nil {
+	if err := r.applySchemaMigration(ctx, 2, mig2); err != nil {
 		return fmt.Errorf("apply migration v2 failed: %w", err)
 	}
 
@@ -824,7 +853,7 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 		VALUES (3, 'ensure metrics latest-point indexes')
 		ON CONFLICT (version) DO NOTHING;
 	`
-	if _, err := r.db.ExecContext(ctx, mig3); err != nil {
+	if err := r.applySchemaMigration(ctx, 3, mig3); err != nil {
 		return fmt.Errorf("apply migration v3 failed: %w", err)
 	}
 	// v4: interface speed/status and metrics uptime support.
@@ -837,7 +866,7 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 		VALUES (4, 'add interfaces.speed_mbps/interfaces.oper_status/interfaces.admin_status and metrics.uptime_sec')
 		ON CONFLICT (version) DO NOTHING;
 	`
-	if _, err := r.db.ExecContext(ctx, mig4); err != nil {
+	if err := r.applySchemaMigration(ctx, 4, mig4); err != nil {
 		return fmt.Errorf("apply migration v4 failed: %w", err)
 	}
 
@@ -849,7 +878,7 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 		VALUES (5, 'add observability indexes for ops and traffic diagnostics')
 		ON CONFLICT (version) DO NOTHING;
 	`
-	if _, err := r.db.ExecContext(ctx, mig5); err != nil {
+	if err := r.applySchemaMigration(ctx, 5, mig5); err != nil {
 		return fmt.Errorf("apply migration v5 failed: %w", err)
 	}
 	// v6: manually managed topology graph. Independent tables only; avoid touching metrics/views.
@@ -880,7 +909,7 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 		VALUES (6, 'add manual topology graph tables')
 		ON CONFLICT (version) DO NOTHING;
 	`
-	if _, err := r.db.ExecContext(ctx, mig6); err != nil {
+	if err := r.applySchemaMigration(ctx, 6, mig6); err != nil {
 		return fmt.Errorf("apply migration v6 failed: %w", err)
 	}
 	// v7: faster dashboard asset loading. These indexes are additive only and
@@ -894,7 +923,7 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 		VALUES (7, 'add lightweight asset dashboard loading indexes')
 		ON CONFLICT (version) DO NOTHING;
 	`
-	if _, err := r.db.ExecContext(ctx, mig7); err != nil {
+	if err := r.applySchemaMigration(ctx, 7, mig7); err != nil {
 		return fmt.Errorf("apply migration v7 failed: %w", err)
 	}
 	// v8: latest metric cache tables. Dashboard and device summary pages should
@@ -932,7 +961,7 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 		VALUES (8, 'add latest metric cache tables')
 		ON CONFLICT (version) DO NOTHING;
 	`
-	if _, err := r.db.ExecContext(ctx, mig8); err != nil {
+	if err := r.applySchemaMigration(ctx, 8, mig8); err != nil {
 		return fmt.Errorf("apply migration v8 failed: %w", err)
 	}
 	// v9: reserved marker for long-range chart hardening. Heavy indexes on
@@ -944,8 +973,38 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 		VALUES (9, 'reserve non-blocking long-range chart hardening marker')
 		ON CONFLICT (version) DO NOTHING;
 	`
-	if _, err := r.db.ExecContext(ctx, mig9); err != nil {
+	if err := r.applySchemaMigration(ctx, 9, mig9); err != nil {
 		return fmt.Errorf("apply migration v9 failed: %w", err)
 	}
 	return nil
+}
+
+func (r *Repository) applySchemaMigration(ctx context.Context, version int64, query string) error {
+	applied, err := r.schemaMigrationApplied(ctx, version)
+	if err != nil {
+		return err
+	}
+	if applied {
+		return nil
+	}
+	started := time.Now()
+	if _, err := r.db.ExecContext(ctx, query); err != nil {
+		return err
+	}
+	log.Printf("schema migration v%d applied in %s", version, time.Since(started).Round(time.Millisecond))
+	return nil
+}
+
+func (r *Repository) schemaMigrationApplied(ctx context.Context, version int64) (bool, error) {
+	var exists bool
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM schema_migrations
+			WHERE version = $1
+		);
+	`, version).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check migration v%d status: %w", version, err)
+	}
+	return exists, nil
 }

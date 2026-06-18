@@ -72,6 +72,15 @@ NetPulse targets that gap with:
 - Mobile:
   - iOS: SwiftUI + Charts + Keychain + Face ID/Touch ID
 
+## Maintenance Docs
+
+- `docs/PROJECT_MAINTENANCE_GUIDE.md`: project maintenance entry point, module boundaries, release checks, and stable-path guardrails.
+- `docs/RELEASE_READINESS_CHECKLIST.md`: release and upgrade acceptance checklist.
+- `docs/REGRESSION_CHECKLIST.md`: minimal regression checklist after fixes.
+- `docs/MAINTENANCE_GUARDRAILS.md`: stable feature guardrails.
+- `docs/CAPACITY_HARDENING.md`: capacity and performance hardening notes.
+- `docs/API_GUARDRAILS.md`: API permission and compatibility guardrails.
+
 ---
 
 ## Production Build & Image

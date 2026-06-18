@@ -12,6 +12,7 @@ import (
 )
 
 func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
+	requestStarted := time.Now()
 	metricType := r.URL.Query().Get("type")
 	idStr := r.URL.Query().Get("id")
 	startStr := r.URL.Query().Get("start")
@@ -63,7 +64,16 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		diag := historyDiagnostic{
+			RangeLabel:      historyRangeLabel(end.Sub(start)),
+			SourceTable:     "metrics",
+			SampledInterval: sampledIntervalLabel(interval, "原始(自动)"),
+			CacheHit:        false,
+			DurationMS:      time.Since(requestStarted).Milliseconds(),
+			PointCount:      len(items),
+		}
+		setHistoryDiagnosticHeaders(w, diag)
+		writeJSON(w, http.StatusOK, withHistoryDiagnostics(map[string]any{
 			"type":      metricType,
 			"id":        id,
 			"start":     start,
@@ -71,7 +81,7 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			"interval":  interval,
 			"maxPoints": maxPoints,
 			"data":      items,
-		})
+		}, diag))
 	case "traffic":
 		span := end.Sub(start)
 		if span > db.MaxTrafficHistoryRange {
@@ -80,7 +90,17 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		cacheKey := historyCacheKey(metricType, id, start, end, interval, maxPoints)
 		if cached, ok := h.getCachedHistory(cacheKey); ok {
-			writeJSON(w, http.StatusOK, cached)
+			payload := cloneHistoryPayload(cached)
+			diag := historyDiagnostic{
+				RangeLabel:      stringValue(payload["range_label"], historyRangeLabel(span)),
+				SourceTable:     stringValue(payload["source_table"], "metrics"),
+				SampledInterval: stringValue(payload["sampled_interval"], sampledIntervalLabel(interval, "原始(自动)")),
+				CacheHit:        true,
+				DurationMS:      time.Since(requestStarted).Milliseconds(),
+				PointCount:      intValue(payload["point_count"]),
+			}
+			setHistoryDiagnosticHeaders(w, diag)
+			writeJSON(w, http.StatusOK, withHistoryDiagnostics(payload, diag))
 			return
 		}
 		queryCtx := r.Context()
@@ -100,15 +120,14 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 		} else if span > 24*time.Hour {
 			sourceTable = "traffic_5m"
 		}
-		sampledInterval := strings.TrimSpace(interval)
-		if sampledInterval == "" {
-			if sourceTable == "traffic_1h" {
-				sampledInterval = "1h(预聚合)"
-			} else if sourceTable == "traffic_5m" {
-				sampledInterval = "5m(预聚合)"
-			} else {
-				sampledInterval = "原始(自动)"
-			}
+		sampledInterval := sampledIntervalForSource(interval, sourceTable)
+		diag := historyDiagnostic{
+			RangeLabel:      historyRangeLabel(span),
+			SourceTable:     sourceTable,
+			SampledInterval: sampledInterval,
+			CacheHit:        false,
+			DurationMS:      time.Since(requestStarted).Milliseconds(),
+			PointCount:      len(items),
 		}
 		payload := map[string]any{
 			"type":                metricType,
@@ -122,11 +141,13 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			"maxPoints":           maxPoints,
 			"data":                items,
 		}
+		withHistoryDiagnostics(payload, diag)
 		cacheTTL := historyCacheTTLFor(start, end)
 		if sourceTable != "metrics" && len(items) == 0 {
 			cacheTTL = historyCacheTTL
 		}
 		h.setCachedHistory(cacheKey, payload, cacheTTL)
+		setHistoryDiagnosticHeaders(w, diag)
 		writeJSON(w, http.StatusOK, payload)
 	case "storage":
 		items, err := h.repo.GetDeviceStorageHistory(r.Context(), id, start, end, interval, maxPoints)
@@ -134,7 +155,16 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		diag := historyDiagnostic{
+			RangeLabel:      historyRangeLabel(end.Sub(start)),
+			SourceTable:     "metrics",
+			SampledInterval: sampledIntervalLabel(interval, "原始(自动)"),
+			CacheHit:        false,
+			DurationMS:      time.Since(requestStarted).Milliseconds(),
+			PointCount:      len(items),
+		}
+		setHistoryDiagnosticHeaders(w, diag)
+		writeJSON(w, http.StatusOK, withHistoryDiagnostics(map[string]any{
 			"type":      metricType,
 			"id":        id,
 			"start":     start,
@@ -142,9 +172,102 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			"interval":  interval,
 			"maxPoints": maxPoints,
 			"data":      items,
-		})
+		}, diag))
 	default:
 		writeError(w, http.StatusBadRequest, "type must be one of: cpu, mem, traffic, storage")
+	}
+}
+
+type historyDiagnostic struct {
+	RangeLabel      string
+	SourceTable     string
+	SampledInterval string
+	CacheHit        bool
+	DurationMS      int64
+	PointCount      int
+}
+
+func sampledIntervalForSource(interval, sourceTable string) string {
+	switch sourceTable {
+	case "traffic_1h":
+		return sampledIntervalLabel(interval, "1h(预聚合)")
+	case "traffic_5m":
+		return sampledIntervalLabel(interval, "5m(预聚合)")
+	default:
+		return sampledIntervalLabel(interval, "原始(自动)")
+	}
+}
+
+func sampledIntervalLabel(interval, fallback string) string {
+	if v := strings.TrimSpace(interval); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func historyRangeLabel(span time.Duration) string {
+	switch {
+	case span <= 24*time.Hour:
+		return "today_or_custom_short"
+	case span <= 8*24*time.Hour:
+		return "7d"
+	case span <= 32*24*time.Hour:
+		return "30d"
+	case span <= 370*24*time.Hour:
+		return "1y"
+	default:
+		return "long_range"
+	}
+}
+
+func cloneHistoryPayload(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in)+8)
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func withHistoryDiagnostics(payload map[string]any, diag historyDiagnostic) map[string]any {
+	payload["range_label"] = diag.RangeLabel
+	payload["query_duration_ms"] = diag.DurationMS
+	payload["point_count"] = diag.PointCount
+	payload["cache_hit"] = diag.CacheHit
+	if diag.SourceTable != "" {
+		payload["source_table"] = diag.SourceTable
+	}
+	if diag.SampledInterval != "" {
+		payload["sampled_interval"] = diag.SampledInterval
+	}
+	return payload
+}
+
+func setHistoryDiagnosticHeaders(w http.ResponseWriter, diag historyDiagnostic) {
+	w.Header().Set("X-NetPulse-History-Range", diag.RangeLabel)
+	w.Header().Set("X-NetPulse-History-Source", diag.SourceTable)
+	w.Header().Set("X-NetPulse-History-Interval", diag.SampledInterval)
+	w.Header().Set("X-NetPulse-History-Cache-Hit", strconv.FormatBool(diag.CacheHit))
+	w.Header().Set("X-NetPulse-Query-Duration-Ms", strconv.FormatInt(diag.DurationMS, 10))
+	w.Header().Set("X-NetPulse-History-Point-Count", strconv.Itoa(diag.PointCount))
+}
+
+func stringValue(v any, fallback string) string {
+	if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+		return s
+	}
+	return fallback
+}
+
+func intValue(v any) int {
+	switch x := v.(type) {
+	case int:
+		return x
+	case int64:
+		return int(x)
+	case float64:
+		return int(x)
+	default:
+		return 0
 	}
 }
 

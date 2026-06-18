@@ -20,20 +20,34 @@ func (r *Repository) GetInterfaceHistory(
 	}
 	interval = strings.TrimSpace(strings.ToLower(interval))
 	if span > 31*24*time.Hour {
-		recentStart := start
-		minRecent := time.Now().Add(-trafficRollup5mRange)
-		if recentStart.Before(minRecent) {
-			recentStart = minRecent
+		items, err := r.queryInterfaceTrafficRollup(ctx, "traffic_1h", interfaceID, start, end, interval, maxPoints)
+		if (err == nil && len(items) > 0) || span > trafficRollup5mRange {
+			return items, err
 		}
-		if recentStart.Before(end) {
-			_ = r.ensureInterfaceTraffic5m(ctx, interfaceID, recentStart, end)
+		fallback, fallbackErr := r.queryInterfaceTraffic1m(ctx, interfaceID, start, end, interval, maxPoints)
+		if fallbackErr == nil {
+			return fallback, nil
 		}
-		_ = r.ensureInterfaceTraffic1h(ctx, interfaceID, start, end)
-		return r.queryInterfaceTrafficRollup(ctx, "traffic_1h", interfaceID, start, end, interval, maxPoints)
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("metrics_1m traffic fallback skipped interface=%d: %v", interfaceID, fallbackErr)
+		return items, nil
 	}
 	if span > 24*time.Hour {
-		_ = r.ensureInterfaceTraffic5m(ctx, interfaceID, start, end)
-		return r.queryInterfaceTrafficRollup(ctx, "traffic_5m", interfaceID, start, end, interval, maxPoints)
+		items, err := r.queryInterfaceTrafficRollup(ctx, "traffic_5m", interfaceID, start, end, interval, maxPoints)
+		if err == nil && len(items) > 0 {
+			return items, nil
+		}
+		fallback, fallbackErr := r.queryInterfaceTraffic1m(ctx, interfaceID, start, end, interval, maxPoints)
+		if fallbackErr == nil {
+			return fallback, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("metrics_1m traffic fallback skipped interface=%d: %v", interfaceID, fallbackErr)
+		return items, nil
 	}
 
 	bucketInterval := resolveHistoryBucketInterval(span, interval, maxPoints, false)
@@ -61,99 +75,33 @@ func (r *Repository) GetInterfaceHistory(
 	return r.scanInterfaceHistory(ctx, q, interfaceID, start, end, span, maxPoints)
 }
 
-func (r *Repository) ensureInterfaceTraffic5m(ctx context.Context, interfaceID int64, start, end time.Time) error {
-	qctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	_, err := r.db.ExecContext(qctx, `
-		INSERT INTO traffic_5m (
-		    bucket, interface_id, device_id, samples,
-		    avg_traffic_in_bps, avg_traffic_out_bps,
-		    max_traffic_in_bps, max_traffic_out_bps, updated_at
-		)
-		SELECT
-		    time_bucket('5 minutes', ts) AS bucket,
-		    interface_id,
-		    device_id,
-		    COUNT(*)::INTEGER AS samples,
-		    AVG(traffic_in_bps)::NUMERIC(20,2) AS avg_traffic_in_bps,
-		    AVG(traffic_out_bps)::NUMERIC(20,2) AS avg_traffic_out_bps,
-		    MAX(traffic_in_bps)::BIGINT AS max_traffic_in_bps,
-		    MAX(traffic_out_bps)::BIGINT AS max_traffic_out_bps,
-		    NOW()
-		FROM metrics
+func (r *Repository) queryInterfaceTraffic1m(
+	ctx context.Context, interfaceID int64, start, end time.Time, interval string, maxPoints int,
+) ([]InterfaceHistoryPoint, error) {
+	span := end.Sub(start)
+	bucketInterval := resolveHistoryBucketInterval(span, interval, maxPoints, true)
+	if bucketInterval == "" {
+		bucketInterval = "5 minutes"
+	}
+	if d, ok := parseSQLInterval(bucketInterval); !ok || d < time.Minute {
+		bucketInterval = "1 minute"
+	}
+	q := fmt.Sprintf(`
+		SELECT time_bucket('%[1]s', bucket) AS ts,
+		       AVG(avg_traffic_in_bps) AS traffic_in_bps,
+		       AVG(avg_traffic_out_bps) AS traffic_out_bps
+		FROM metrics_1m
 		WHERE interface_id = $1
-		  AND ts >= $2 AND ts <= $3
-		  AND (traffic_in_bps IS NOT NULL OR traffic_out_bps IS NOT NULL)
-		GROUP BY 1, interface_id, device_id
-		ON CONFLICT (interface_id, bucket) DO UPDATE SET
-		    device_id = EXCLUDED.device_id,
-		    samples = EXCLUDED.samples,
-		    avg_traffic_in_bps = EXCLUDED.avg_traffic_in_bps,
-		    avg_traffic_out_bps = EXCLUDED.avg_traffic_out_bps,
-		    max_traffic_in_bps = EXCLUDED.max_traffic_in_bps,
-		    max_traffic_out_bps = EXCLUDED.max_traffic_out_bps,
-		    updated_at = NOW();
-	`, interfaceID, start, end)
-	if err != nil && ctx.Err() == nil {
-		log.Printf("lazy traffic 5m rollup skipped interface=%d: %v", interfaceID, err)
+		  AND bucket >= $2 AND bucket <= $3
+		  AND (avg_traffic_in_bps IS NOT NULL OR avg_traffic_out_bps IS NOT NULL)
+		GROUP BY 1
+		ORDER BY 1;
+	`, bucketInterval)
+	out, err := r.scanInterfaceHistory(ctx, q, interfaceID, start, end, span, maxPoints)
+	if err != nil {
+		return nil, fmt.Errorf("get interface history from metrics_1m fallback: %w", err)
 	}
-	return err
-}
-
-func (r *Repository) ensureInterfaceTraffic1h(ctx context.Context, interfaceID int64, start, end time.Time) error {
-	qctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	_, err := r.db.ExecContext(qctx, `
-		WITH src AS (
-		    SELECT bucket, interface_id, device_id, samples,
-		           avg_traffic_in_bps, avg_traffic_out_bps
-		    FROM traffic_5m
-		    WHERE interface_id = $1 AND bucket >= $2 AND bucket <= $3
-		    UNION ALL
-		    SELECT bucket, interface_id, device_id, 1 AS samples,
-		           avg_traffic_in_bps, avg_traffic_out_bps
-		    FROM metrics_1m
-		    WHERE interface_id = $1
-		      AND bucket >= $2 AND bucket <= $3
-		      AND bucket < NOW() - INTERVAL '90 days'
-		)
-		INSERT INTO traffic_1h (
-		    bucket, interface_id, device_id, samples,
-		    avg_traffic_in_bps, avg_traffic_out_bps,
-		    max_traffic_in_bps, max_traffic_out_bps, updated_at
-		)
-		SELECT
-		    time_bucket('1 hour', bucket) AS bucket,
-		    interface_id,
-		    device_id,
-		    SUM(samples)::INTEGER AS samples,
-		    CASE WHEN SUM(CASE WHEN avg_traffic_in_bps IS NOT NULL THEN samples ELSE 0 END) > 0 THEN
-		      (SUM(COALESCE(avg_traffic_in_bps, 0) * samples) /
-		       SUM(CASE WHEN avg_traffic_in_bps IS NOT NULL THEN samples ELSE 0 END))::NUMERIC(20,2)
-		    END AS avg_traffic_in_bps,
-		    CASE WHEN SUM(CASE WHEN avg_traffic_out_bps IS NOT NULL THEN samples ELSE 0 END) > 0 THEN
-		      (SUM(COALESCE(avg_traffic_out_bps, 0) * samples) /
-		       SUM(CASE WHEN avg_traffic_out_bps IS NOT NULL THEN samples ELSE 0 END))::NUMERIC(20,2)
-		    END AS avg_traffic_out_bps,
-		    MAX(avg_traffic_in_bps)::BIGINT AS max_traffic_in_bps,
-		    MAX(avg_traffic_out_bps)::BIGINT AS max_traffic_out_bps,
-		    NOW()
-		FROM src
-		WHERE avg_traffic_in_bps IS NOT NULL OR avg_traffic_out_bps IS NOT NULL
-		GROUP BY 1, interface_id, device_id
-		ON CONFLICT (interface_id, bucket) DO UPDATE SET
-		    device_id = EXCLUDED.device_id,
-		    samples = EXCLUDED.samples,
-		    avg_traffic_in_bps = EXCLUDED.avg_traffic_in_bps,
-		    avg_traffic_out_bps = EXCLUDED.avg_traffic_out_bps,
-		    max_traffic_in_bps = EXCLUDED.max_traffic_in_bps,
-		    max_traffic_out_bps = EXCLUDED.max_traffic_out_bps,
-		    updated_at = NOW();
-	`, interfaceID, start, end)
-	if err != nil && ctx.Err() == nil {
-		log.Printf("lazy traffic 1h rollup skipped interface=%d: %v", interfaceID, err)
-	}
-	return err
+	return out, nil
 }
 
 func (r *Repository) queryInterfaceTrafficRollup(
@@ -333,6 +281,16 @@ func resolveHistoryBucketInterval(span time.Duration, requested string, maxPoint
 	if strings.HasSuffix(requested, "s") {
 		if v, err := strconv.Atoi(strings.TrimSuffix(requested, "s")); err == nil && v > 0 {
 			return formatSec(v)
+		}
+	}
+	if strings.HasSuffix(requested, "m") {
+		if v, err := strconv.Atoi(strings.TrimSuffix(requested, "m")); err == nil && v > 0 {
+			return formatSec(v * 60)
+		}
+	}
+	if strings.HasSuffix(requested, "h") {
+		if v, err := strconv.Atoi(strings.TrimSuffix(requested, "h")); err == nil && v > 0 {
+			return formatSec(v * 3600)
 		}
 	}
 	switch requested {

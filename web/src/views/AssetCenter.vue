@@ -3,7 +3,7 @@ import * as echarts from "echarts";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
 import { useRouter } from "vue-router";
-import { api, getApiError } from "../services/api";
+import { api } from "../services/api";
 import { useOpsStore } from "../stores/ops";
 import { useFeedback } from "../composables/useFeedback";
 import { statusClass, statusLabel } from "../utils/status";

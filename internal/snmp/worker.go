@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"netpulse/internal/db"
+	"netpulse/internal/snmp/trafficcalc"
 )
 
 type counterState struct {
@@ -761,7 +762,7 @@ func (w *Worker) calcBps(
 
 	mode := w.pickCounterMode(key, speedMbps, snmpVersion, hcPresent, legacyPresent)
 	highSpeedHC := speedMbps >= 1000 && hcPresent && mode == "hc"
-	inOctets, outOctets := pickCounterPair(mode, hcInOctets, hcOutOctets, legacyInOctets, legacyOutOctets)
+	inOctets, outOctets := trafficcalc.PickCounterPair(mode, hcInOctets, hcOutOctets, legacyInOctets, legacyOutOctets)
 
 	prev, ok := w.last[key]
 	if !ok {
@@ -841,8 +842,8 @@ func (w *Worker) calcBps(
 		}
 	}
 
-	_, inDis := safeDelta(mode, inOctets, prev.inOctets)
-	_, outDis := safeDelta(mode, outOctets, prev.outOctets)
+	_, inDis := trafficcalc.SafeDelta(mode, inOctets, prev.inOctets)
+	_, outDis := trafficcalc.SafeDelta(mode, outOctets, prev.outOctets)
 	inStat := "VALID"
 	outStat := "VALID"
 	if inDis {
@@ -852,10 +853,10 @@ func (w *Worker) calcBps(
 		outStat = "COUNTER_RESET"
 	}
 
-	hcInDeltaRaw, _ := safeDelta("hc", hcInOctets, prev.lastHCIn)
-	hcOutDeltaRaw, _ := safeDelta("hc", hcOutOctets, prev.lastHCOut)
-	legacyInDeltaRaw, _ := safeDelta("legacy", legacyInOctets, prev.lastLegacyIn)
-	legacyOutDeltaRaw, _ := safeDelta("legacy", legacyOutOctets, prev.lastLegacyOut)
+	hcInDeltaRaw, _ := trafficcalc.SafeDelta("hc", hcInOctets, prev.lastHCIn)
+	hcOutDeltaRaw, _ := trafficcalc.SafeDelta("hc", hcOutOctets, prev.lastHCOut)
+	legacyInDeltaRaw, _ := trafficcalc.SafeDelta("legacy", legacyInOctets, prev.lastLegacyIn)
+	legacyOutDeltaRaw, _ := trafficcalc.SafeDelta("legacy", legacyOutOctets, prev.lastLegacyOut)
 	hcSum := hcInDeltaRaw + hcOutDeltaRaw
 	legacySum := legacyInDeltaRaw + legacyOutDeltaRaw
 
@@ -970,7 +971,7 @@ func (w *Worker) calcBps(
 		}
 	}
 
-	maxBps := maxReasonableBpsBySpeed(speedMbps)
+	maxBps := trafficcalc.MaxReasonableBpsBySpeed(speedMbps)
 	rawIn := prev.inBps
 	rawOut := prev.outBps
 	inChangeOctets := prev.inChangeOctets
@@ -998,7 +999,7 @@ func (w *Worker) calcBps(
 						deltaFromChange = 0
 					}
 				}
-				rawIn = rawBps(deltaFromChange, baseSec)
+				rawIn = trafficcalc.RawBps(deltaFromChange, baseSec)
 				inChangeOctets = inOctets
 				inChangedAt = now
 			}
@@ -1022,7 +1023,7 @@ func (w *Worker) calcBps(
 						deltaFromChange = 0
 					}
 				}
-				rawOut = rawBps(deltaFromChange, baseSec)
+				rawOut = trafficcalc.RawBps(deltaFromChange, baseSec)
 				outChangeOctets = outOctets
 				outChangedAt = now
 			}
@@ -1032,10 +1033,10 @@ func (w *Worker) calcBps(
 	// stale/abnormal counter while the other direction is fine in the same poll.
 	// Fallback per direction instead of forcing whole-interface switch.
 	if mode == "hc" && legacyPresent && seconds > 0 && !highSpeedHC {
-		hcInRate := rawBps(hcInDeltaRaw, seconds)
-		hcOutRate := rawBps(hcOutDeltaRaw, seconds)
-		legacyInRate := rawBps(legacyInDeltaRaw, seconds)
-		legacyOutRate := rawBps(legacyOutDeltaRaw, seconds)
+		hcInRate := trafficcalc.RawBps(hcInDeltaRaw, seconds)
+		hcOutRate := trafficcalc.RawBps(hcOutDeltaRaw, seconds)
+		legacyInRate := trafficcalc.RawBps(legacyInDeltaRaw, seconds)
+		legacyOutRate := trafficcalc.RawBps(legacyOutDeltaRaw, seconds)
 		if hcInDeltaRaw == 0 && legacyInDeltaRaw > 0 {
 			rawIn = legacyInRate
 			inStat = "DIR_FALLBACK_LEGACY"
@@ -1047,23 +1048,23 @@ func (w *Worker) calcBps(
 		if hcInDeltaRaw > 0 && legacyInDeltaRaw > 0 {
 			r := float64(hcInDeltaRaw) / float64(legacyInDeltaRaw)
 			if r > 6.0 || r < 0.16 {
-				rawIn = chooseCloserToPrev(prev.inBps, hcInRate, legacyInRate)
+				rawIn = trafficcalc.ChooseCloserToPrev(prev.inBps, hcInRate, legacyInRate)
 				inStat = "DIR_RECONCILED"
 			}
 		}
 		if hcOutDeltaRaw > 0 && legacyOutDeltaRaw > 0 {
 			r := float64(hcOutDeltaRaw) / float64(legacyOutDeltaRaw)
 			if r > 6.0 || r < 0.16 {
-				rawOut = chooseCloserToPrev(prev.outBps, hcOutRate, legacyOutRate)
+				rawOut = trafficcalc.ChooseCloserToPrev(prev.outBps, hcOutRate, legacyOutRate)
 				outStat = "DIR_RECONCILED"
 			}
 		}
 	}
 	if mode == "legacy" && hcPresent && seconds > 0 {
-		hcInRate := rawBps(hcInDeltaRaw, seconds)
-		hcOutRate := rawBps(hcOutDeltaRaw, seconds)
-		legacyInRate := rawBps(legacyInDeltaRaw, seconds)
-		legacyOutRate := rawBps(legacyOutDeltaRaw, seconds)
+		hcInRate := trafficcalc.RawBps(hcInDeltaRaw, seconds)
+		hcOutRate := trafficcalc.RawBps(hcOutDeltaRaw, seconds)
+		legacyInRate := trafficcalc.RawBps(legacyInDeltaRaw, seconds)
+		legacyOutRate := trafficcalc.RawBps(legacyOutDeltaRaw, seconds)
 		if legacyInDeltaRaw == 0 && hcInDeltaRaw > 0 {
 			rawIn = hcInRate
 			inStat = "DIR_FALLBACK_HC"
@@ -1075,14 +1076,14 @@ func (w *Worker) calcBps(
 		if legacyInDeltaRaw > 0 && hcInDeltaRaw > 0 {
 			r := float64(legacyInDeltaRaw) / float64(hcInDeltaRaw)
 			if r > 6.0 || r < 0.16 {
-				rawIn = chooseCloserToPrev(prev.inBps, legacyInRate, hcInRate)
+				rawIn = trafficcalc.ChooseCloserToPrev(prev.inBps, legacyInRate, hcInRate)
 				inStat = "DIR_RECONCILED"
 			}
 		}
 		if legacyOutDeltaRaw > 0 && hcOutDeltaRaw > 0 {
 			r := float64(legacyOutDeltaRaw) / float64(hcOutDeltaRaw)
 			if r > 6.0 || r < 0.16 {
-				rawOut = chooseCloserToPrev(prev.outBps, legacyOutRate, hcOutRate)
+				rawOut = trafficcalc.ChooseCloserToPrev(prev.outBps, legacyOutRate, hcOutRate)
 				outStat = "DIR_RECONCILED"
 			}
 		}
@@ -1092,11 +1093,11 @@ func (w *Worker) calcBps(
 	inAliasPending := false
 	outAliasPending := false
 	if highSpeedHC && expectedInterval > 0 && expectedInterval <= time.Minute {
-		rawIn, inStat, inAliasPending = pairHighSpeedCacheSample(prev.inAliasPending, prev.inRaw1, rawIn, inStat)
-		rawOut, outStat, outAliasPending = pairHighSpeedCacheSample(prev.outAliasPending, prev.outRaw1, rawOut, outStat)
+		rawIn, inStat, inAliasPending = trafficcalc.PairHighSpeedCacheSample(prev.inAliasPending, prev.inRaw1, rawIn, inStat)
+		rawOut, outStat, outAliasPending = trafficcalc.PairHighSpeedCacheSample(prev.outAliasPending, prev.outRaw1, rawOut, outStat)
 	}
-	inBps := clampOrKeepPrev(rawIn, prev.inBps, maxBps)
-	outBps := clampOrKeepPrev(rawOut, prev.outBps, maxBps)
+	inBps := trafficcalc.ClampOrKeepPrev(rawIn, prev.inBps, maxBps)
+	outBps := trafficcalc.ClampOrKeepPrev(rawOut, prev.outBps, maxBps)
 	// Accuracy first: on discontinuity/reset, mark as invalid sample instead of
 	// carrying previous value which may bias comparison against external NMS.
 	if inDis {
@@ -1126,61 +1127,15 @@ func (w *Worker) calcBps(
 		uptimeSec: uptimeSec,
 	}
 	var inPtr, outPtr *int64
-	if isPersistableTrafficStatus(inStat) {
+	if trafficcalc.PersistableStatus(inStat) {
 		v := inBps
 		inPtr = &v
 	}
-	if isPersistableTrafficStatus(outStat) {
+	if trafficcalc.PersistableStatus(outStat) {
 		v := outBps
 		outPtr = &v
 	}
 	return inPtr, outPtr, inStat, outStat
-}
-
-func isPersistableTrafficStatus(status string) bool {
-	return status == "VALID" || strings.HasPrefix(status, "DIR_") || status == "CACHE_AVG"
-}
-
-func pairHighSpeedCacheSample(pending bool, previous, curr int64, status string) (int64, string, bool) {
-	if curr <= 0 || status != "VALID" {
-		return curr, status, false
-	}
-	if !pending || previous <= 0 {
-		// The first point of a pair is only a candidate. Persisting it creates the
-		// visible high/low aliasing seen on distributed chassis at 30s polling.
-		return curr, "CACHE_WAIT", true
-	}
-	// Persist one averaged point per pair. This preserves the real average
-	// throughput across the two samples while hiding the device cache phase.
-	return (previous + curr) / 2, "CACHE_AVG", false
-}
-
-func chooseCloserToPrev(prev, a, b int64) int64 {
-	if prev <= 0 {
-		if a <= 0 {
-			return b
-		}
-		if b <= 0 {
-			return a
-		}
-		if a < b {
-			return a
-		}
-		return b
-	}
-	da := abs64(a - prev)
-	db := abs64(b - prev)
-	if da <= db {
-		return a
-	}
-	return b
-}
-
-func abs64(x int64) int64 {
-	if x < 0 {
-		return -x
-	}
-	return x
 }
 
 func interfaceKey(deviceID int64, ifIndex int) string { return fmt.Sprintf("%d:%d", deviceID, ifIndex) }
@@ -1223,62 +1178,6 @@ func (w *Worker) pickCounterMode(key string, speedMbps int, snmpVersion string, 
 	}
 	w.modes[key] = "hc"
 	return "hc"
-}
-
-func pickCounterPair(mode string, hcIn, hcOut, legacyIn, legacyOut uint64) (uint64, uint64) {
-	if mode == "legacy" {
-		return legacyIn, legacyOut
-	}
-	return hcIn, hcOut
-}
-
-func safeDelta(mode string, curr, prev uint64) (uint64, bool) {
-	if curr < prev {
-		if mode == "legacy" {
-			// Counter32 wrap: (2^32 - prev) + curr
-			const wrap32 = uint64(1) << 32
-			return (wrap32 - prev) + curr, false
-		}
-		// HC wrap/discontinuity is treated as reset.
-		return 0, true
-	}
-	return curr - prev, false
-}
-
-func rawBps(deltaOctets uint64, seconds float64) int64 {
-	if seconds <= 0 {
-		return 0
-	}
-	v := (float64(deltaOctets) * 8) / seconds
-	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
-		return 0
-	}
-	return int64(v)
-}
-
-func clampOrKeepPrev(curr, prev int64, maxReasonableBps float64) int64 {
-	if curr <= 0 {
-		return 0
-	}
-	if maxReasonableBps <= 0 {
-		return curr
-	}
-	if float64(curr) > maxReasonableBps {
-		// Keep last stable value instead of dropping to zero.
-		// This avoids periodic fake troughs on high-speed ports.
-		if prev > 0 {
-			return prev
-		}
-		return int64(maxReasonableBps)
-	}
-	return curr
-}
-
-func maxReasonableBpsBySpeed(speedMbps int) float64 {
-	if speedMbps > 0 {
-		return float64(speedMbps) * 1_000_000 * 1.10
-	}
-	return 110_000_000_000
 }
 
 func median3(a, b, c int64) int64 {

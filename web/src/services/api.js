@@ -1,5 +1,6 @@
 import axios from "axios";
 import { setServerTimezone } from "../utils/serverTime";
+import { getApiError as parseApiError, getApiErrorDetail as parseApiErrorDetail, isAuthExpiredError } from "../utils/apiError";
 
 const API_BASE =
   import.meta.env.VITE_API_BASE_URL || "http://119.40.55.18:18080/api";
@@ -20,6 +21,24 @@ function appendSlowApiLog(item) {
       window.dispatchEvent(new CustomEvent("np-slow-api-log", { detail: item }));
     }
   } catch {}
+}
+
+function historyDiagnosticFromResponse(resp) {
+  const headers = resp?.headers || {};
+  const fromHeader = (key) => headers[key] || headers[key.toLowerCase()] || "";
+  const data = resp?.data || {};
+  const duration = Number(fromHeader("X-NetPulse-Query-Duration-Ms") || data.query_duration_ms || 0);
+  const pointCount = Number(fromHeader("X-NetPulse-History-Point-Count") || data.point_count || 0);
+  const cacheRaw = fromHeader("X-NetPulse-History-Cache-Hit");
+  const cacheHit = cacheRaw === "" ? data.cache_hit : String(cacheRaw).toLowerCase() === "true";
+  return {
+    query_ms: Number.isFinite(duration) && duration > 0 ? duration : undefined,
+    history_range: fromHeader("X-NetPulse-History-Range") || data.range_label || "",
+    history_source: fromHeader("X-NetPulse-History-Source") || data.source_table || "",
+    history_interval: fromHeader("X-NetPulse-History-Interval") || data.sampled_interval || "",
+    history_cache_hit: Boolean(cacheHit),
+    history_points: Number.isFinite(pointCount) && pointCount > 0 ? pointCount : undefined
+  };
 }
 
 function normalizeToken(raw) {
@@ -56,7 +75,8 @@ http.interceptors.response.use(
         method: resp?.config?.method?.toUpperCase() || "GET",
         url: resp?.config?.url || "",
         ms: cost,
-        ok: true
+        ok: true,
+        ...historyDiagnosticFromResponse(resp)
       });
     }
     return resp;
@@ -70,15 +90,11 @@ http.interceptors.response.use(
         method: err?.config?.method?.toUpperCase() || "GET",
         url: err?.config?.url || "",
         ms: cost,
-        ok: false
+        ok: false,
+        ...historyDiagnosticFromResponse(err?.response)
       });
     }
-    const status = err?.response?.status;
-    const msg = String(err?.response?.data?.error || "").toLowerCase();
-    if (
-      status === 401 &&
-      (msg.includes("invalid token") || msg.includes("missing bearer token"))
-    ) {
+    if (isAuthExpiredError(err)) {
       localStorage.removeItem("netpulse_token");
       localStorage.removeItem("netpulse_user");
       if (typeof window !== "undefined") {
@@ -90,24 +106,11 @@ http.interceptors.response.use(
 );
 
 export function getApiError(err, fallback = "请求失败") {
-  return (
-    err?.response?.data?.error ||
-    err?.response?.data?.message ||
-    err?.message ||
-    fallback
-  );
+  return parseApiError(err, fallback);
 }
 
 export function getApiErrorDetail(err, fallback = "请求失败") {
-  return {
-    code: err?.response?.data?.code || "",
-    message:
-      err?.response?.data?.error ||
-      err?.response?.data?.message ||
-      err?.message ||
-      fallback,
-    hint: err?.response?.data?.hint || ""
-  };
+  return parseApiErrorDetail(err, fallback);
 }
 
 export const api = {
