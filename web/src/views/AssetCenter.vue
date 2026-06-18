@@ -7,6 +7,7 @@ import { api } from "../services/api";
 import { useOpsStore } from "../stores/ops";
 import { useFeedback } from "../composables/useFeedback";
 import { statusClass, statusLabel } from "../utils/status";
+import { npAxisLabel, npAxisLine, npChartGrid, npChartPalette, npLegend, npSplitLine, npTooltip } from "../utils/chartTheme";
 
 const ops = useOpsStore();
 const router = useRouter();
@@ -414,14 +415,27 @@ function renderCpuMemChart(cpuData, memData) {
   if (!cpuMemChart) cpuMemChart = echarts.init(drawerCpuMemChartEl.value);
   const x = cpuData.map((i) => fmtTime(i.timestamp));
   cpuMemChart.setOption({
-    tooltip: { trigger: "axis" },
-    legend: { data: ["CPU", "内存"] },
-    grid: { left: "3%", right: "4%", bottom: "10%", containLabel: true },
-    xAxis: { type: "category", data: x, boundaryGap: false, axisLabel: { rotate: x.length > 12 ? 45 : 0 } },
-    yAxis: { type: "value", min: 0, max: 100 },
+    tooltip: npTooltip(),
+    legend: { ...npLegend, data: ["CPU", "内存"] },
+    grid: { ...npChartGrid, top: 46, bottom: 42 },
+    xAxis: {
+      type: "category",
+      data: x,
+      boundaryGap: false,
+      axisLabel: { ...npAxisLabel, rotate: x.length > 12 ? 45 : 0, hideOverlap: true },
+      axisLine: npAxisLine
+    },
+    yAxis: {
+      type: "value",
+      min: 0,
+      max: 100,
+      axisLabel: { ...npAxisLabel, formatter: "{value}%" },
+      axisLine: npAxisLine,
+      splitLine: npSplitLine
+    },
     series: [
-      { name: "CPU", type: "line", smooth: true, sampling: "average", data: cpuData.map((i) => Number(i.cpu_usage || 0)) },
-      { name: "内存", type: "line", smooth: true, sampling: "average", data: memData.map((i) => Number(i.mem_usage || 0)) }
+      { name: "CPU", type: "line", smooth: true, showSymbol: false, sampling: "average", lineStyle: { color: npChartPalette.cpu, width: 2 }, itemStyle: { color: npChartPalette.cpu }, data: cpuData.map((i) => Number(i.cpu_usage || 0)) },
+      { name: "内存", type: "line", smooth: true, showSymbol: false, sampling: "average", lineStyle: { color: npChartPalette.mem, width: 2 }, itemStyle: { color: npChartPalette.mem }, data: memData.map((i) => Number(i.mem_usage || 0)) }
     ]
   });
 }
@@ -461,8 +475,8 @@ watch(editMode, (v) => {
 </script>
 
 <template>
-  <div class="space-y-5">
-    <el-card class="np-toolbar-card">
+  <div class="np-view-shell np-asset-center space-y-5">
+    <el-card class="np-toolbar-card np-command-card">
       <template #header>
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div class="flex items-center gap-2 np-toolbar-right">
@@ -519,7 +533,7 @@ watch(editMode, (v) => {
         <template #default>
           <div v-for="grp in groupedDevices" :key="grp.group" class="mb-5">
             <div class="mb-2 text-sm font-semibold text-slate-600">{{ grp.group }} ({{ grp.rows.length }})</div>
-            <el-table :data="grp.rows" class="np-borderless-table" size="large" @selection-change="(rows)=>selectedRows.value=rows" @row-dblclick="openQuickPeek">
+            <el-table :data="grp.rows" class="np-borderless-table np-rich-table" size="large" @selection-change="(rows)=>selectedRows.value=rows" @row-dblclick="openQuickPeek">
               <el-table-column v-if="manageMode" type="selection" width="46" />
               <el-table-column v-if="visibleCols.status" label="状态" width="90">
                 <template #default="{ row }">

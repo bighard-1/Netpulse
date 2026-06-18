@@ -4,7 +4,7 @@ import { useRouter } from "vue-router";
 import { Edit } from "@element-plus/icons-vue";
 import { api } from "../services/api";
 import { useFeedback } from "../composables/useFeedback";
-import { npAxisLabel, npAxisLine, npSplitLine, npTooltip } from "../utils/chartTheme";
+import { npAxisLabel, npAxisLine, npAxisTick, npChartPalette, npEmptyGraphic, npLegend, npSplitLine, npTooltip } from "../utils/chartTheme";
 import { getApiError } from "../utils/apiError";
 
 const props = defineProps({ id: { type: [String, Number], required: true } });
@@ -167,14 +167,14 @@ function initCpuChart() {
   if (!cpuMemChart) return;
   cpuMemChart.setOption({
     animation: false,
-    grid: { left: 45, right: 20, top: 34, bottom: 30 },
+    grid: { left: 45, right: 20, top: 42, bottom: 32 },
     tooltip: npTooltip({ axisPointer: { type: "line", animation: false } }),
-    legend: { data: ["CPU利用率", "内存利用率"], top: 4 },
-    xAxis: { type: "time", axisLabel: npAxisLabel, axisLine: npAxisLine },
-    yAxis: { type: "value", max: 100, axisLabel: { ...npAxisLabel, formatter: (v) => `${v}%` }, axisLine: npAxisLine, splitLine: npSplitLine },
+    legend: { ...npLegend, data: ["CPU利用率", "内存利用率"], top: 4 },
+    xAxis: { type: "time", axisLabel: npAxisLabel, axisLine: npAxisLine, axisTick: npAxisTick },
+    yAxis: { type: "value", max: 100, axisLabel: { ...npAxisLabel, formatter: (v) => `${v}%` }, axisLine: npAxisLine, axisTick: npAxisTick, splitLine: npSplitLine },
     series: [
-      { name: "CPU利用率", type: "line", showSymbol: false, sampling: "lttb", progressive: 2000, data: [] },
-      { name: "内存利用率", type: "line", showSymbol: false, sampling: "lttb", progressive: 2000, data: [] }
+      { name: "CPU利用率", type: "line", showSymbol: false, sampling: "lttb", progressive: 2000, lineStyle: { color: npChartPalette.cpu, width: 2 }, itemStyle: { color: npChartPalette.cpu }, data: [] },
+      { name: "内存利用率", type: "line", showSymbol: false, sampling: "lttb", progressive: 2000, lineStyle: { color: npChartPalette.mem, width: 2 }, itemStyle: { color: npChartPalette.mem }, data: [] }
     ]
   }, true);
 }
@@ -183,12 +183,12 @@ function initStorageChart() {
   if (!storageChart) return;
   storageChart.setOption({
     animation: false,
-    grid: { left: 45, right: 20, top: 34, bottom: 30 },
+    grid: { left: 45, right: 20, top: 42, bottom: 32 },
     tooltip: npTooltip({ axisPointer: { type: "line", animation: false } }),
-    legend: { data: ["存储利用率"], top: 4 },
-    xAxis: { type: "time", axisLabel: npAxisLabel, axisLine: npAxisLine },
-    yAxis: { type: "value", max: 100, axisLabel: { ...npAxisLabel, formatter: (v) => `${v}%` }, axisLine: npAxisLine, splitLine: npSplitLine },
-    series: [{ name: "存储利用率", type: "line", showSymbol: false, sampling: "lttb", progressive: 2000, data: [] }]
+    legend: { ...npLegend, data: ["存储利用率"], top: 4 },
+    xAxis: { type: "time", axisLabel: npAxisLabel, axisLine: npAxisLine, axisTick: npAxisTick },
+    yAxis: { type: "value", max: 100, axisLabel: { ...npAxisLabel, formatter: (v) => `${v}%` }, axisLine: npAxisLine, axisTick: npAxisTick, splitLine: npSplitLine },
+    series: [{ name: "存储利用率", type: "line", showSymbol: false, sampling: "lttb", progressive: 2000, lineStyle: { color: npChartPalette.storage, width: 2 }, itemStyle: { color: npChartPalette.storage }, data: [] }]
   }, true);
 }
 
@@ -212,12 +212,7 @@ async function renderCpuMem() {
     const hasData = cpuData.length || memData.length;
 
     cpuMemChart.setOption({
-      graphic: hasData ? [] : [{
-        type: "text",
-        left: "center",
-        top: "middle",
-        style: { text: "当前时间范围暂无 CPU/内存 数据", fill: "#94a3b8", fontSize: 14 }
-      }],
+      graphic: hasData ? [] : [npEmptyGraphic("当前时间范围暂无 CPU/内存 数据")],
       series: [
         { name: "CPU利用率", data: cpuData },
         { name: "内存利用率", data: memData }
@@ -261,23 +256,13 @@ async function renderStorage() {
     }
 
     storageChart.setOption({
-      graphic: points.length ? [] : [{
-        type: "text",
-        left: "center",
-        top: "middle",
-        style: { text: "当前时间范围暂无存储数据", fill: "#94a3b8", fontSize: 14 }
-      }],
+      graphic: points.length ? [] : [npEmptyGraphic("当前时间范围暂无存储数据")],
       series: [{ name: "存储利用率", data: points }]
     });
   } catch {
     storageSeries.value = [];
     storageChart.setOption({
-      graphic: [{
-        type: "text",
-        left: "center",
-        top: "middle",
-        style: { text: "存储监控暂未接入该设备模板", fill: "#94a3b8", fontSize: 14 }
-      }],
+      graphic: [npEmptyGraphic("存储监控暂未接入该设备模板")],
       series: [{ name: "存储利用率", data: [] }]
     });
   }
@@ -419,13 +404,13 @@ watch(filteredPorts, () => {
 </script>
 
 <template>
-  <div class="space-y-5" v-loading="loading">
+  <div class="np-view-shell np-device-detail space-y-5" v-loading="loading">
     <el-breadcrumb separator=">">
       <el-breadcrumb-item :to="{ path: '/' }">资产</el-breadcrumb-item>
       <el-breadcrumb-item>{{ device?.ip || `设备-${props.id}` }}</el-breadcrumb-item>
     </el-breadcrumb>
 
-    <el-card>
+    <el-card class="np-detail-hero-card">
       <template #header>
         <div class="flex items-center justify-between">
           <span class="np-section-title text-base font-semibold">设备基础信息</span>
@@ -458,7 +443,7 @@ watch(filteredPorts, () => {
       <el-empty v-else description="设备不存在" />
     </el-card>
 
-    <el-card>
+    <el-card class="np-port-list-card">
       <template #header>
         <div class="flex flex-wrap items-center justify-between gap-2">
           <span class="np-section-title text-base font-semibold">端口列表</span>
@@ -482,7 +467,7 @@ watch(filteredPorts, () => {
               background
             />
           </div>
-          <el-table :data="pagedPorts" class="np-borderless-table">
+          <el-table :data="pagedPorts" class="np-borderless-table np-rich-table">
             <el-table-column label="状态" width="90">
               <template #default="{ row }">
                 <span class="inline-block align-middle" :class="interfaceStatusClass(row)" />
@@ -512,7 +497,7 @@ watch(filteredPorts, () => {
       </el-skeleton>
     </el-card>
 
-    <el-card>
+    <el-card class="np-chart-card">
       <template #header>
         <span class="np-section-title text-base font-semibold">CPU / 内存实时利用率（24h）</span>
       </template>
@@ -539,7 +524,7 @@ watch(filteredPorts, () => {
       <div ref="cpuMemRef" class="h-[180px] w-full" v-loading="chartLoading"></div>
     </el-card>
 
-    <el-card>
+    <el-card class="np-chart-card">
       <template #header>
         <div class="flex items-center justify-between">
           <span class="np-section-title text-base font-semibold">存储空间监控（24h）</span>

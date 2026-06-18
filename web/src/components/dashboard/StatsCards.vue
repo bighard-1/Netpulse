@@ -53,21 +53,48 @@ const props = defineProps({
 
 <style scoped>
 .np-kpi-card {
-  background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.22) !important;
+  background:
+    radial-gradient(circle at 92% 12%, rgba(37, 99, 235, 0.12), transparent 30%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.9) 100%);
   min-width: 0;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.np-kpi-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(115deg, rgba(255, 255, 255, 0.28), transparent 36%, rgba(255, 255, 255, 0.16) 72%, transparent);
+}
+
+.np-kpi-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(37, 99, 235, 0.28) !important;
 }
 
 :deep(.np-kpi-card .el-card__body) {
+  position: relative;
+  z-index: 1;
   min-width: 0;
-  padding: 16px !important;
+  padding: 18px !important;
 }
 .np-kpi-card:nth-child(1) {
-  background: linear-gradient(135deg, #eefbf5 0%, #ffffff 62%);
+  background:
+    radial-gradient(circle at 88% 12%, rgba(20, 184, 166, 0.2), transparent 33%),
+    linear-gradient(135deg, #ecfdf5 0%, #ffffff 64%);
 }
 .np-kpi-card:nth-child(2) {
-  background: linear-gradient(135deg, #eef2ff 0%, #ffffff 62%);
+  background:
+    radial-gradient(circle at 88% 12%, rgba(99, 102, 241, 0.2), transparent 33%),
+    linear-gradient(135deg, #eef2ff 0%, #ffffff 64%);
 }
 .np-kpi-card:nth-child(3) {
-  background: linear-gradient(135deg, #fff7ed 0%, #ffffff 62%);
+  background:
+    radial-gradient(circle at 88% 12%, rgba(249, 115, 22, 0.18), transparent 33%),
+    linear-gradient(135deg, #fff7ed 0%, #ffffff 64%);
 }
 </style>

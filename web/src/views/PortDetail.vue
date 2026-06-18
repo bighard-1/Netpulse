@@ -6,7 +6,7 @@ import { formatBps } from "../utils/format";
 import { getApiError } from "../utils/apiError";
 import { zhCN } from "../i18n/zhCN";
 import { useFeedback } from "../composables/useFeedback";
-import { npAxisLabel, npAxisLine, npChartGrid, npSplitLine, npTooltip } from "../utils/chartTheme";
+import { npAxisLabel, npAxisLine, npAxisTick, npChartGrid, npChartPalette, npEmptyGraphic, npLegend, npSplitLine, npTooltip } from "../utils/chartTheme";
 import {
   formatServerTime,
   startOfServerMonth,
@@ -153,7 +153,7 @@ function baseOption(title, unitInfo, planText = "") {
         return lines.join("<br/>");
       }
     }),
-    legend: { top: 14, right: 10, data: ["入方向", "出方向"] },
+    legend: { ...npLegend, top: 14, right: 10, data: ["入方向", "出方向"] },
     dataZoom: [
       { type: "inside", throttle: 60, zoomOnMouseWheel: true, moveOnMouseMove: true },
       { type: "slider", height: 18, bottom: 0 }
@@ -172,7 +172,8 @@ function baseOption(title, unitInfo, planText = "") {
           return hhmm;
         }
       },
-      axisLine: npAxisLine
+      axisLine: npAxisLine,
+      axisTick: npAxisTick
     },
     yAxis: {
       type: "value",
@@ -181,6 +182,7 @@ function baseOption(title, unitInfo, planText = "") {
       splitNumber: 6,
       axisLabel: { ...npAxisLabel, formatter: (val) => `${(val / unitInfo.div).toFixed(2)}` },
       axisLine: npAxisLine,
+      axisTick: npAxisTick,
       splitLine: npSplitLine
     },
     series: [
@@ -193,13 +195,13 @@ function baseOption(title, unitInfo, planText = "") {
         connectNulls: true,
         sampling: "lttb",
         progressive: 5000,
-        lineStyle: { color: "#6366F1", width: 2 },
-        itemStyle: { color: "#6366F1" },
+        lineStyle: { color: npChartPalette.inbound, width: 2 },
+        itemStyle: { color: npChartPalette.inbound },
         data: [],
         markLine: trafficThresholdBps.value > 0 ? {
           symbol: "none",
           label: { show: true, formatter: `阈值 ${formatBps(trafficThresholdBps.value)}` },
-          lineStyle: { color: "#ef4444", type: "dashed" },
+          lineStyle: { color: npChartPalette.danger, type: "dashed" },
           data: [{ yAxis: trafficThresholdBps.value }]
         } : undefined
       },
@@ -212,13 +214,13 @@ function baseOption(title, unitInfo, planText = "") {
         connectNulls: true,
         sampling: "lttb",
         progressive: 5000,
-        lineStyle: { color: "#22C55E", width: 2 },
-        itemStyle: { color: "#22C55E" },
+        lineStyle: { color: npChartPalette.outbound, width: 2 },
+        itemStyle: { color: npChartPalette.outbound },
         data: [],
         markLine: trafficThresholdBps.value > 0 ? {
           symbol: "none",
           label: { show: false },
-          lineStyle: { color: "#ef4444", type: "dashed" },
+          lineStyle: { color: npChartPalette.danger, type: "dashed" },
           data: [{ yAxis: trafficThresholdBps.value }]
         } : undefined
       }
@@ -422,22 +424,17 @@ function applyChart(chart, title, data, metaKey = "today") {
   const speedBps = Number(currentPortSpeedMbps.value || 0) * 1_000_000;
   const refLines = [];
   if (speedBps > 0) {
-    refLines.push({ yAxis: speedBps, label: { formatter: "100%速率线" }, lineStyle: { color: "#f97316", type: "dashed" } });
-    refLines.push({ yAxis: speedBps * 0.8, label: { formatter: "80%速率线" }, lineStyle: { color: "#f59e0b", type: "dashed" } });
+    refLines.push({ yAxis: speedBps, label: { formatter: "100%速率线" }, lineStyle: { color: npChartPalette.cpu, type: "dashed" } });
+    refLines.push({ yAxis: speedBps * 0.8, label: { formatter: "80%速率线" }, lineStyle: { color: npChartPalette.warning, type: "dashed" } });
   }
   if (trafficThresholdBps.value > 0) {
-    refLines.push({ yAxis: trafficThresholdBps.value, label: { formatter: `阈值 ${formatBps(trafficThresholdBps.value)}` }, lineStyle: { color: "#ef4444", type: "dashed" } });
+    refLines.push({ yAxis: trafficThresholdBps.value, label: { formatter: `阈值 ${formatBps(trafficThresholdBps.value)}` }, lineStyle: { color: npChartPalette.danger, type: "dashed" } });
   }
   if (refLines.length) {
     opt.series[0].markLine = { symbol: "none", data: refLines };
   }
   if (!hasData) {
-    opt.graphic = [{
-      type: "text",
-      left: "center",
-      top: "middle",
-      style: { text: "当前时间范围暂无流量数据", fill: "#94a3b8", fontSize: 14 }
-    }];
+    opt.graphic = [npEmptyGraphic("当前时间范围暂无流量数据")];
   }
   chart.setOption(opt, { notMerge: true, lazyUpdate: true, silent: true });
 }
@@ -779,14 +776,14 @@ function onEditModeEvent(e) {
 </script>
 
 <template>
-  <div class="space-y-5">
+  <div class="np-view-shell np-port-detail space-y-5">
     <el-breadcrumb separator=">">
       <el-breadcrumb-item :to="{ path: '/' }">资产</el-breadcrumb-item>
       <el-breadcrumb-item :to="{ path: `/device/${route.query.deviceId || ''}` }">{{ route.query.deviceIp || '设备' }}</el-breadcrumb-item>
       <el-breadcrumb-item>{{ portMeta.name }}</el-breadcrumb-item>
     </el-breadcrumb>
 
-    <el-card>
+    <el-card class="np-detail-hero-card">
       <div class="grid grid-cols-1 gap-3 xl:grid-cols-[1.3fr,1fr]">
         <div class="space-y-3">
           <div>
@@ -844,7 +841,7 @@ function onEditModeEvent(e) {
       </div>
     </el-card>
 
-    <el-card>
+    <el-card class="np-chart-card np-traffic-card">
       <template #header>
         <div class="flex flex-wrap items-center justify-between gap-2">
           <el-segmented

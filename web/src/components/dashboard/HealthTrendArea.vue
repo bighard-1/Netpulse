@@ -1,6 +1,6 @@
 <script setup>
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { npAxisLabel, npAxisLine, npChartGrid, npSplitLine, npTooltip } from "../../utils/chartTheme";
+import { npAxisLabel, npAxisLine, npChartGrid, npChartPalette, npLegend, npSplitLine, npTooltip } from "../../utils/chartTheme";
 
 const props = defineProps({
   trend: { type: Array, default: () => [] },
@@ -22,7 +22,7 @@ function render() {
     animation: false,
     grid: npChartGrid,
     tooltip: npTooltip(),
-    legend: { top: 8, data: ["健康分", "可用率"] },
+    legend: { ...npLegend, data: ["健康分", "可用率"] },
     xAxis: {
       type: "category",
       data: list.map((x) => new Date(x.ts || x.timestamp).toLocaleString()),
@@ -44,7 +44,7 @@ function render() {
         smooth: true,
         showSymbol: false,
         areaStyle: { opacity: 0.2 },
-        color: "#10b981",
+        color: npChartPalette.health,
         data: list.map((x) => Number(x.score || 0))
       },
       {
@@ -53,7 +53,7 @@ function render() {
         smooth: true,
         showSymbol: false,
         areaStyle: { opacity: 0.12 },
-        color: "#f59e0b",
+        color: npChartPalette.availability,
         data: list.map((x) => Number(x.availability || 0))
       }
     ]

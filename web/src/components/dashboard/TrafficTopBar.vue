@@ -1,7 +1,7 @@
 <script setup>
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { formatBps } from "../../utils/format";
-import { npAxisLabel, npAxisLine, npChartGrid, npSplitLine, npTooltip } from "../../utils/chartTheme";
+import { npAxisLabel, npAxisLine, npChartGrid, npChartPalette, npSplitLine, npTooltip } from "../../utils/chartTheme";
 
 const props = defineProps({
   title: { type: String, default: "Top N 端口流量排行" },
@@ -64,7 +64,7 @@ function render() {
           color: (ctx) => {
             const v = Number(ctx.value || 0);
             const max = Number(list[0]?.bps || 1);
-            return v >= max * 0.9 ? "#ef4444" : "#10b981";
+            return v >= max * 0.9 ? npChartPalette.danger : npChartPalette.health;
           },
           borderRadius: [0, 6, 6, 0]
         }

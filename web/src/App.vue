@@ -383,9 +383,12 @@ onBeforeUnmount(() => {
     <aside class="sidebar" :class="{ open: !isMobile || sidebarOpen, mobile: isMobile, collapsed: sidebarCollapsed && !isMobile }">
       <div class="px-4 pb-4 pt-5">
         <div class="flex items-start justify-between gap-2">
-          <div>
-            <div class="text-2xl font-semibold tracking-wide text-white">NetPulse</div>
-            <div class="mt-1 text-xs text-slate-400">{{ zhCN.app.edition }}</div>
+          <div class="np-brand-lockup">
+            <span class="np-brand-mark"></span>
+            <div>
+              <div class="np-brand-title text-2xl font-semibold tracking-wide text-white">NetPulse</div>
+              <div class="mt-1 text-xs text-slate-400">{{ zhCN.app.edition }}</div>
+            </div>
           </div>
           <el-button class="np-sidebar-hide" size="small" text @click="toggleSidebarCollapsed">隐藏</el-button>
         </div>
@@ -420,8 +423,8 @@ onBeforeUnmount(() => {
           <el-button v-if="isMobile" class="np-menu-trigger" @click="sidebarOpen = !sidebarOpen">菜单</el-button>
           <el-button v-else class="np-menu-trigger" @click="toggleSidebarCollapsed">{{ sidebarCollapsed ? "展开侧栏" : "隐藏侧栏" }}</el-button>
           <div>
-            <h2 class="text-xl font-semibold text-slate-900">{{ pageTitle }}</h2>
-            <div class="text-xs text-slate-500">深海蓝高密度运维工作台</div>
+            <h2 class="np-page-title text-xl font-semibold text-slate-900">{{ pageTitle }}</h2>
+            <div class="np-page-subtitle text-xs text-slate-500">深海蓝高密度运维工作台</div>
           </div>
         </div>
       </header>
@@ -567,7 +570,53 @@ onBeforeUnmount(() => {
 .np-sidebar-hide {
   color: #cbd5e1 !important;
   background: rgba(255, 255, 255, 0.06) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
   border-radius: 999px;
+  backdrop-filter: blur(10px);
+}
+
+.np-brand-lockup {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+}
+
+.np-brand-mark {
+  position: relative;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  border-radius: 15px;
+  background:
+    radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.86), rgba(255, 255, 255, 0.18) 24%, transparent 25%),
+    linear-gradient(135deg, #22d3ee 0%, #2563eb 52%, #14b8a6 100%);
+  box-shadow:
+    0 18px 36px -18px rgba(34, 211, 238, 0.9),
+    inset 0 1px 0 rgba(255, 255, 255, 0.38);
+}
+
+.np-brand-mark::after {
+  content: "";
+  position: absolute;
+  inset: 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24);
+}
+
+.np-brand-title {
+  line-height: 1;
+  letter-spacing: -0.025em;
+}
+
+.np-page-title {
+  letter-spacing: -0.025em;
+}
+
+.np-page-subtitle {
+  margin-top: 2px;
+  color: #64748b;
 }
 
 .np-hl {
@@ -579,7 +628,9 @@ onBeforeUnmount(() => {
 .np-sidebar-actions {
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   padding: 8px 10px;
+  backdrop-filter: blur(10px);
 }
 
 .np-sidebar-actions summary {

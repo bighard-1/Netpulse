@@ -738,8 +738,7 @@ watch(activeDashboardModule, async () => {
 
 <style scoped>
 :deep(.np-search-hero .el-card__body) {
-  padding-top: 14px;
-  padding-bottom: 14px;
+  padding: 18px 20px;
 }
 
 :deep(.np-sticky-table .el-table__header-wrapper) {
@@ -749,13 +748,13 @@ watch(activeDashboardModule, async () => {
 }
 
 :deep(.np-module-card .el-card__body) {
-  padding-top: 12px;
+  padding-top: 14px;
 }
 
 .np-dashboard-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 340px);
-  gap: 18px;
+  gap: 22px;
   align-items: start;
 }
 
@@ -768,10 +767,11 @@ watch(activeDashboardModule, async () => {
 :deep(.np-dashboard-tabs > .el-tabs__header) {
   position: relative;
   z-index: 2;
-  margin-bottom: 18px;
+  margin-bottom: 20px;
   padding-bottom: 4px;
   background: rgba(255, 255, 255, 0.94);
   backdrop-filter: blur(8px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
 }
 
 :deep(.np-dashboard-tabs .el-tabs__content) {
