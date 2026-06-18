@@ -81,6 +81,15 @@ const resolvedTheme = computed(() => {
   return serverHour.value >= 7 && serverHour.value < 19 ? "light" : "dark";
 });
 
+function applyDocumentTheme(theme) {
+  const normalized = theme === "dark" ? "dark" : "light";
+  document.documentElement.classList.toggle("np-theme-light", normalized === "light");
+  document.documentElement.classList.toggle("np-theme-dark", normalized === "dark");
+  document.body.classList.toggle("np-theme-light", normalized === "light");
+  document.body.classList.toggle("np-theme-dark", normalized === "dark");
+  document.documentElement.dataset.npTheme = normalized;
+}
+
 const menuItems = [
   { path: "/dashboard", label: "仪表盘" },
   { path: "/assets", label: "资产中心" },
@@ -392,6 +401,8 @@ watch(
   { immediate: true }
 );
 
+watch(resolvedTheme, applyDocumentTheme, { immediate: true });
+
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
   window.removeEventListener("keydown", onGlobalKeydown);
@@ -399,6 +410,9 @@ onBeforeUnmount(() => {
   if (quickSearchDebounce) clearTimeout(quickSearchDebounce);
   if (idleTimer) clearTimeout(idleTimer);
   if (serverClockTimer) window.clearInterval(serverClockTimer);
+  document.documentElement.classList.remove("np-theme-light", "np-theme-dark");
+  document.body.classList.remove("np-theme-light", "np-theme-dark");
+  delete document.documentElement.dataset.npTheme;
   ["mousemove", "mousedown", "keydown", "touchstart", "scroll"].forEach((evt) => {
     window.removeEventListener(evt, resetIdleTimer);
   });
