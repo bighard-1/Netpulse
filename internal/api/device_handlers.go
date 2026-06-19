@@ -50,14 +50,16 @@ type updateRemarkRequest struct {
 }
 
 type updateDeviceRequest struct {
-	Name            string  `json:"name"`
-	Brand           string  `json:"brand"`
-	Remark          string  `json:"remark"`
-	MaintenanceMode bool    `json:"maintenance_mode"`
-	DeviceTier      string  `json:"device_tier"`
-	PollIntervalSec int     `json:"poll_interval_sec"`
-	CPUThreshold    float64 `json:"cpu_threshold"`
-	MemThreshold    float64 `json:"mem_threshold"`
+	Name                  string  `json:"name"`
+	Brand                 string  `json:"brand"`
+	Remark                string  `json:"remark"`
+	MaintenanceMode       bool    `json:"maintenance_mode"`
+	MonitoringPaused      bool    `json:"monitoring_paused"`
+	MonitoringPauseReason string  `json:"monitoring_pause_reason"`
+	DeviceTier            string  `json:"device_tier"`
+	PollIntervalSec       int     `json:"poll_interval_sec"`
+	CPUThreshold          float64 `json:"cpu_threshold"`
+	MemThreshold          float64 `json:"mem_threshold"`
 }
 
 func (h *Handler) handleListDevices(w http.ResponseWriter, r *http.Request) {
@@ -145,16 +147,23 @@ func (h *Handler) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 	if req.MemThreshold > 100 {
 		req.MemThreshold = 100
 	}
+	req.MonitoringPauseReason = strings.TrimSpace(req.MonitoringPauseReason)
+	if len([]rune(req.MonitoringPauseReason)) > 240 {
+		writeError(w, http.StatusBadRequest, "monitoring_pause_reason is too long")
+		return
+	}
 	if err := h.repo.UpdateDevice(r.Context(), db.Device{
-		ID:              id,
-		Name:            name,
-		Brand:           brand,
-		Remark:          req.Remark,
-		MaintenanceMode: req.MaintenanceMode,
-		DeviceTier:      req.DeviceTier,
-		PollIntervalSec: req.PollIntervalSec,
-		CPUThreshold:    req.CPUThreshold,
-		MemThreshold:    req.MemThreshold,
+		ID:                    id,
+		Name:                  name,
+		Brand:                 brand,
+		Remark:                req.Remark,
+		MaintenanceMode:       req.MaintenanceMode,
+		MonitoringPaused:      req.MonitoringPaused,
+		MonitoringPauseReason: req.MonitoringPauseReason,
+		DeviceTier:            req.DeviceTier,
+		PollIntervalSec:       req.PollIntervalSec,
+		CPUThreshold:          req.CPUThreshold,
+		MemThreshold:          req.MemThreshold,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

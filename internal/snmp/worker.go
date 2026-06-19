@@ -245,6 +245,9 @@ func (w *Worker) markPolled(deviceID int64, at time.Time) {
 }
 
 func (w *Worker) shouldPoll(d db.Device, now time.Time) bool {
+	if d.MonitoringPaused {
+		return false
+	}
 	interval := w.pollIntervalForDevice(d)
 	if interval < 5*time.Second {
 		interval = 5 * time.Second

@@ -311,7 +311,13 @@ function openDeviceEdit() {
     name: device.value.name || "",
     brand: device.value.brand || "",
     remark: device.value.remark || "",
-    maintenance_mode: Boolean(device.value.maintenance_mode)
+    maintenance_mode: Boolean(device.value.maintenance_mode),
+    monitoring_paused: Boolean(device.value.monitoring_paused),
+    monitoring_pause_reason: device.value.monitoring_pause_reason || "",
+    device_tier: device.value.device_tier || "access",
+    poll_interval_sec: Math.max(0, Number(device.value.poll_interval_sec || 0)),
+    cpu_threshold: Math.max(0, Number(device.value.cpu_threshold || 0)),
+    mem_threshold: Math.max(0, Number(device.value.mem_threshold || 0))
   };
   deviceEditVisible.value = true;
 }
@@ -322,7 +328,13 @@ async function saveDeviceEdit() {
       name: deviceEditForm.value.name || "",
       brand: deviceEditForm.value.brand || "",
       remark: deviceEditForm.value.remark || "",
-      maintenance_mode: Boolean(deviceEditForm.value.maintenance_mode)
+      maintenance_mode: Boolean(deviceEditForm.value.maintenance_mode),
+      monitoring_paused: Boolean(deviceEditForm.value.monitoring_paused),
+      monitoring_pause_reason: deviceEditForm.value.monitoring_pause_reason || "",
+      device_tier: deviceEditForm.value.device_tier || "access",
+      poll_interval_sec: Math.max(0, Number(deviceEditForm.value.poll_interval_sec || 0)),
+      cpu_threshold: Math.max(0, Number(deviceEditForm.value.cpu_threshold || 0)),
+      mem_threshold: Math.max(0, Number(deviceEditForm.value.mem_threshold || 0))
     });
     fb.success("设备信息已更新");
     deviceEditVisible.value = false;

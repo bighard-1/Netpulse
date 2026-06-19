@@ -19,6 +19,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 		       COALESCE(d.v3_username,''), COALESCE(d.v3_auth_protocol,''), COALESCE(d.v3_auth_password,''),
 		       COALESCE(d.v3_priv_protocol,''), COALESCE(d.v3_priv_password,''), COALESCE(d.v3_security_level,''),
 		       COALESCE(d.maintenance_mode, FALSE),
+		       COALESCE(d.monitoring_paused, FALSE), COALESCE(d.monitoring_pause_reason, ''),
 		       COALESCE(NULLIF(d.device_tier,''), 'access'),
 		       COALESCE(d.poll_interval_sec,0), COALESCE(d.cpu_threshold,0), COALESCE(d.mem_threshold,0),
 		       COALESCE(d.remark, ''), d.created_at, lm.ts AS last_ts, COALESCE(dl.message, ''), COALESCE(lm.uptime_sec, 0)
@@ -37,7 +38,7 @@ func (r *Repository) GetDeviceByID(ctx context.Context, id int64) (*DeviceStatus
 	if err := r.db.QueryRowContext(ctx, q, id).Scan(
 		&ds.ID, &ds.IP, &ds.Name, &ds.TemplateID, &ds.Brand, &ds.Community, &ds.SNMPVersion, &ds.SNMPPort,
 		&ds.V3Username, &ds.V3AuthProto, &ds.V3AuthPass, &ds.V3PrivProto, &ds.V3PrivPass, &ds.V3SecLevel,
-		&ds.MaintenanceMode,
+		&ds.MaintenanceMode, &ds.MonitoringPaused, &ds.MonitoringPauseReason,
 		&ds.DeviceTier,
 		&ds.PollIntervalSec, &ds.CPUThreshold, &ds.MemThreshold,
 		&ds.Remark, &ds.CreatedAt, &ds.LastMetricAt, &ds.StatusReason, &ds.UptimeSec,
@@ -101,15 +102,16 @@ func (r *Repository) AddDevice(ctx context.Context, d Device) (int64, error) {
 		INSERT INTO devices (
 			ip, name, template_id, brand, community, snmp_version, snmp_port,
 			v3_username, v3_auth_protocol, v3_auth_password, v3_priv_protocol, v3_priv_password, v3_security_level, maintenance_mode,
+			monitoring_paused, monitoring_pause_reason,
 			device_tier, poll_interval_sec, cpu_threshold, mem_threshold, remark
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 		RETURNING id;
 	`
 	var id int64
 	if err := r.db.QueryRowContext(
 		ctx, q, d.IP, d.Name, d.TemplateID, d.Brand, d.Community, d.SNMPVersion, d.SNMPPort, d.V3Username, d.V3AuthProto,
-		d.V3AuthPass, d.V3PrivProto, d.V3PrivPass, d.V3SecLevel, d.MaintenanceMode, d.DeviceTier, d.PollIntervalSec, d.CPUThreshold, d.MemThreshold, d.Remark,
+		d.V3AuthPass, d.V3PrivProto, d.V3PrivPass, d.V3SecLevel, d.MaintenanceMode, d.MonitoringPaused, d.MonitoringPauseReason, d.DeviceTier, d.PollIntervalSec, d.CPUThreshold, d.MemThreshold, d.Remark,
 	).Scan(&id); err != nil {
 		return 0, fmt.Errorf("add device: %w", err)
 	}
@@ -128,6 +130,7 @@ func (r *Repository) ListDevices(ctx context.Context) ([]Device, error) {
 		       COALESCE(v3_username,''), COALESCE(v3_auth_protocol,''), COALESCE(v3_auth_password,''),
 		       COALESCE(v3_priv_protocol,''), COALESCE(v3_priv_password,''), COALESCE(v3_security_level,''),
 		       COALESCE(maintenance_mode,FALSE),
+		       COALESCE(monitoring_paused,FALSE), COALESCE(monitoring_pause_reason,''),
 		       COALESCE(NULLIF(device_tier,''), 'access'),
 		       COALESCE(poll_interval_sec,0), COALESCE(cpu_threshold,0), COALESCE(mem_threshold,0),
 		       COALESCE(remark, ''), created_at
@@ -143,7 +146,7 @@ func (r *Repository) ListDevices(ctx context.Context) ([]Device, error) {
 	out := make([]Device, 0)
 	for rows.Next() {
 		var d Device
-		if err := rows.Scan(&d.ID, &d.IP, &d.Name, &d.TemplateID, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.MaintenanceMode, &d.DeviceTier, &d.PollIntervalSec, &d.CPUThreshold, &d.MemThreshold, &d.Remark, &d.CreatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.IP, &d.Name, &d.TemplateID, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.MaintenanceMode, &d.MonitoringPaused, &d.MonitoringPauseReason, &d.DeviceTier, &d.PollIntervalSec, &d.CPUThreshold, &d.MemThreshold, &d.Remark, &d.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan device: %w", err)
 		}
 		d.Community = r.decryptOpt(d.Community)
@@ -157,9 +160,9 @@ func (r *Repository) ListDevices(ctx context.Context) ([]Device, error) {
 	return out, nil
 }
 func (r *Repository) FindDeviceByIP(ctx context.Context, ip string) (*Device, error) {
-	const q = `SELECT id, host(ip), COALESCE(name, host(ip)), template_id, brand, community, snmp_version, snmp_port, COALESCE(v3_username,''), COALESCE(v3_auth_protocol,''), COALESCE(v3_auth_password,''), COALESCE(v3_priv_protocol,''), COALESCE(v3_priv_password,''), COALESCE(v3_security_level,''), COALESCE(maintenance_mode,FALSE), COALESCE(NULLIF(device_tier,''),'access'), COALESCE(poll_interval_sec,0), COALESCE(cpu_threshold,0), COALESCE(mem_threshold,0), COALESCE(remark,''), created_at FROM devices WHERE ip = $1::inet LIMIT 1;`
+	const q = `SELECT id, host(ip), COALESCE(name, host(ip)), template_id, brand, community, snmp_version, snmp_port, COALESCE(v3_username,''), COALESCE(v3_auth_protocol,''), COALESCE(v3_auth_password,''), COALESCE(v3_priv_protocol,''), COALESCE(v3_priv_password,''), COALESCE(v3_security_level,''), COALESCE(maintenance_mode,FALSE), COALESCE(monitoring_paused,FALSE), COALESCE(monitoring_pause_reason,''), COALESCE(NULLIF(device_tier,''),'access'), COALESCE(poll_interval_sec,0), COALESCE(cpu_threshold,0), COALESCE(mem_threshold,0), COALESCE(remark,''), created_at FROM devices WHERE ip = $1::inet LIMIT 1;`
 	var d Device
-	if err := r.db.QueryRowContext(ctx, q, ip).Scan(&d.ID, &d.IP, &d.Name, &d.TemplateID, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.MaintenanceMode, &d.DeviceTier, &d.PollIntervalSec, &d.CPUThreshold, &d.MemThreshold, &d.Remark, &d.CreatedAt); err != nil {
+	if err := r.db.QueryRowContext(ctx, q, ip).Scan(&d.ID, &d.IP, &d.Name, &d.TemplateID, &d.Brand, &d.Community, &d.SNMPVersion, &d.SNMPPort, &d.V3Username, &d.V3AuthProto, &d.V3AuthPass, &d.V3PrivProto, &d.V3PrivPass, &d.V3SecLevel, &d.MaintenanceMode, &d.MonitoringPaused, &d.MonitoringPauseReason, &d.DeviceTier, &d.PollIntervalSec, &d.CPUThreshold, &d.MemThreshold, &d.Remark, &d.CreatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -188,6 +191,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		       COALESCE(d.v3_username,''), COALESCE(d.v3_auth_protocol,''), COALESCE(d.v3_auth_password,''),
 		       COALESCE(d.v3_priv_protocol,''), COALESCE(d.v3_priv_password,''), COALESCE(d.v3_security_level,''),
 		       COALESCE(d.maintenance_mode,FALSE),
+		       COALESCE(d.monitoring_paused,FALSE), COALESCE(d.monitoring_pause_reason,''),
 		       COALESCE(NULLIF(d.device_tier,''), 'access'),
 		       COALESCE(d.poll_interval_sec,0), COALESCE(d.cpu_threshold,0), COALESCE(d.mem_threshold,0),
 		       COALESCE(d.remark, ''), d.created_at, lm.ts AS last_ts, COALESCE(dl.message, ''),
@@ -210,7 +214,7 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 		if err := rows.Scan(
 			&ds.ID, &ds.IP, &ds.Name, &ds.TemplateID, &ds.Brand, &ds.Community, &ds.SNMPVersion, &ds.SNMPPort,
 			&ds.V3Username, &ds.V3AuthProto, &ds.V3AuthPass, &ds.V3PrivProto, &ds.V3PrivPass, &ds.V3SecLevel,
-			&ds.MaintenanceMode,
+			&ds.MaintenanceMode, &ds.MonitoringPaused, &ds.MonitoringPauseReason,
 			&ds.DeviceTier,
 			&ds.PollIntervalSec, &ds.CPUThreshold, &ds.MemThreshold,
 			&ds.Remark, &ds.CreatedAt, &ds.LastMetricAt, &ds.StatusReason,
@@ -286,13 +290,15 @@ func (r *Repository) UpdateDevice(ctx context.Context, d Device) error {
 		    brand = $3,
 		    remark = $4,
 		    maintenance_mode = $5,
-		    device_tier = $6,
-		    poll_interval_sec = $7,
-		    cpu_threshold = $8,
-		    mem_threshold = $9
+		    monitoring_paused = $6,
+		    monitoring_pause_reason = $7,
+		    device_tier = $8,
+		    poll_interval_sec = $9,
+		    cpu_threshold = $10,
+		    mem_threshold = $11
 		WHERE id = $1;
 	`
-	if _, err := r.db.ExecContext(ctx, q, d.ID, strings.TrimSpace(d.Name), strings.TrimSpace(d.Brand), d.Remark, d.MaintenanceMode, strings.TrimSpace(d.DeviceTier), d.PollIntervalSec, d.CPUThreshold, d.MemThreshold); err != nil {
+	if _, err := r.db.ExecContext(ctx, q, d.ID, strings.TrimSpace(d.Name), strings.TrimSpace(d.Brand), d.Remark, d.MaintenanceMode, d.MonitoringPaused, strings.TrimSpace(d.MonitoringPauseReason), strings.TrimSpace(d.DeviceTier), d.PollIntervalSec, d.CPUThreshold, d.MemThreshold); err != nil {
 		return fmt.Errorf("update device: %w", err)
 	}
 	return nil

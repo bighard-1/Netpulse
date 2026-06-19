@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS devices (
     v3_priv_password VARCHAR(256),
     v3_security_level VARCHAR(32),
     maintenance_mode BOOLEAN NOT NULL DEFAULT FALSE,
+    monitoring_paused BOOLEAN NOT NULL DEFAULT FALSE,
+    monitoring_pause_reason TEXT NOT NULL DEFAULT '',
     device_tier VARCHAR(16) NOT NULL DEFAULT 'access',
     poll_interval_sec INTEGER NOT NULL DEFAULT 0,
     cpu_threshold NUMERIC(6,2) NOT NULL DEFAULT 0,
@@ -49,6 +51,8 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS poll_interval_sec INTEGER NOT NULL 
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS cpu_threshold NUMERIC(6,2) NOT NULL DEFAULT 0;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS mem_threshold NUMERIC(6,2) NOT NULL DEFAULT 0;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS device_tier VARCHAR(16) NOT NULL DEFAULT 'access';
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS monitoring_paused BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS monitoring_pause_reason TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS interfaces (
     id BIGSERIAL PRIMARY KEY,
@@ -975,6 +979,18 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 	`
 	if err := r.applySchemaMigration(ctx, 9, mig9); err != nil {
 		return fmt.Errorf("apply migration v9 failed: %w", err)
+	}
+	// v10: per-device monitoring pause switch. Additive only; lets operators
+	// stop known-offline assets from generating repetitive polling events.
+	const mig10 = `
+		ALTER TABLE devices ADD COLUMN IF NOT EXISTS monitoring_paused BOOLEAN NOT NULL DEFAULT FALSE;
+		ALTER TABLE devices ADD COLUMN IF NOT EXISTS monitoring_pause_reason TEXT NOT NULL DEFAULT '';
+		INSERT INTO schema_migrations(version, description)
+		VALUES (10, 'add per-device monitoring pause switch')
+		ON CONFLICT (version) DO NOTHING;
+	`
+	if err := r.applySchemaMigration(ctx, 10, mig10); err != nil {
+		return fmt.Errorf("apply migration v10 failed: %w", err)
 	}
 	return nil
 }

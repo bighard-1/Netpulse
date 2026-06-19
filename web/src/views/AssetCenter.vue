@@ -52,6 +52,7 @@ const runtimeDefaults = ref({
 });
 const editForm = ref({
   id: null, name: "", brand: "", remark: "", maintenance_mode: false,
+  monitoring_paused: false, monitoring_pause_reason: "",
   device_tier: "access",
   poll_interval_sec: 60, cpu_threshold: 90, mem_threshold: 90
 });
@@ -107,6 +108,15 @@ const groupedDevices = computed(() => {
 
 function deviceStatusClass(row) {
   return statusClass(row);
+}
+
+function deviceStatusText(row) {
+  if (row?.monitoring_paused) return "暂停监控";
+  return statusLabel(row);
+}
+
+function onSelectionChange(rows) {
+  selectedRows.value = rows || [];
 }
 
 function iso(v) {
@@ -268,6 +278,8 @@ function openEditDevice(row) {
     brand: row.brand || "",
     remark: row.remark || "",
     maintenance_mode: Boolean(row.maintenance_mode),
+    monitoring_paused: Boolean(row.monitoring_paused),
+    monitoring_pause_reason: row.monitoring_pause_reason || "",
     device_tier: row.device_tier || "access",
     poll_interval_sec: Math.max(0, Number(row.poll_interval_sec || runtimeDefaults.value.poll_interval_sec || 60)),
     cpu_threshold: Math.max(0, Number(row.cpu_threshold || runtimeDefaults.value.alert_cpu_threshold || 90)),
@@ -286,6 +298,8 @@ async function saveEditDevice() {
       brand: editForm.value.brand || "",
       remark: editForm.value.remark || "",
       maintenance_mode: Boolean(editForm.value.maintenance_mode),
+      monitoring_paused: Boolean(editForm.value.monitoring_paused),
+      monitoring_pause_reason: editForm.value.monitoring_paused ? String(editForm.value.monitoring_pause_reason || "").trim() : "",
       device_tier: editForm.value.device_tier || "access",
       poll_interval_sec: Math.max(0, Number(editForm.value.poll_interval_sec || 0)),
       cpu_threshold: Math.max(0, Number(editForm.value.cpu_threshold || 0)),
@@ -298,6 +312,44 @@ async function saveEditDevice() {
     fb.apiError(err, "更新资产失败");
   } finally {
     editLoading.value = false;
+  }
+}
+
+function deviceUpdatePayload(row, overrides = {}) {
+  return {
+    name: row?.name || "",
+    brand: row?.brand || "",
+    remark: row?.remark || "",
+    maintenance_mode: Boolean(row?.maintenance_mode),
+    monitoring_paused: Boolean(row?.monitoring_paused),
+    monitoring_pause_reason: row?.monitoring_pause_reason || "",
+    device_tier: row?.device_tier || "access",
+    poll_interval_sec: Math.max(0, Number(row?.poll_interval_sec || 0)),
+    cpu_threshold: Math.max(0, Number(row?.cpu_threshold || 0)),
+    mem_threshold: Math.max(0, Number(row?.mem_threshold || 0)),
+    ...overrides
+  };
+}
+
+async function toggleMonitoring(row) {
+  if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
+  const nextPaused = !Boolean(row.monitoring_paused);
+  try {
+    if (nextPaused) {
+      await ElMessageBox.confirm(
+        `确认暂停 ${row.name || row.ip} 的监控和轮询吗？暂停后不会再为该资产产生新的轮询失败事件。`,
+        "暂停监控确认",
+        { type: "warning" }
+      );
+    }
+    await api.updateDevice(row.id, deviceUpdatePayload(row, {
+      monitoring_paused: nextPaused,
+      monitoring_pause_reason: nextPaused ? (row.monitoring_pause_reason || "管理员暂停监控") : ""
+    }));
+    fb.success(nextPaused ? "已暂停该资产监控" : "已恢复该资产监控");
+    await loadDevices();
+  } catch (err) {
+    if (err !== "cancel") fb.apiError(err, nextPaused ? "暂停监控失败" : "恢复监控失败");
   }
 }
 
@@ -533,41 +585,45 @@ watch(editMode, (v) => {
         <template #default>
           <div v-for="grp in groupedDevices" :key="grp.group" class="mb-5">
             <div class="mb-2 text-sm font-semibold text-slate-600">{{ grp.group }} ({{ grp.rows.length }})</div>
-            <el-table :data="grp.rows" class="np-borderless-table np-rich-table" size="large" @selection-change="(rows)=>selectedRows.value=rows" @row-dblclick="openQuickPeek">
+            <el-table :data="grp.rows" class="np-borderless-table np-rich-table np-asset-table" size="large" :fit="true" @selection-change="onSelectionChange" @row-dblclick="openQuickPeek">
               <el-table-column v-if="manageMode" type="selection" width="46" />
-              <el-table-column v-if="visibleCols.status" label="状态" width="90">
+              <el-table-column v-if="visibleCols.status" label="状态" width="110">
                 <template #default="{ row }">
-                  <el-tooltip :content="statusLabel(row)">
+                  <el-tooltip :content="deviceStatusText(row)">
                     <span class="inline-flex items-center gap-1 align-middle">
-                      <span class="inline-block" :class="deviceStatusClass(row)" />
-                      <span class="text-xs text-slate-500">{{ statusLabel(row) }}</span>
+                      <span v-if="row.monitoring_paused" class="inline-flex h-3 w-3 items-center justify-center rounded-full bg-amber-400 text-[9px] font-bold text-white">Ⅱ</span>
+                      <span v-else class="inline-block" :class="deviceStatusClass(row)" />
+                      <span class="text-xs text-slate-500">{{ deviceStatusText(row) }}</span>
                     </span>
                   </el-tooltip>
                 </template>
               </el-table-column>
-              <el-table-column v-if="visibleCols.name" label="名称" min-width="180">
+              <el-table-column v-if="visibleCols.name" label="名称" min-width="150">
                 <template #default="{ row }">
                   <el-button link type="primary" @click="openDeviceDetail(row)">{{ row.name || row.ip }}</el-button>
                 </template>
               </el-table-column>
-              <el-table-column v-if="visibleCols.ip" prop="ip" label="IP" min-width="160" />
-              <el-table-column v-if="visibleCols.brand" prop="brand" label="品牌" width="120" />
-              <el-table-column v-if="visibleCols.type" label="类型" width="140">
+              <el-table-column v-if="visibleCols.ip" prop="ip" label="IP" min-width="132" />
+              <el-table-column v-if="visibleCols.brand" prop="brand" label="品牌" width="96" />
+              <el-table-column v-if="visibleCols.type" label="类型" width="96">
                 <template #default="{ row }">
                   {{ row.device_tier === "core" ? "核心层" : row.device_tier === "aggregation" ? "汇聚层" : "接入层" }}
                 </template>
               </el-table-column>
-              <el-table-column v-if="visibleCols.cpu" label="CPU快照" width="120">
+              <el-table-column v-if="visibleCols.cpu" label="CPU快照" width="96">
                 <template #default="{ row }">{{ Number.isFinite(Number(row.cpu_usage)) ? `${Number(row.cpu_usage).toFixed(1)}%` : "-" }}</template>
               </el-table-column>
-              <el-table-column v-if="visibleCols.uptime" label="运行时长" min-width="140">
+              <el-table-column v-if="visibleCols.uptime" label="运行时长" min-width="116">
                 <template #default="{ row }">{{ row.uptime || "-" }}</template>
               </el-table-column>
-              <el-table-column v-if="visibleCols.remark" prop="remark" label="备注" min-width="220" />
-              <el-table-column label="操作" :width="manageMode ? 240 : 120">
+              <el-table-column v-if="visibleCols.remark" prop="remark" label="备注" min-width="150" />
+              <el-table-column label="操作" :width="manageMode ? 260 : 112">
                 <template #default="{ row }">
                   <el-button type="primary" text @click="openQuickPeek(row)">快速预览</el-button>
                   <el-button v-if="manageMode" type="warning" text @click="openEditDevice(row)">编辑</el-button>
+                  <el-button v-if="manageMode" :type="row.monitoring_paused ? 'success' : 'info'" text @click="toggleMonitoring(row)">
+                    {{ row.monitoring_paused ? "恢复" : "暂停" }}
+                  </el-button>
                   <el-button v-if="manageMode" type="danger" text @click="removeDevice(row)">删除</el-button>
                 </template>
               </el-table-column>
@@ -734,6 +790,25 @@ watch(editMode, (v) => {
         </el-form-item>
         <el-form-item label="维护模式">
           <el-switch v-model="editForm.maintenance_mode" />
+        </el-form-item>
+        <el-form-item label="暂停监控与轮询">
+          <div class="w-full rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <div class="text-sm font-semibold text-slate-800">临时停止该资产采集</div>
+                <div class="text-xs text-slate-500">用于已知离线、检修或搬迁设备，暂停后不会继续产生新的轮询失败事件。</div>
+              </div>
+              <el-switch v-model="editForm.monitoring_paused" />
+            </div>
+            <el-input
+              v-if="editForm.monitoring_paused"
+              v-model="editForm.monitoring_pause_reason"
+              class="mt-3"
+              maxlength="240"
+              show-word-limit
+              placeholder="暂停原因，例如：机房搬迁 / 已知离线 / 等待维修"
+            />
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
