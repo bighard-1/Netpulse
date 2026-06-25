@@ -272,6 +272,7 @@ type RuntimeSettings struct {
 	PollIntervalAccessSec int     `json:"poll_interval_access_sec"`
 	SNMPDeviceTimeoutSec  int     `json:"snmp_device_timeout_sec"`
 	StatusOnlineWindowSec int     `json:"status_online_window_sec"`
+	WebIdleTimeoutMin     int     `json:"web_idle_timeout_min"`
 	AlertCPUThreshold     float64 `json:"alert_cpu_threshold"`
 	AlertMemThreshold     float64 `json:"alert_mem_threshold"`
 	AlertWebhookURL       string  `json:"alert_webhook_url"`

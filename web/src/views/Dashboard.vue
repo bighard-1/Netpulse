@@ -128,6 +128,8 @@ const filteredDevices = computed(() => {
 const filteredPorts = computed(() => {
   return findDashboardPorts(devices.value, globalKeyword.value);
 });
+const hasSearchKeyword = computed(() => Boolean(globalKeyword.value.trim()));
+const hasSearchResults = computed(() => hasSearchKeyword.value && (filteredDevices.value.length > 0 || filteredPorts.value.length > 0));
 const showOnboarding = computed(() => onboardingReady.value && !loading.value && devices.value.length === 0);
 
 function deviceStatusClass(row) {
@@ -421,7 +423,62 @@ watch(activeDashboardModule, async () => {
       </div>
     </el-card>
 
-    <el-card class="np-topology-preview-card">
+    <el-card v-if="hasSearchKeyword" class="np-dashboard-search-results">
+      <template #header>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="text-lg font-semibold">搜索结果</span>
+          <span class="text-xs text-slate-500">
+            设备 {{ filteredDevices.length }} 个 / 端口 {{ filteredPorts.length }} 个
+          </span>
+        </div>
+      </template>
+      <el-empty v-if="!hasSearchResults" description="无匹配结果，请调整关键词或状态筛选" :image-size="72" />
+      <div v-else class="space-y-4">
+        <div>
+          <div class="mb-2 text-sm font-semibold text-slate-700">设备命中</div>
+          <el-table :data="filteredDevices" class="np-borderless-table np-sticky-table" size="small" max-height="280" @row-click="openDeviceDetail">
+            <el-table-column label="状态" width="90">
+              <template #default="{ row }">
+                <span class="inline-flex items-center gap-1 align-middle">
+                  <span class="inline-block" :class="deviceStatusClass(row)" />
+                  <span class="text-xs text-slate-500">{{ statusLabel(row) }}</span>
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column label="名称" min-width="160">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openDeviceDetail(row)">{{ row.name || row.ip }}</el-button>
+              </template>
+            </el-table-column>
+            <el-table-column prop="ip" label="IP" min-width="150" />
+            <el-table-column prop="brand" label="品牌" width="120" />
+            <el-table-column prop="remark" label="备注" min-width="220" />
+          </el-table>
+        </div>
+        <div v-if="filteredPorts.length">
+          <div class="mb-2 text-sm font-semibold text-slate-700">端口命中</div>
+          <el-table :data="filteredPorts" class="np-borderless-table np-sticky-table" size="small" max-height="300" @row-click="openPortDetail">
+            <el-table-column label="端口" min-width="200">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openPortDetail(row)">{{ row.portName }}</el-button>
+              </template>
+            </el-table-column>
+            <el-table-column label="所属设备" min-width="180">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openDeviceDetail({ id: row.deviceId })">{{ row.deviceName }}</el-button>
+              </template>
+            </el-table-column>
+            <el-table-column prop="deviceIP" label="设备IP" min-width="150" />
+            <el-table-column label="端口速率" width="120">
+              <template #default="{ row }">{{ row.speedMbps > 0 ? `${row.speedMbps} Mbps` : "-" }}</template>
+            </el-table-column>
+            <el-table-column prop="remark" label="端口备注" min-width="220" />
+          </el-table>
+        </div>
+      </div>
+    </el-card>
+
+    <el-card class="np-topology-preview-card" :class="{ 'is-search-shifted': hasSearchKeyword }">
       <template #header>
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div>

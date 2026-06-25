@@ -124,6 +124,7 @@ const runtimeForm = ref({
   poll_interval_access_sec: 120,
   snmp_device_timeout_sec: 15,
   status_online_window_sec: 300,
+  web_idle_timeout_min: 180,
   alert_cpu_threshold: 90,
   alert_mem_threshold: 90,
   alert_webhook_url: "",
@@ -195,10 +196,12 @@ async function saveRuntimeSettings() {
       alert_mem_threshold: Number(runtimeForm.value.alert_mem_threshold || keep.alert_mem_threshold || 90),
       snmp_device_timeout_sec: Number(runtimeForm.value.snmp_device_timeout_sec || keep.snmp_device_timeout_sec || 15),
       status_online_window_sec: Number(runtimeForm.value.status_online_window_sec || keep.status_online_window_sec || 300),
+      web_idle_timeout_min: Number(runtimeForm.value.web_idle_timeout_min || keep.web_idle_timeout_min || 180),
       alert_webhook_url: String(runtimeForm.value.alert_webhook_url || "").trim(),
       snmp_calibration_map: raw
     };
     await api.updateRuntimeSettings(payload);
+    window.dispatchEvent(new CustomEvent("np-session-policy-changed", { detail: { idle_timeout_min: payload.web_idle_timeout_min } }));
     fb.success("运行参数已保存", "采集参数将自动生效");
     await loadRuntimeSettings();
   } catch (err) {
@@ -589,6 +592,9 @@ watch(activeTab, (tab) => {
             </el-form-item>
             <el-form-item label="在线判定窗口（秒，30-3600）">
               <el-input-number v-model="runtimeForm.status_online_window_sec" :min="30" :max="3600" :step="30" class="w-full" />
+            </el-form-item>
+            <el-form-item label="Web 空闲自动退出（分钟，5-1440）">
+              <el-input-number v-model="runtimeForm.web_idle_timeout_min" :min="5" :max="1440" :step="5" class="w-full" />
             </el-form-item>
             <el-form-item label="默认CPU告警阈值（%）">
               <el-input-number v-model="runtimeForm.alert_cpu_threshold" :min="0" :max="100" :precision="2" class="w-full" />

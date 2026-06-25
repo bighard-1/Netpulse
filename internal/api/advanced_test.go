@@ -16,3 +16,12 @@ func TestConverters(t *testing.T) {
 		t.Fatalf("toBool false string failed")
 	}
 }
+
+func TestRuntimeIntUsesFallbackForUnsetValues(t *testing.T) {
+	if got := runtimeInt(0, 180); got != 180 {
+		t.Fatalf("runtimeInt unset=%d, want fallback 180", got)
+	}
+	if got := runtimeInt(30, 180); got != 30 {
+		t.Fatalf("runtimeInt explicit=%d, want 30", got)
+	}
+}

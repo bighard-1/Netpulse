@@ -32,8 +32,8 @@ COPY --from=builder /out/netpulse /app/netpulse
 
 EXPOSE 8080
 EXPOSE 514/udp
+EXPOSE 9162/udp
 
 USER app
 
 ENTRYPOINT ["/app/netpulse"]
-

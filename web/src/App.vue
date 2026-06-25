@@ -51,7 +51,8 @@ const quickPinned = ref(JSON.parse(localStorage.getItem("np_quick_pinned") || "[
 const quickRecent = ref(JSON.parse(localStorage.getItem("np_quick_recent") || "[]"));
 const editMode = ref(localStorage.getItem("np_edit_mode") === "1");
 let idleTimer = null;
-const IDLE_TIMEOUT_MS = 3 * 60 * 60 * 1000;
+const idleTimeoutMin = computed(() => Math.max(5, Math.min(1440, Number(auth.sessionPolicy?.idle_timeout_min || 180))));
+const idleTimeoutMs = computed(() => idleTimeoutMin.value * 60 * 1000);
 const filteredSearchResults = computed(() => {
   const list = ops.globalSearchResults || [];
   if (quickSearchCategory.value === "all") return list;
@@ -170,8 +171,13 @@ function resetIdleTimer() {
     loginVisible.value = true;
     loginForm.value = { username: "", password: "" };
     router.push("/dashboard");
-    fb.warn("已超过3小时无操作，已自动退出登录");
-  }, IDLE_TIMEOUT_MS);
+    fb.warn(`已超过${idleTimeoutMin.value}分钟无操作，已自动退出登录`);
+  }, idleTimeoutMs.value);
+}
+
+function onSessionPolicyChanged(e) {
+  auth.setSessionPolicy(e?.detail || {});
+  resetIdleTimer();
 }
 
 function onResize() {
@@ -368,6 +374,7 @@ onMounted(() => {
   window.addEventListener("resize", onResize);
   window.addEventListener("keydown", onGlobalKeydown);
   window.addEventListener("netpulse-auth-expired", onAuthExpired);
+  window.addEventListener("np-session-policy-changed", onSessionPolicyChanged);
   ["mousemove", "mousedown", "keydown", "touchstart", "scroll"].forEach((evt) => {
     window.addEventListener(evt, resetIdleTimer, { passive: true });
   });
@@ -407,6 +414,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
   window.removeEventListener("keydown", onGlobalKeydown);
   window.removeEventListener("netpulse-auth-expired", onAuthExpired);
+  window.removeEventListener("np-session-policy-changed", onSessionPolicyChanged);
   if (quickSearchDebounce) clearTimeout(quickSearchDebounce);
   if (idleTimer) clearTimeout(idleTimer);
   if (serverClockTimer) window.clearInterval(serverClockTimer);
@@ -431,7 +439,6 @@ onBeforeUnmount(() => {
               <div class="mt-1 text-xs text-slate-400">{{ zhCN.app.edition }}</div>
             </div>
           </div>
-          <el-button class="np-sidebar-hide" size="small" text @click="toggleSidebarCollapsed">隐藏</el-button>
         </div>
       </div>
 
@@ -620,14 +627,6 @@ onBeforeUnmount(() => {
   width: 0;
   border-right-width: 0;
   overflow: hidden;
-}
-
-.np-sidebar-hide {
-  color: #cbd5e1 !important;
-  background: rgba(255, 255, 255, 0.06) !important;
-  border: 1px solid rgba(255, 255, 255, 0.08) !important;
-  border-radius: 999px;
-  backdrop-filter: blur(10px);
 }
 
 .np-brand-lockup {

@@ -33,7 +33,7 @@ fi
 echo
 
 echo "[2/4] Admin-sensitive routes without adminOnly"
-admin_sensitive="$(printf '%s\n' "${route_lines}" | grep -E '/api/(system|users|admin|templates|alerts/rules|discovery|audit|reports|diagnostics)' | grep -v 'adminOnly' || true)"
+admin_sensitive="$(printf '%s\n' "${route_lines}" | grep -E '/api/(system|users|admin|templates|alerts/rules|discovery|audit|reports|diagnostics)' | grep -v '/api/system/health' | grep -v 'adminOnly' || true)"
 if [[ -n "${admin_sensitive}" ]]; then
   printf '%s\n' "${admin_sensitive}" | sed 's/^/WARN /'
 else

@@ -20,6 +20,13 @@ mobile/ios/*.xcworkspace/xcuserdata/
 mobile/ios/**/*.xcuserdata/
 
 # Local release artifacts (publish binaries via GitHub Releases/GHCR, not source tree)
+/netpulse
+package/*.apk
+package/*.ipa
+package/*.tar
+package/*.tar.gz
+package/docker/*.tar
+package/docker/*.tar.gz
 package/mobile/*.apk
 package/mobile/*.ipa
 

@@ -84,6 +84,7 @@ func main() {
 		"snmp_poll_interval_sec":   pollIntervalSec,
 		"snmp_device_timeout_sec":  getenv("SNMP_DEVICE_TIMEOUT_SEC", "15"),
 		"status_online_window_sec": onlineWindowSec,
+		"web_idle_timeout_min":     getenv("WEB_IDLE_TIMEOUT_MIN", "180"),
 		"alert_cpu_threshold":      getenv("ALERT_CPU_THRESHOLD", "90"),
 		"alert_mem_threshold":      getenv("ALERT_MEM_THRESHOLD", "90"),
 		"alert_webhook_url":        getenv("ALERT_WEBHOOK_URL", ""),

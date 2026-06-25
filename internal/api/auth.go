@@ -71,6 +71,11 @@ func (h *Handler) handleLogin(client string) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "token issue failed")
 			return
 		}
+		runtime, err := h.repo.GetRuntimeSettings(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "load session policy failed")
+			return
+		}
 		_ = h.repo.AddAuditLog(r.Context(), db.AuditLog{
 			UserID:     &u.ID,
 			Action:     "LOGIN",
@@ -87,6 +92,9 @@ func (h *Handler) handleLogin(client string) http.HandlerFunc {
 			"user": map[string]string{
 				"username": u.Username,
 				"role":     u.Role,
+			},
+			"session": map[string]int{
+				"idle_timeout_min": runtime.WebIdleTimeoutMin,
 			},
 		})
 	}

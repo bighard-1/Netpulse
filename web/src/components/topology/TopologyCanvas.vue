@@ -606,4 +606,5 @@ defineExpose({ fit, zoomIn, zoomOut });
   background: rgba(248, 250, 252, 0.72);
   backdrop-filter: blur(3px);
 }
+
 </style>

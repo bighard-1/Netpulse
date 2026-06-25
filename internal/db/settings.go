@@ -73,6 +73,17 @@ func parseIntSetting(raw string, fallback int) int {
 	}
 	return v
 }
+
+func clampIntSetting(v, min, max int) int {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
 func parseFloatSetting(raw string, fallback float64) float64 {
 	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
 	if err != nil || v < 0 {
@@ -92,47 +103,28 @@ func (r *Repository) GetRuntimeSettings(ctx context.Context) (RuntimeSettings, e
 		PollIntervalAccessSec: parseIntSetting(kv["poll_interval_access_sec"], 120),
 		SNMPDeviceTimeoutSec:  parseIntSetting(kv["snmp_device_timeout_sec"], 15),
 		StatusOnlineWindowSec: parseIntSetting(kv["status_online_window_sec"], 300),
+		WebIdleTimeoutMin:     parseIntSetting(kv["web_idle_timeout_min"], 180),
 		AlertCPUThreshold:     parseFloatSetting(kv["alert_cpu_threshold"], 90),
 		AlertMemThreshold:     parseFloatSetting(kv["alert_mem_threshold"], 90),
 		AlertWebhookURL:       kv["alert_webhook_url"],
 		SNMPCalibrationMap:    strings.TrimSpace(kv["snmp_calibration_map"]),
 	}
-	if out.SNMPPollIntervalSec < 5 {
-		out.SNMPPollIntervalSec = 5
-	}
-	if out.SNMPPollIntervalSec > 3600 {
-		out.SNMPPollIntervalSec = 3600
-	}
+	out.SNMPPollIntervalSec = clampIntSetting(out.SNMPPollIntervalSec, 5, 3600)
 	if out.PollIntervalCoreSec < 5 {
 		out.PollIntervalCoreSec = out.SNMPPollIntervalSec
 	}
-	if out.PollIntervalCoreSec > 3600 {
-		out.PollIntervalCoreSec = 3600
-	}
+	out.PollIntervalCoreSec = clampIntSetting(out.PollIntervalCoreSec, 5, 3600)
 	if out.PollIntervalAggSec < 5 {
 		out.PollIntervalAggSec = out.SNMPPollIntervalSec
 	}
-	if out.PollIntervalAggSec > 3600 {
-		out.PollIntervalAggSec = 3600
-	}
+	out.PollIntervalAggSec = clampIntSetting(out.PollIntervalAggSec, 5, 3600)
 	if out.PollIntervalAccessSec < 5 {
 		out.PollIntervalAccessSec = out.SNMPPollIntervalSec
 	}
-	if out.PollIntervalAccessSec > 3600 {
-		out.PollIntervalAccessSec = 3600
-	}
-	if out.SNMPDeviceTimeoutSec < 2 {
-		out.SNMPDeviceTimeoutSec = 2
-	}
-	if out.SNMPDeviceTimeoutSec > 120 {
-		out.SNMPDeviceTimeoutSec = 120
-	}
-	if out.StatusOnlineWindowSec < 30 {
-		out.StatusOnlineWindowSec = 30
-	}
-	if out.StatusOnlineWindowSec > 3600 {
-		out.StatusOnlineWindowSec = 3600
-	}
+	out.PollIntervalAccessSec = clampIntSetting(out.PollIntervalAccessSec, 5, 3600)
+	out.SNMPDeviceTimeoutSec = clampIntSetting(out.SNMPDeviceTimeoutSec, 2, 120)
+	out.StatusOnlineWindowSec = clampIntSetting(out.StatusOnlineWindowSec, 30, 3600)
+	out.WebIdleTimeoutMin = clampIntSetting(out.WebIdleTimeoutMin, 5, 1440)
 	if out.AlertCPUThreshold > 100 {
 		out.AlertCPUThreshold = 100
 	}
