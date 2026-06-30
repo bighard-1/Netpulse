@@ -96,22 +96,26 @@ func (r *Repository) aggregateTraffic5m(ctx context.Context) bool {
 		INSERT INTO traffic_5m (
 		    bucket, interface_id, device_id, samples,
 		    avg_traffic_in_bps, avg_traffic_out_bps,
-		    max_traffic_in_bps, max_traffic_out_bps, updated_at
+		    max_traffic_in_bps, max_traffic_out_bps, port_down_samples, updated_at
 		)
 		SELECT
 		    time_bucket('5 minutes', ts) AS bucket,
 		    interface_id,
 		    device_id,
-		    COUNT(*)::INTEGER AS samples,
+		    COUNT(*) FILTER (WHERE traffic_in_bps IS NOT NULL OR traffic_out_bps IS NOT NULL)::INTEGER AS samples,
 		    AVG(traffic_in_bps)::NUMERIC(20,2) AS avg_traffic_in_bps,
 		    AVG(traffic_out_bps)::NUMERIC(20,2) AS avg_traffic_out_bps,
 		    MAX(traffic_in_bps)::BIGINT AS max_traffic_in_bps,
 		    MAX(traffic_out_bps)::BIGINT AS max_traffic_out_bps,
+		    COUNT(*) FILTER (WHERE traffic_in_status = 'PORT_DOWN' OR traffic_out_status = 'PORT_DOWN')::INTEGER AS port_down_samples,
 		    NOW()
 		FROM metrics
 		WHERE ts >= $1 AND ts < $2
 		  AND interface_id IS NOT NULL
-		  AND (traffic_in_bps IS NOT NULL OR traffic_out_bps IS NOT NULL)
+		  AND (
+		    traffic_in_bps IS NOT NULL OR traffic_out_bps IS NOT NULL OR
+		    traffic_in_status = 'PORT_DOWN' OR traffic_out_status = 'PORT_DOWN'
+		  )
 		GROUP BY 1, interface_id, device_id
 		ON CONFLICT (interface_id, bucket) DO UPDATE SET
 		    device_id = EXCLUDED.device_id,
@@ -120,6 +124,7 @@ func (r *Repository) aggregateTraffic5m(ctx context.Context) bool {
 		    avg_traffic_out_bps = EXCLUDED.avg_traffic_out_bps,
 		    max_traffic_in_bps = EXCLUDED.max_traffic_in_bps,
 		    max_traffic_out_bps = EXCLUDED.max_traffic_out_bps,
+		    port_down_samples = EXCLUDED.port_down_samples,
 		    updated_at = NOW();
 	`, start, chunkEnd)
 	r.recordTrafficRollupState(ctx, "5m", chunkEnd, started, time.Since(started).Milliseconds(), errString(err))
@@ -149,22 +154,29 @@ func (r *Repository) aggregateTraffic1h(ctx context.Context) bool {
 		INSERT INTO traffic_1h (
 		    bucket, interface_id, device_id, samples,
 		    avg_traffic_in_bps, avg_traffic_out_bps,
-		    max_traffic_in_bps, max_traffic_out_bps, updated_at
+		    max_traffic_in_bps, max_traffic_out_bps, port_down_samples, updated_at
 		)
 		SELECT
 		    time_bucket('1 hour', bucket) AS bucket,
 		    interface_id,
 		    device_id,
-		    COUNT(*)::INTEGER AS samples,
-		    AVG(avg_traffic_in_bps)::NUMERIC(20,2) AS avg_traffic_in_bps,
-		    AVG(avg_traffic_out_bps)::NUMERIC(20,2) AS avg_traffic_out_bps,
+		    SUM(samples)::INTEGER AS samples,
+		    CASE WHEN SUM(CASE WHEN avg_traffic_in_bps IS NOT NULL THEN samples ELSE 0 END) > 0 THEN
+		      SUM(COALESCE(avg_traffic_in_bps, 0) * samples)::NUMERIC(20,2) /
+		      SUM(CASE WHEN avg_traffic_in_bps IS NOT NULL THEN samples ELSE 0 END)
+		    END AS avg_traffic_in_bps,
+		    CASE WHEN SUM(CASE WHEN avg_traffic_out_bps IS NOT NULL THEN samples ELSE 0 END) > 0 THEN
+		      SUM(COALESCE(avg_traffic_out_bps, 0) * samples)::NUMERIC(20,2) /
+		      SUM(CASE WHEN avg_traffic_out_bps IS NOT NULL THEN samples ELSE 0 END)
+		    END AS avg_traffic_out_bps,
 		    MAX(avg_traffic_in_bps)::BIGINT AS max_traffic_in_bps,
 		    MAX(avg_traffic_out_bps)::BIGINT AS max_traffic_out_bps,
+		    SUM(port_down_samples)::INTEGER AS port_down_samples,
 		    NOW()
-		FROM metrics_1m
+		FROM traffic_5m
 		WHERE bucket >= $1 AND bucket < $2
 		  AND interface_id IS NOT NULL
-		  AND (avg_traffic_in_bps IS NOT NULL OR avg_traffic_out_bps IS NOT NULL)
+		  AND (samples > 0 OR port_down_samples > 0)
 		GROUP BY 1, interface_id, device_id
 		ON CONFLICT (interface_id, bucket) DO UPDATE SET
 		    device_id = EXCLUDED.device_id,
@@ -173,6 +185,7 @@ func (r *Repository) aggregateTraffic1h(ctx context.Context) bool {
 		    avg_traffic_out_bps = EXCLUDED.avg_traffic_out_bps,
 		    max_traffic_in_bps = EXCLUDED.max_traffic_in_bps,
 		    max_traffic_out_bps = EXCLUDED.max_traffic_out_bps,
+		    port_down_samples = EXCLUDED.port_down_samples,
 		    updated_at = NOW();
 	`, start, chunkEnd)
 	r.recordTrafficRollupState(ctx, "1h", chunkEnd, started, time.Since(started).Milliseconds(), errString(err))

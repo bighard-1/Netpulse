@@ -153,7 +153,7 @@ export const api = {
     return http.post("/devices", payload);
   },
   deleteDevice(id) {
-    return http.delete(`/devices/${id}`);
+    return http.delete(`/devices/${id}`, { timeout: LONG_RUNNING_TIMEOUT_MS });
   },
   updateDevice(id, payload) {
     return http.put(`/devices/${id}`, payload);
@@ -322,6 +322,9 @@ export const api = {
   },
   getSystemOps() {
     return http.get("/system/ops", { timeout: LONG_RUNNING_TIMEOUT_MS });
+  },
+  runSystemCleanup(payload) {
+    return http.post("/system/maintenance/cleanup", payload, { timeout: LONG_RUNNING_TIMEOUT_MS });
   },
   downloadInspectionBundle() {
     return http.get("/system/inspection-bundle", {

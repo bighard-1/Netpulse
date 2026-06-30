@@ -52,23 +52,44 @@ func (r *Repository) GetInterfaceHistory(
 
 	bucketInterval := resolveHistoryBucketInterval(span, interval, maxPoints, false)
 	q := `
-		SELECT ts, traffic_in_bps, traffic_out_bps
+		SELECT ts, traffic_in_bps, traffic_out_bps,
+		       COALESCE(traffic_in_status, '') AS traffic_in_status,
+		       COALESCE(traffic_out_status, '') AS traffic_out_status
 		FROM metrics
 		WHERE interface_id = $1
 		  AND ts >= $2 AND ts <= $3
-		  AND (traffic_in_bps IS NOT NULL OR traffic_out_bps IS NOT NULL)
+		  AND (
+		    traffic_in_bps IS NOT NULL OR traffic_out_bps IS NOT NULL OR
+		    traffic_in_status = 'PORT_DOWN' OR traffic_out_status = 'PORT_DOWN'
+		  )
 		ORDER BY ts;
 	`
 	if bucketInterval != "" {
 		q = fmt.Sprintf(`
 			SELECT time_bucket('%[1]s', ts) AS ts,
 			       AVG(traffic_in_bps) AS traffic_in_bps,
-			       AVG(traffic_out_bps) AS traffic_out_bps
+			       AVG(traffic_out_bps) AS traffic_out_bps,
+			       CASE
+			         WHEN COUNT(*) FILTER (WHERE traffic_in_bps IS NOT NULL) = 0
+			          AND COUNT(*) FILTER (WHERE traffic_in_status = 'PORT_DOWN') > 0
+			         THEN 'PORT_DOWN' ELSE ''
+			       END AS traffic_in_status,
+			       CASE
+			         WHEN COUNT(*) FILTER (WHERE traffic_out_bps IS NOT NULL) = 0
+			          AND COUNT(*) FILTER (WHERE traffic_out_status = 'PORT_DOWN') > 0
+			         THEN 'PORT_DOWN' ELSE ''
+			       END AS traffic_out_status
 			FROM metrics
 			WHERE interface_id = $1
 			  AND ts >= $2 AND ts <= $3
-			  AND (traffic_in_bps IS NOT NULL OR traffic_out_bps IS NOT NULL)
+			  AND (
+			    traffic_in_bps IS NOT NULL OR traffic_out_bps IS NOT NULL OR
+			    traffic_in_status = 'PORT_DOWN' OR traffic_out_status = 'PORT_DOWN'
+			  )
 			GROUP BY 1
+			HAVING
+			  COUNT(*) FILTER (WHERE traffic_in_bps IS NOT NULL OR traffic_out_bps IS NOT NULL) > 0 OR
+			  COUNT(*) FILTER (WHERE traffic_in_status = 'PORT_DOWN' OR traffic_out_status = 'PORT_DOWN') > 0
 			ORDER BY 1;
 		`, bucketInterval)
 	}
@@ -89,7 +110,9 @@ func (r *Repository) queryInterfaceTraffic1m(
 	q := fmt.Sprintf(`
 		SELECT time_bucket('%[1]s', bucket) AS ts,
 		       AVG(avg_traffic_in_bps) AS traffic_in_bps,
-		       AVG(avg_traffic_out_bps) AS traffic_out_bps
+		       AVG(avg_traffic_out_bps) AS traffic_out_bps,
+		       '' AS traffic_in_status,
+		       '' AS traffic_out_status
 		FROM metrics_1m
 		WHERE interface_id = $1
 		  AND bucket >= $2 AND bucket <= $3
@@ -134,12 +157,23 @@ func (r *Repository) queryInterfaceTrafficRollup(
 		       CASE WHEN SUM(CASE WHEN avg_traffic_out_bps IS NOT NULL THEN samples ELSE 0 END) > 0 THEN
 		         SUM(COALESCE(avg_traffic_out_bps, 0) * samples)::DOUBLE PRECISION /
 		         SUM(CASE WHEN avg_traffic_out_bps IS NOT NULL THEN samples ELSE 0 END)
-		       END AS traffic_out_bps
+		       END AS traffic_out_bps,
+		       CASE
+		         WHEN SUM(CASE WHEN avg_traffic_in_bps IS NOT NULL THEN samples ELSE 0 END) = 0
+		          AND SUM(port_down_samples) > 0
+		         THEN 'PORT_DOWN' ELSE ''
+		       END AS traffic_in_status,
+		       CASE
+		         WHEN SUM(CASE WHEN avg_traffic_out_bps IS NOT NULL THEN samples ELSE 0 END) = 0
+		          AND SUM(port_down_samples) > 0
+		         THEN 'PORT_DOWN' ELSE ''
+		       END AS traffic_out_status
 		FROM %[2]s
 		WHERE interface_id = $1
 		  AND bucket >= $2 AND bucket <= $3
-		  AND (avg_traffic_in_bps IS NOT NULL OR avg_traffic_out_bps IS NOT NULL)
 		GROUP BY 1
+		HAVING
+		  SUM(samples) > 0 OR SUM(port_down_samples) > 0
 		ORDER BY 1;
 	`, bucketInterval, table)
 	out, err := r.scanInterfaceHistory(ctx, q, interfaceID, start, end, span, maxPoints)
@@ -162,7 +196,8 @@ func (r *Repository) scanInterfaceHistory(
 	for rows.Next() {
 		var p InterfaceHistoryPoint
 		var in, outB sql.NullFloat64
-		if err := rows.Scan(&p.Timestamp, &in, &outB); err != nil {
+		var inStat, outStat sql.NullString
+		if err := rows.Scan(&p.Timestamp, &in, &outB, &inStat, &outStat); err != nil {
 			return nil, fmt.Errorf("scan interface history: %w", err)
 		}
 		if in.Valid {
@@ -172,6 +207,12 @@ func (r *Repository) scanInterfaceHistory(
 		if outB.Valid {
 			v := outB.Float64
 			p.TrafficOutBps = &v
+		}
+		if inStat.Valid {
+			p.TrafficInStat = strings.TrimSpace(inStat.String)
+		}
+		if outStat.Valid {
+			p.TrafficOutStat = strings.TrimSpace(outStat.String)
 		}
 		out = append(out, p)
 	}

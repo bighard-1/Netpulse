@@ -17,10 +17,8 @@ import {
 import {
   MAX_TRAFFIC_HISTORY_MS,
   calcTrafficFetchPlan,
-  compactValidPoints,
   decimatePoints,
   detectIntervalSwitchPoints,
-  fillShortNullGaps,
   getPresetTrafficRange,
   pickTrafficUnit,
   roundUpNice,
@@ -146,7 +144,8 @@ function baseOption(title, unitInfo, planText = "") {
         });
         const lines = [ts];
         for (const p of params) {
-          lines.push(`${p.marker}${p.seriesName}: ${bpsLabel(p.data[1])}`);
+          const value = Array.isArray(p.data) ? p.data[1] : null;
+          lines.push(`${p.marker}${p.seriesName}: ${value == null ? "无数据" : bpsLabel(value)}`);
         }
         lines.push(`<span style="color:#94a3b8">展示模式: ${showRawSeries.value ? "原始折线" : "稳健平滑"}</span>`);
         lines.push(`<span style="color:#94a3b8">说明: 高速端口若检测到缓存采样相位，采集端已按有效采样入库</span>`);
@@ -192,7 +191,7 @@ function baseOption(title, unitInfo, planText = "") {
         showSymbol: false,
         smooth: !showRawSeries.value,
         step: false,
-        connectNulls: true,
+        connectNulls: false,
         sampling: "lttb",
         progressive: 5000,
         lineStyle: { color: npChartPalette.inbound, width: 2 },
@@ -211,7 +210,7 @@ function baseOption(title, unitInfo, planText = "") {
         showSymbol: false,
         smooth: !showRawSeries.value,
         step: false,
-        connectNulls: true,
+        connectNulls: false,
         sampling: "lttb",
         progressive: 5000,
         lineStyle: { color: npChartPalette.outbound, width: 2 },
@@ -366,14 +365,9 @@ function applyChart(chart, title, data, metaKey = "today") {
   const intervalSwitch = detectIntervalSwitchPoints(data);
   const hasIntervalSwitch = intervalSwitch.length > 0;
   const smoothEnabled = !showRawSeries.value;
-  // Bridge only tiny one-sample holes to avoid "dashed" appearance while
-  // keeping real outages/gaps visible.
-  const historicalView = metaKey === "d7" || metaKey === "d30" || metaKey === "custom";
-  const inBase = compactValidPoints(fillShortNullGaps(inbound, historicalView ? 2 : 3));
-  const outBase = compactValidPoints(fillShortNullGaps(outbound, historicalView ? 2 : 3));
   const stableDisplay = !showRawSeries.value;
-  const inPrepared = stabilizeTrafficPoints(inBase, stableDisplay);
-  const outPrepared = stabilizeTrafficPoints(outBase, stableDisplay);
+  const inPrepared = stabilizeTrafficPoints(inbound, stableDisplay);
+  const outPrepared = stabilizeTrafficPoints(outbound, stableDisplay);
   const inView = decimatePoints(inPrepared);
   const outView = decimatePoints(outPrepared);
   const hasData = inView.some((x) => x[1] != null) || outView.some((x) => x[1] != null);

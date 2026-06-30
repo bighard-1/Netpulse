@@ -26,6 +26,9 @@ const globalKeyword = ref("");
 const activeDashboardModule = ref("events");
 let timer = null;
 let refreshInFlight = false;
+let devicesSignature = "";
+let healthTrendSignature = "";
+let topologySignature = "";
 const healthTrend = ref([]);
 const healthTrendError = ref("");
 const deviceLoadError = ref("");
@@ -132,6 +135,63 @@ const hasSearchKeyword = computed(() => Boolean(globalKeyword.value.trim()));
 const hasSearchResults = computed(() => hasSearchKeyword.value && (filteredDevices.value.length > 0 || filteredPorts.value.length > 0));
 const showOnboarding = computed(() => onboardingReady.value && !loading.value && devices.value.length === 0);
 
+function stableSignature(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(Date.now());
+  }
+}
+
+function signatureForDevices(list) {
+  return stableSignature(list.map((d) => ({
+    id: d.id,
+    name: d.name,
+    ip: d.ip,
+    brand: d.brand,
+    remark: d.remark,
+    device_tier: d.device_tier,
+    status: d.status,
+    status_reason: d.status_reason,
+    last_metric_at: d.last_metric_at,
+    cpu_usage: d.cpu_usage,
+    memory_usage: d.memory_usage,
+    storage_usage: d.storage_usage,
+    uptime_sec: d.uptime_sec,
+    interfaces: (d.interfaces || []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      remark: p.remark,
+      speed_mbps: p.speed_mbps,
+      oper_status: p.oper_status,
+      admin_status: p.admin_status,
+      traffic_in_bps: p.traffic_in_bps,
+      traffic_out_bps: p.traffic_out_bps
+    }))
+  })));
+}
+
+function signatureForTopology(graph) {
+  return stableSignature({
+    nodes: (graph.nodes || []).map((n) => ({
+      id: n.id,
+      device_id: n.device_id,
+      label: n.label,
+      x: n.x,
+      y: n.y,
+      device_status: n.device_status,
+      status_reason: n.status_reason
+    })),
+    edges: (graph.edges || []).map((e) => ({
+      id: e.id,
+      source_node_id: e.source_node_id,
+      target_node_id: e.target_node_id,
+      label: e.label,
+      remark: e.remark
+    }))
+  });
+}
+
 function deviceStatusClass(row) {
   return statusClass(row);
 }
@@ -186,7 +246,12 @@ async function loadDevices(opts = {}) {
   if (!silent) loading.value = true;
   try {
     const res = await api.listDevices();
-    devices.value = sortAssets((res.data || []).map((x) => ({ ...x, location: x.location || "" })));
+    const nextDevices = sortAssets((res.data || []).map((x) => ({ ...x, location: x.location || "" })));
+    const nextSignature = signatureForDevices(nextDevices);
+    if (nextSignature !== devicesSignature) {
+      devices.value = nextDevices;
+      devicesSignature = nextSignature;
+    }
     deviceLoadError.value = "";
   } catch (err) {
     deviceLoadError.value = getApiError(err, "资产列表加载失败");
@@ -233,7 +298,7 @@ async function refreshAll(opts = {}) {
   try {
     await Promise.all([loadDevices({ silent }), loadAlerts({ silent }), loadHealthTrend({ silent }), loadTopology({ silent })]);
     lastRefreshedAt.value = new Date().toLocaleTimeString("zh-CN", { hour12: false });
-    chartRefreshKey.value += 1;
+    if (!silent) chartRefreshKey.value += 1;
     const totalPages = Math.max(1, Math.ceil(Math.min(filteredAlerts.value.length, 100) / eventPageSize.value));
     if (eventPage.value > totalPages) eventPage.value = 1;
   } finally {
@@ -246,7 +311,12 @@ async function loadTopology(opts = {}) {
   if (!silent) topologyLoading.value = true;
   try {
     const res = await api.getTopology();
-    topologyGraph.value = { nodes: res.data?.nodes || [], edges: res.data?.edges || [] };
+    const nextGraph = { nodes: res.data?.nodes || [], edges: res.data?.edges || [] };
+    const nextSignature = signatureForTopology(nextGraph);
+    if (nextSignature !== topologySignature) {
+      topologyGraph.value = nextGraph;
+      topologySignature = nextSignature;
+    }
     topologyError.value = "";
   } catch (err) {
     topologyError.value = getApiError(err, "拓扑加载失败");
@@ -260,7 +330,12 @@ async function loadHealthTrend(opts = {}) {
   const silent = Boolean(opts.silent);
   try {
     const res = await api.getSystemHealthTrend(30);
-    healthTrend.value = res?.data?.data || [];
+    const nextTrend = res?.data?.data || [];
+    const nextSignature = stableSignature(nextTrend);
+    if (nextSignature !== healthTrendSignature) {
+      healthTrend.value = nextTrend;
+      healthTrendSignature = nextSignature;
+    }
     healthTrendError.value = "";
   } catch (err) {
     healthTrendError.value = getApiError(err, "健康趋势加载失败");

@@ -21,7 +21,8 @@ func (r *Repository) ListAlertEvents(ctx context.Context, limit int, status stri
 		       ae.silenced_until, ae.acknowledged_at, ae.resolved_at, ae.created_at
 		FROM alert_events ae
 		JOIN devices d ON d.id = ae.device_id
-		WHERE ($2='' OR ae.status=$2)
+		WHERE d.deleted_at IS NULL
+		  AND ($2='' OR ae.status=$2)
 		ORDER BY ae.created_at DESC
 		LIMIT $1;
 	`

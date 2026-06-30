@@ -33,6 +33,7 @@ type Handler struct {
 	cacheStats  cacheStats
 	slowMu      sync.Mutex
 	slowAPIs    []slowAPIRecord
+	startedAt   time.Time
 }
 
 type topologyCacheEntry struct {
@@ -66,7 +67,7 @@ func NewHandler(repo *db.Repository, collector *snmp.Collector, system *SystemSe
 	return &Handler{
 		repo: repo, collector: collector, system: system, jwtSecret: jwtSecret,
 		fails: map[string]int{}, lockedUntil: map[string]time.Time{}, rl: map[string][]time.Time{},
-		jobs: map[string]*SystemJob{}, history: map[string]historyCacheEntry{},
+		jobs: map[string]*SystemJob{}, history: map[string]historyCacheEntry{}, startedAt: time.Now(),
 	}
 }
 
@@ -74,6 +75,8 @@ func (h *Handler) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Use(h.serverTimeZoneHeaderMiddleware())
 
+	r.Get("/api/healthz", h.handleHealthz)
+	r.Get("/api/version", h.handleVersion)
 	r.Post("/api/login", h.rateLimit("login", 20, time.Minute, h.handleLogin("web")))
 	r.Post("/api/auth/login", h.rateLimit("login", 20, time.Minute, h.handleLogin("web")))
 	r.Post("/api/auth/mobile/login", h.rateLimit("login", 20, time.Minute, h.handleLogin("mobile")))
@@ -111,6 +114,7 @@ func (h *Handler) Router() http.Handler {
 		pr.With(h.adminOnly).Get("/api/diagnostics/asset-load", h.handleAssetLoadDiagnostics)
 		pr.Get("/api/system/health", h.handleSystemHealthTrend)
 		pr.With(h.adminOnly).Get("/api/system/ops", h.handleSystemOps)
+		pr.With(h.adminOnly, h.auditMiddleware("RUN_SYSTEM_CLEANUP")).Post("/api/system/maintenance/cleanup", h.handleSystemCleanup)
 		pr.With(h.adminOnly).Get("/api/system/inspection-bundle", h.handleInspectionBundle)
 		pr.With(h.adminOnly).Get("/api/system/backup", h.rateLimit("backup", 10, time.Minute, h.handleSystemBackup))
 		pr.With(h.adminOnly, h.auditMiddleware("START_BACKUP_JOB")).Post("/api/system/backup/jobs", h.handleStartBackupJob)

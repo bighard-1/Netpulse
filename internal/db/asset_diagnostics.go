@@ -81,8 +81,8 @@ func (r *Repository) DiagnoseAssetLoad(ctx context.Context) (*AssetLoadDiagnosti
 		var devices, interfaces, recentMetrics int
 		err := r.db.QueryRowContext(ctx, `
 			SELECT
-			  (SELECT COUNT(*) FROM devices),
-			  (SELECT COUNT(*) FROM interfaces),
+			  (SELECT COUNT(*) FROM devices WHERE deleted_at IS NULL),
+			  (SELECT COUNT(*) FROM interfaces i JOIN devices d ON d.id = i.device_id WHERE d.deleted_at IS NULL),
 			  (SELECT COUNT(*) FROM metrics WHERE ts >= NOW() - INTERVAL '1 hour');
 		`).Scan(&devices, &interfaces, &recentMetrics)
 		if err != nil {

@@ -46,3 +46,16 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 		"hint":    hint,
 	})
 }
+
+func writeErrorDetail(w http.ResponseWriter, status int, code, msg, hint string) {
+	if code == "" || msg == "" || hint == "" {
+		writeError(w, status, msg)
+		return
+	}
+	writeJSON(w, status, map[string]string{
+		"code":    code,
+		"error":   msg,
+		"message": msg,
+		"hint":    hint,
+	})
+}

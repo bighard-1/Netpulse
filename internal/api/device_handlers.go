@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"netpulse/internal/db"
 )
@@ -93,11 +95,43 @@ func (h *Handler) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid device id")
 		return
 	}
-	if err := h.repo.DeleteDevice(r.Context(), id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	if err := h.repo.DeleteDevice(ctx, id); err != nil {
+		writeDeleteDeviceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "device deleted"})
+}
+
+func writeDeleteDeviceError(w http.ResponseWriter, err error) {
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "context deadline exceeded"), strings.Contains(msg, "statement timeout"), strings.Contains(msg, "lock timeout"):
+		writeErrorDetail(
+			w,
+			http.StatusGatewayTimeout,
+			"ERR_DEVICE_DELETE_BUSY",
+			"删除资产失败：数据库正在处理该资产的采集/查询数据，删除操作未能及时获得锁",
+			"请先确认没有打开该资产详情或长周期图表，等待当前采集轮询结束后重试；若仍失败，可在系统设置的运营数据清理中先清理历史运营数据。",
+		)
+	case strings.Contains(msg, "duplicate key"):
+		writeErrorDetail(
+			w,
+			http.StatusConflict,
+			"ERR_DEVICE_DELETE_STATE",
+			"删除资产失败：资产状态发生变化",
+			"请刷新资产列表后确认该资产是否已被其他管理员处理。",
+		)
+	default:
+		writeErrorDetail(
+			w,
+			http.StatusInternalServerError,
+			"ERR_DEVICE_DELETE",
+			"删除资产失败：资产归档或关联可见数据清理未完成",
+			"请重试一次；如连续失败，请导出自助诊断报告，并提供资产ID、IP和当前时间给运维排查。",
+		)
+	}
 }
 
 func (h *Handler) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {

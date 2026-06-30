@@ -37,12 +37,13 @@ const viewPresets = ref(JSON.parse(localStorage.getItem("np_asset_view_presets")
 const activePreset = ref("");
 const pendingDelete = ref(null);
 let pendingDeleteTimer = null;
+const DELETE_UNDO_WINDOW_MS = 2000;
 
 const addVisible = ref(false);
 const addLoading = ref(false);
 const importVisible = ref(false);
 const importLoading = ref(false);
-const importCSV = ref("ip,name,brand,community,snmp_version,remark,snmp_port,poll_interval_sec,cpu_threshold,mem_threshold\n172.24.1.10,Core-SW-A,H3C,public,2c,核心交换机A,161,60,90,90");
+const importCSV = ref("ip,name,brand,read_community,write_community,snmp_version,remark,snmp_port,poll_interval_sec,cpu_threshold,mem_threshold\n172.24.1.10,Core-SW-A,H3C,public,private,2c,核心交换机A,161,60,90,90");
 const editVisible = ref(false);
 const editLoading = ref(false);
 const runtimeDefaults = ref({
@@ -62,6 +63,8 @@ const defaultAddForm = () => ({
   template_id: null,
   brand: "H3C",
   community: "public",
+  read_community: "public",
+  write_community: "",
   remark: "",
   snmp_version: "2c",
   snmp_port: 161,
@@ -172,6 +175,7 @@ function applyTemplateById() {
   addForm.value.snmp_version = t.snmp_version || addForm.value.snmp_version;
   addForm.value.snmp_port = Number(t.snmp_port || addForm.value.snmp_port || 161);
   addForm.value.community = t.community || addForm.value.community;
+  addForm.value.read_community = t.community || addForm.value.read_community || addForm.value.community;
   addForm.value.v3_username = t.v3_username || "";
   addForm.value.v3_security_level = t.v3_security_level || "noAuthNoPriv";
   addForm.value.v3_auth_protocol = t.v3_auth_protocol || "SHA";
@@ -184,12 +188,13 @@ async function addDevice() {
     if (!addForm.value.v3_username) return fb.warn("参数不完整", "SNMP v3 需要填写用户名");
     if (addForm.value.v3_security_level !== "noAuthNoPriv" && !addForm.value.v3_auth_password) return fb.warn("参数不完整", "SNMP v3 需要填写认证密码");
     if (addForm.value.v3_security_level === "authPriv" && !addForm.value.v3_priv_password) return fb.warn("参数不完整", "SNMP v3(authPriv) 需要填写加密密码");
-  } else if (!addForm.value.community) {
-    return fb.warn("参数不完整", "SNMP v1/v2c 需要填写团体字串");
+  } else if (!addForm.value.read_community) {
+    return fb.warn("参数不完整", "SNMP v1/v2c 需要填写读团体字串");
   }
   addLoading.value = true;
   try {
-    const pre = await api.precheckDevice(addForm.value);
+    const payload = addDevicePayload();
+    const pre = await api.precheckDevice(payload);
     const suggested = pre?.data?.suggested_template || null;
     if ((!addForm.value.template_id || Number(addForm.value.template_id) <= 0) && suggested?.id) {
       addForm.value.template_id = Number(suggested.id);
@@ -198,9 +203,9 @@ async function addDevice() {
       autoTemplateHint.value = suggested;
       fb.info(`已自动匹配模板：${suggested.name}（匹配分 ${suggested.matchScore}）`);
       // Re-run precheck with applied template params to ensure final submit consistency.
-      await api.precheckDevice(addForm.value);
+      await api.precheckDevice(addDevicePayload());
     }
-    const addRes = await api.addDevice(addForm.value);
+    const addRes = await api.addDevice(addDevicePayload());
     const applied = addRes?.data?.auto_template;
     if (applied?.name) {
       fb.success(`资产添加成功（自动套用模板：${applied.name}）`);
@@ -219,6 +224,16 @@ async function addDevice() {
   }
 }
 
+function addDevicePayload() {
+  const readCommunity = String(addForm.value.read_community || addForm.value.community || "").trim();
+  return {
+    ...addForm.value,
+    read_community: readCommunity,
+    write_community: String(addForm.value.write_community || "").trim(),
+    community: readCommunity
+  };
+}
+
 async function removeDevice(row) {
   if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
   try {
@@ -231,8 +246,8 @@ async function removeDevice(row) {
 
 function scheduleDelete(row) {
   if (pendingDeleteTimer) clearTimeout(pendingDeleteTimer);
-  pendingDelete.value = { ...row, expireAt: Date.now() + 5000 };
-  fb.info("删除已进入5秒缓冲，可撤销");
+  pendingDelete.value = { ...row, expireAt: Date.now() + DELETE_UNDO_WINDOW_MS };
+  fb.info("删除即将执行，可短暂撤销");
   pendingDeleteTimer = setTimeout(async () => {
     try {
       await api.deleteDevice(row.id);
@@ -244,7 +259,7 @@ function scheduleDelete(row) {
       pendingDelete.value = null;
       pendingDeleteTimer = null;
     }
-  }, 5000);
+  }, DELETE_UNDO_WINDOW_MS);
 }
 
 function undoDelete() {
@@ -372,9 +387,9 @@ async function importDevices() {
 
 function downloadImportTemplate() {
   const sample = [
-    "ip,name,brand,community,snmp_version,remark,snmp_port,poll_interval_sec,cpu_threshold,mem_threshold",
-    "172.24.1.10,Core-SW-A,H3C,public,2c,核心交换机A,161,60,90,90",
-    "172.24.1.11,Agg-SW-B,Huawei,public,2c,汇聚交换机B,161,120,85,88"
+    "ip,name,brand,read_community,write_community,snmp_version,remark,snmp_port,poll_interval_sec,cpu_threshold,mem_threshold",
+    "172.24.1.10,Core-SW-A,H3C,public,private,2c,核心交换机A,161,60,90,90",
+    "172.24.1.11,Agg-SW-B,Huawei,public,,2c,汇聚交换机B,161,120,85,88"
   ].join("\n");
   const blob = new Blob([sample], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
@@ -703,7 +718,10 @@ watch(editMode, (v) => {
           </el-select>
         </el-form-item>
         <el-form-item label="SNMP端口"><el-input-number v-model="addForm.snmp_port" :min="1" :max="65535" class="w-full" /></el-form-item>
-        <el-form-item v-if="!isSnmpV3" label="团体字串"><el-input v-model="addForm.community" /></el-form-item>
+        <template v-if="!isSnmpV3">
+          <el-form-item label="SNMP Read 团体字串"><el-input v-model="addForm.read_community" /></el-form-item>
+          <el-form-item label="SNMP Write 团体字串"><el-input v-model="addForm.write_community" show-password placeholder="可选：仅在需要写权限操作时填写" /></el-form-item>
+        </template>
         <template v-else>
           <el-form-item label="v3 用户名"><el-input v-model="addForm.v3_username" /></el-form-item>
           <el-form-item label="安全级别">
@@ -751,7 +769,7 @@ watch(editMode, (v) => {
 
     <el-dialog v-model="importVisible" title="批量导入资产" width="760">
       <div class="mb-2 flex items-center justify-between">
-        <div class="text-xs text-slate-500">格式：ip,name,brand,community,snmp_version,remark,snmp_port,poll_interval_sec,cpu_threshold,mem_threshold（首行为表头）</div>
+        <div class="text-xs text-slate-500">格式：ip,name,brand,read_community,write_community,snmp_version,remark,snmp_port,poll_interval_sec,cpu_threshold,mem_threshold（首行为表头）</div>
         <el-button size="small" @click="downloadImportTemplate">下载模板</el-button>
       </div>
       <el-input v-model="importCSV" type="textarea" :rows="14" placeholder="粘贴CSV内容" />

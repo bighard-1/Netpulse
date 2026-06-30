@@ -22,34 +22,36 @@ const (
 )
 
 type Device struct {
-	ID                    int64     `json:"id"`
-	IP                    string    `json:"ip"`
-	Name                  string    `json:"name"`
-	TemplateID            *int64    `json:"template_id,omitempty"`
-	Brand                 string    `json:"brand"`
-	Community             string    `json:"-"`
-	SNMPVersion           string    `json:"snmp_version,omitempty"`
-	SNMPPort              int       `json:"snmp_port,omitempty"`
-	V3Username            string    `json:"v3_username,omitempty"`
-	V3AuthProto           string    `json:"v3_auth_protocol,omitempty"`
-	V3AuthPass            string    `json:"-"`
-	V3PrivProto           string    `json:"v3_priv_protocol,omitempty"`
-	V3PrivPass            string    `json:"-"`
-	V3SecLevel            string    `json:"v3_security_level,omitempty"`
-	MaintenanceMode       bool      `json:"maintenance_mode"`
-	MonitoringPaused      bool      `json:"monitoring_paused"`
-	MonitoringPauseReason string    `json:"monitoring_pause_reason,omitempty"`
-	DeviceTier            string    `json:"device_tier,omitempty"`
-	PollIntervalSec       int       `json:"poll_interval_sec,omitempty"`
-	CPUThreshold          float64   `json:"cpu_threshold,omitempty"`
-	MemThreshold          float64   `json:"mem_threshold,omitempty"`
-	StorageUsage          float64   `json:"storage_usage,omitempty"`
-	StorageTotal          float64   `json:"storage_total,omitempty"`
-	StorageFree           float64   `json:"storage_free,omitempty"`
-	Remark                string    `json:"remark"`
-	CreatedAt             time.Time `json:"created_at"`
-	Uptime                string    `json:"uptime,omitempty"`
-	UptimeSec             int64     `json:"uptime_sec,omitempty"`
+	ID                    int64      `json:"id"`
+	IP                    string     `json:"ip"`
+	Name                  string     `json:"name"`
+	TemplateID            *int64     `json:"template_id,omitempty"`
+	Brand                 string     `json:"brand"`
+	Community             string     `json:"-"`
+	WriteCommunity        string     `json:"-"`
+	SNMPVersion           string     `json:"snmp_version,omitempty"`
+	SNMPPort              int        `json:"snmp_port,omitempty"`
+	V3Username            string     `json:"v3_username,omitempty"`
+	V3AuthProto           string     `json:"v3_auth_protocol,omitempty"`
+	V3AuthPass            string     `json:"-"`
+	V3PrivProto           string     `json:"v3_priv_protocol,omitempty"`
+	V3PrivPass            string     `json:"-"`
+	V3SecLevel            string     `json:"v3_security_level,omitempty"`
+	MaintenanceMode       bool       `json:"maintenance_mode"`
+	MonitoringPaused      bool       `json:"monitoring_paused"`
+	MonitoringPauseReason string     `json:"monitoring_pause_reason,omitempty"`
+	DeviceTier            string     `json:"device_tier,omitempty"`
+	PollIntervalSec       int        `json:"poll_interval_sec,omitempty"`
+	CPUThreshold          float64    `json:"cpu_threshold,omitempty"`
+	MemThreshold          float64    `json:"mem_threshold,omitempty"`
+	StorageUsage          float64    `json:"storage_usage,omitempty"`
+	StorageTotal          float64    `json:"storage_total,omitempty"`
+	StorageFree           float64    `json:"storage_free,omitempty"`
+	Remark                string     `json:"remark"`
+	CreatedAt             time.Time  `json:"created_at"`
+	DeletedAt             *time.Time `json:"deleted_at,omitempty"`
+	Uptime                string     `json:"uptime,omitempty"`
+	UptimeSec             int64      `json:"uptime_sec,omitempty"`
 }
 
 type Interface struct {
@@ -108,9 +110,11 @@ type DeviceStorageHistoryPoint struct {
 }
 
 type InterfaceHistoryPoint struct {
-	Timestamp     time.Time `json:"timestamp"`
-	TrafficInBps  *float64  `json:"traffic_in_bps"`
-	TrafficOutBps *float64  `json:"traffic_out_bps"`
+	Timestamp      time.Time `json:"timestamp"`
+	TrafficInBps   *float64  `json:"traffic_in_bps"`
+	TrafficOutBps  *float64  `json:"traffic_out_bps"`
+	TrafficInStat  string    `json:"traffic_in_status,omitempty"`
+	TrafficOutStat string    `json:"traffic_out_status,omitempty"`
 }
 
 type DeviceCapability struct {
@@ -310,6 +314,34 @@ type TrafficRollupStatus struct {
 	LastDurationMS int64      `json:"last_duration_ms"`
 	LastError      string     `json:"last_error,omitempty"`
 	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
+type StorageOverviewItem struct {
+	TableName     string `json:"table_name"`
+	TotalBytes    int64  `json:"total_bytes"`
+	TotalSize     string `json:"total_size"`
+	EstimatedRows int64  `json:"estimated_rows"`
+}
+
+type OperationalDataRetention struct {
+	AuditLogDays          int `json:"audit_log_days"`
+	DeviceLogDays         int `json:"device_log_days"`
+	ResolvedAlertDays     int `json:"resolved_alert_days"`
+	SystemHealthDays      int `json:"system_health_days"`
+	BackupDrillDays       int `json:"backup_drill_days"`
+	CapabilityHistoryDays int `json:"capability_history_days"`
+}
+
+type OperationalCleanupItem struct {
+	Target        string `json:"target"`
+	RetentionDays int    `json:"retention_days"`
+	MatchedRows   int64  `json:"matched_rows"`
+	DeletedRows   int64  `json:"deleted_rows"`
+}
+
+type OperationalCleanupResult struct {
+	DryRun bool                     `json:"dry_run"`
+	Items  []OperationalCleanupItem `json:"items"`
 }
 
 type RecentEvent struct {

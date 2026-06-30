@@ -65,6 +65,7 @@ func (r *Repository) GetTopologyGraph(ctx context.Context) (*TopologyGraph, erro
 			ORDER BY created_at DESC
 			LIMIT 1
 		) dl ON TRUE
+		WHERE d.deleted_at IS NULL
 		ORDER BY n.id;
 	`
 	rows, err := r.db.QueryContext(ctx, nq)
@@ -97,6 +98,8 @@ func (r *Repository) GetTopologyGraph(ctx context.Context) (*TopologyGraph, erro
 	const eq = `
 		SELECT id, source_node_id, target_node_id, COALESCE(label,''), COALESCE(remark,''), created_at, updated_at
 		FROM topology_edges
+		WHERE source_node_id IN (SELECT id FROM topology_nodes)
+		  AND target_node_id IN (SELECT id FROM topology_nodes)
 		ORDER BY id;
 	`
 	eRows, err := r.db.QueryContext(ctx, eq)

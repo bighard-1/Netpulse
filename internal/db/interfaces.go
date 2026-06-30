@@ -74,7 +74,7 @@ func (r *Repository) GetInterfaceIDMap(ctx context.Context, deviceID int64) (map
 	return out, nil
 }
 func (r *Repository) UpdateDeviceRemark(ctx context.Context, id int64, remark string) error {
-	const q = `UPDATE devices SET remark = $2 WHERE id = $1;`
+	const q = `UPDATE devices SET remark = $2 WHERE id = $1 AND deleted_at IS NULL;`
 	if _, err := r.db.ExecContext(ctx, q, id, remark); err != nil {
 		return fmt.Errorf("update device remark: %w", err)
 	}
@@ -105,7 +105,7 @@ func (r *Repository) GetInterfaceByID(ctx context.Context, id int64) (*Interface
 		FROM interfaces i
 		JOIN devices d ON d.id = i.device_id
 		LEFT JOIN interface_latest_metrics m ON m.interface_id = i.id
-		WHERE i.id = $1
+		WHERE i.id = $1 AND d.deleted_at IS NULL
 		LIMIT 1;
 	`
 	var itf Interface

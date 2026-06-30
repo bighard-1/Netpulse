@@ -71,6 +71,7 @@ func (r *Repository) QueryRecentEvents(ctx context.Context, f EventFilter) ([]Re
 				LIMIT GREATEST($1 * 5, 300)
 			) l
 			JOIN devices d ON d.id = l.device_id
+			 AND d.deleted_at IS NULL
 			LEFT JOIN interfaces i
 			  ON i.device_id = l.device_id
 			 AND i.index = NULLIF(substring(l.message from 'ifIndex=([0-9]+)'), '')::integer
@@ -92,6 +93,7 @@ func (r *Repository) QueryRecentEvents(ctx context.Context, f EventFilter) ([]Re
 			       ae.created_at AS created_at
 			FROM alert_events ae
 			JOIN devices d ON d.id = ae.device_id
+			 AND d.deleted_at IS NULL
 		) e
 		WHERE ($2::bigint = 0 OR e.device_id = $2)
 		  AND ($3 = '' OR lower(e.device_name) LIKE '%' || $3 || '%' OR lower(e.device_ip) LIKE '%' || $3 || '%')

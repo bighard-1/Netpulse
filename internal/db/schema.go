@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS devices (
     template_id BIGINT,
     brand VARCHAR(32) NOT NULL,
     community VARCHAR(128) NOT NULL,
+    write_community VARCHAR(128),
     snmp_version VARCHAR(8) NOT NULL DEFAULT '2c',
     snmp_port INTEGER NOT NULL DEFAULT 161,
     v3_username VARCHAR(128),
@@ -43,10 +44,13 @@ CREATE TABLE IF NOT EXISTS devices (
     cpu_threshold NUMERIC(6,2) NOT NULL DEFAULT 0,
     mem_threshold NUMERIC(6,2) NOT NULL DEFAULT 0,
     remark TEXT,
+    deleted_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS template_id BIGINT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS write_community VARCHAR(128);
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS poll_interval_sec INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS cpu_threshold NUMERIC(6,2) NOT NULL DEFAULT 0;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS mem_threshold NUMERIC(6,2) NOT NULL DEFAULT 0;
@@ -190,10 +194,12 @@ CREATE TABLE IF NOT EXISTS traffic_5m (
     avg_traffic_out_bps NUMERIC(20,2),
     max_traffic_in_bps BIGINT,
     max_traffic_out_bps BIGINT,
+    port_down_samples INTEGER NOT NULL DEFAULT 0,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (interface_id, bucket)
 );
 SELECT create_hypertable('traffic_5m', 'bucket', if_not_exists => TRUE);
+ALTER TABLE traffic_5m ADD COLUMN IF NOT EXISTS port_down_samples INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_traffic_5m_device_bucket ON traffic_5m(device_id, bucket DESC);
 
 CREATE TABLE IF NOT EXISTS traffic_1h (
@@ -205,10 +211,12 @@ CREATE TABLE IF NOT EXISTS traffic_1h (
     avg_traffic_out_bps NUMERIC(20,2),
     max_traffic_in_bps BIGINT,
     max_traffic_out_bps BIGINT,
+    port_down_samples INTEGER NOT NULL DEFAULT 0,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (interface_id, bucket)
 );
 SELECT create_hypertable('traffic_1h', 'bucket', if_not_exists => TRUE);
+ALTER TABLE traffic_1h ADD COLUMN IF NOT EXISTS port_down_samples INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_traffic_1h_device_bucket ON traffic_1h(device_id, bucket DESC);
 
 CREATE TABLE IF NOT EXISTS traffic_rollup_state (
@@ -744,6 +752,18 @@ BEGIN
         END IF;
         IF NOT EXISTS (
             SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='devices' AND column_name='write_community'
+        ) THEN
+            ALTER TABLE devices ADD COLUMN write_community VARCHAR(128);
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='devices' AND column_name='deleted_at'
+        ) THEN
+            ALTER TABLE devices ADD COLUMN deleted_at TIMESTAMPTZ;
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
             WHERE table_schema='public' AND table_name='devices' AND column_name='maintenance_mode'
         ) THEN
             ALTER TABLE devices ADD COLUMN maintenance_mode BOOLEAN NOT NULL DEFAULT FALSE;
@@ -991,6 +1011,63 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 	`
 	if err := r.applySchemaMigration(ctx, 10, mig10); err != nil {
 		return fmt.Errorf("apply migration v10 failed: %w", err)
+	}
+	// v11: keep explicit port-down samples in traffic rollups so long-range
+	// charts can show down periods as blank gaps without breaking normal up
+	// traffic into dotted-looking fragments.
+	const mig11 = `
+		ALTER TABLE traffic_5m ADD COLUMN IF NOT EXISTS port_down_samples INTEGER NOT NULL DEFAULT 0;
+		ALTER TABLE traffic_1h ADD COLUMN IF NOT EXISTS port_down_samples INTEGER NOT NULL DEFAULT 0;
+		INSERT INTO schema_migrations(version, description)
+		VALUES (11, 'add port down sample counters to traffic rollups')
+		ON CONFLICT (version) DO NOTHING;
+	`
+	if err := r.applySchemaMigration(ctx, 11, mig11); err != nil {
+		return fmt.Errorf("apply migration v11 failed: %w", err)
+	}
+	// v12: distinguish SNMP read/write community strings on stored assets.
+	// Existing read-only collection keeps using community; write_community is
+	// optional and reserved for operations that need write access.
+	const mig12 = `
+		ALTER TABLE devices ADD COLUMN IF NOT EXISTS write_community VARCHAR(128);
+		INSERT INTO schema_migrations(version, description)
+		VALUES (12, 'add optional devices.write_community')
+		ON CONFLICT (version) DO NOTHING;
+	`
+	if err := r.applySchemaMigration(ctx, 12, mig12); err != nil {
+		return fmt.Errorf("apply migration v12 failed: %w", err)
+	}
+	// v13: archive-delete devices quickly without deleting heavy historical
+	// metrics in the request path. Active devices keep IP uniqueness, while
+	// archived devices remain available for historical cleanup/forensics.
+	const mig13 = `
+		ALTER TABLE devices ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+		DO $$
+		DECLARE
+			c RECORD;
+		BEGIN
+			FOR c IN
+				SELECT conname
+				FROM pg_constraint
+				WHERE conrelid = 'public.devices'::regclass
+				  AND contype = 'u'
+				  AND pg_get_constraintdef(oid) = 'UNIQUE (ip)'
+			LOOP
+				EXECUTE format('ALTER TABLE devices DROP CONSTRAINT %I', c.conname);
+			END LOOP;
+		END $$;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_active_ip_unique
+			ON devices(ip)
+			WHERE deleted_at IS NULL;
+		CREATE INDEX IF NOT EXISTS idx_devices_deleted_at
+			ON devices(deleted_at)
+			WHERE deleted_at IS NOT NULL;
+		INSERT INTO schema_migrations(version, description)
+		VALUES (13, 'add archive delete support for devices')
+		ON CONFLICT (version) DO NOTHING;
+	`
+	if err := r.applySchemaMigration(ctx, 13, mig13); err != nil {
+		return fmt.Errorf("apply migration v13 failed: %w", err)
 	}
 	return nil
 }

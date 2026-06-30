@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Plus, Refresh, ZoomIn, ZoomOut } from "@element-plus/icons-vue";
+import { Delete, Plus, Refresh, ZoomIn, ZoomOut } from "@element-plus/icons-vue";
 import { useAuthStore } from "../stores/auth";
 import { api, getApiError } from "../services/api";
 import TopologyCanvas from "../components/topology/TopologyCanvas.vue";
@@ -47,6 +47,11 @@ const canEdit = computed(() => Boolean(isAdmin.value && editMode.value));
 const nodeDeviceIds = computed(() => new Set((graph.value.nodes || []).map((n) => Number(n.device_id))));
 const availableDevices = computed(() => (devices.value || []).filter((d) => !nodeDeviceIds.value.has(Number(d.id))));
 const nodeOptions = computed(() => (graph.value.nodes || []).map((n) => ({ label: `${n.label || n.device_name || n.device_ip} (${n.device_ip || "-"})`, value: n.id })));
+const manageableNodes = computed(() => (graph.value.nodes || []).map((n) => ({
+  ...n,
+  displayLabel: n.label || n.device_name || n.device_ip || `节点-${n.id}`,
+  displayIp: n.device_ip || "-"
+})));
 const hasUnsavedLayout = computed(() => Object.keys(pendingNodePositions.value).length > 0);
 
 function onTooltipFontSizeChange(value) {
@@ -277,6 +282,23 @@ onBeforeUnmount(() => {
             <el-button type="primary" :icon="Plus" :loading="saving" @click="addNode">添加节点</el-button>
           </div>
           <div v-if="!availableDevices.length" class="mt-2 text-xs text-slate-500">所有资产都已加入拓扑，新增节点前请先添加新资产或移除已有拓扑节点。</div>
+        </div>
+
+        <div class="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div class="mb-3 font-semibold text-slate-800">移除资产节点</div>
+          <el-table :data="manageableNodes" size="small" max-height="220" empty-text="暂无可移除节点">
+            <el-table-column label="节点">
+              <template #default="{ row }">
+                <div class="font-medium text-slate-800">{{ row.displayLabel }}</div>
+                <div class="text-xs text-slate-500">{{ row.displayIp }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="96" align="right">
+              <template #default="{ row }">
+                <el-button :icon="Delete" type="danger" link :disabled="saving" @click="removeNode(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
         </div>
 
         <div class="rounded-xl border border-slate-200 bg-slate-50 p-4">

@@ -17,6 +17,8 @@ type addDeviceRequest struct {
 	TemplateID      *int64  `json:"template_id,omitempty"`
 	Brand           string  `json:"brand"`
 	Community       string  `json:"community"`
+	ReadCommunity   string  `json:"read_community"`
+	WriteCommunity  string  `json:"write_community"`
 	SNMPVersion     string  `json:"snmp_version"`
 	SNMPPort        int     `json:"snmp_port"`
 	V3Username      string  `json:"v3_username"`
@@ -32,10 +34,20 @@ type addDeviceRequest struct {
 	Remark          string  `json:"remark"`
 }
 
+func (req *addDeviceRequest) normalizeCommunities() {
+	req.ReadCommunity = strings.TrimSpace(req.ReadCommunity)
+	req.WriteCommunity = strings.TrimSpace(req.WriteCommunity)
+	req.Community = strings.TrimSpace(req.Community)
+	if req.ReadCommunity == "" {
+		req.ReadCommunity = req.Community
+	}
+	req.Community = req.ReadCommunity
+}
+
 func validateSNMPRequest(req addDeviceRequest) error {
 	if req.SNMPVersion != "3" {
-		if strings.TrimSpace(req.Community) == "" {
-			return fmt.Errorf("snmp v1/v2c requires community")
+		if strings.TrimSpace(req.ReadCommunity) == "" {
+			return fmt.Errorf("snmp v1/v2c requires read_community")
 		}
 		return nil
 	}
@@ -69,6 +81,22 @@ func validateSNMPRequest(req addDeviceRequest) error {
 		return fmt.Errorf("invalid snmp v3 security level")
 	}
 }
+
+func pollOptionsFromAddDeviceRequest(req addDeviceRequest) snmp.PollOptions {
+	return snmp.PollOptions{
+		Brand:       req.Brand,
+		SNMPVersion: req.SNMPVersion,
+		Port:        req.SNMPPort,
+		Community:   req.ReadCommunity,
+		V3Username:  req.V3Username,
+		V3AuthProto: req.V3AuthProtocol,
+		V3AuthPass:  req.V3AuthPassword,
+		V3PrivProto: req.V3PrivProtocol,
+		V3PrivPass:  req.V3PrivPassword,
+		V3SecLevel:  req.V3SecurityLevel,
+	}
+}
+
 func (h *Handler) handlePrecheckDevice(w http.ResponseWriter, r *http.Request) {
 	var req addDeviceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -85,6 +113,7 @@ func (h *Handler) handlePrecheckDevice(w http.ResponseWriter, r *http.Request) {
 	if req.SNMPPort <= 0 {
 		req.SNMPPort = 161
 	}
+	req.normalizeCommunities()
 	req.DeviceTier = normalizeDeviceTier(req.DeviceTier)
 	if req.PollIntervalSec < 0 {
 		req.PollIntervalSec = 0
@@ -108,18 +137,7 @@ func (h *Handler) handlePrecheckDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	opt := snmp.PollOptions{
-		Brand:       req.Brand,
-		SNMPVersion: req.SNMPVersion,
-		Port:        req.SNMPPort,
-		Community:   req.Community,
-		V3Username:  req.V3Username,
-		V3AuthProto: req.V3AuthProtocol,
-		V3AuthPass:  req.V3AuthPassword,
-		V3PrivProto: req.V3PrivProtocol,
-		V3PrivPass:  req.V3PrivPassword,
-		V3SecLevel:  req.V3SecurityLevel,
-	}
+	opt := pollOptionsFromAddDeviceRequest(req)
 	poll, err := h.collector.PollDevice(req.IP, opt)
 	if err != nil {
 		msg := strings.ToLower(err.Error())
@@ -182,6 +200,7 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 	if req.SNMPPort <= 0 {
 		req.SNMPPort = 161
 	}
+	req.normalizeCommunities()
 	applyTemplateIfNeeded := func(t *db.DeviceTemplate) {
 		if t == nil {
 			return
@@ -195,7 +214,8 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 		if req.SNMPPort <= 0 {
 			req.SNMPPort = t.SNMPPort
 		}
-		if strings.TrimSpace(req.Community) == "" {
+		if strings.TrimSpace(req.ReadCommunity) == "" {
+			req.ReadCommunity = t.Community
 			req.Community = t.Community
 		}
 		if strings.TrimSpace(req.V3Username) == "" {
@@ -226,24 +246,14 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	opt := snmp.PollOptions{
-		Brand:       req.Brand,
-		SNMPVersion: req.SNMPVersion,
-		Port:        req.SNMPPort,
-		Community:   req.Community,
-		V3Username:  req.V3Username,
-		V3AuthProto: req.V3AuthProtocol,
-		V3AuthPass:  req.V3AuthPassword,
-		V3PrivProto: req.V3PrivProtocol,
-		V3PrivPass:  req.V3PrivPassword,
-		V3SecLevel:  req.V3SecurityLevel,
-	}
+	opt := pollOptionsFromAddDeviceRequest(req)
 	var autoTemplate map[string]any
 	if req.TemplateID == nil || *req.TemplateID <= 0 {
 		if identity, err := h.collector.DetectSystemIdentity(req.IP, opt); err == nil {
 			if t, score, _ := h.repo.MatchTemplateByFingerprint(r.Context(), req.Brand, identity.SysObjectID, identity.SysDescr); t != nil {
 				req.TemplateID = &t.ID
 				applyTemplateIfNeeded(t)
+				opt = pollOptionsFromAddDeviceRequest(req)
 				autoTemplate = map[string]any{
 					"id":          t.ID,
 					"name":        t.Name,
@@ -261,7 +271,8 @@ func (h *Handler) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 		Name:            req.Name,
 		TemplateID:      req.TemplateID,
 		Brand:           req.Brand,
-		Community:       req.Community,
+		Community:       req.ReadCommunity,
+		WriteCommunity:  req.WriteCommunity,
 		SNMPVersion:     req.SNMPVersion,
 		SNMPPort:        req.SNMPPort,
 		V3Username:      req.V3Username,

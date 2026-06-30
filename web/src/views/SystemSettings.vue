@@ -32,6 +32,7 @@ const alertRuleLoading = ref(false);
 const alertRules = ref([]);
 const saveRuleLoading = ref(false);
 const opsLoading = ref(false);
+const cleanupLoading = ref(false);
 const opsSummary = ref({
   device_total: 0,
   open_alert_events: 0,
@@ -64,7 +65,18 @@ const opsSummary = ref({
     history_entries: 0
   },
   slow_apis: [],
-  recent_jobs: []
+  recent_jobs: [],
+  storage_overview: [],
+  cleanup_preview: { dry_run: true, items: [] },
+  build: { version: "dev", commit: "unknown", build_time: "unknown" }
+});
+const maintenanceForm = ref({
+  audit_log_days: 180,
+  device_log_days: 90,
+  resolved_alert_days: 180,
+  system_health_days: 730,
+  backup_drill_days: 365,
+  capability_history_days: 180
 });
 const opsDetailVisible = ref(false);
 const opsDetailTitle = ref("");
@@ -89,6 +101,14 @@ function clearSlowApiLogs() {
   slowApiLogs.value = [];
   fb.success("已清空慢请求记录");
 }
+
+const storageOverviewRows = computed(() => {
+  return (opsSummary.value.storage_overview || []).slice(0, 12);
+});
+
+const cleanupPreviewRows = computed(() => {
+  return opsSummary.value.cleanup_preview?.items || [];
+});
 
 const templateForm = ref({
   name: "",
@@ -407,6 +427,28 @@ async function loadOpsSummary() {
     fb.apiError(err, "加载运维概况失败");
   } finally {
     opsLoading.value = false;
+  }
+}
+
+async function runSystemCleanup(dryRun = true) {
+  if (!editMode.value && !dryRun) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
+  cleanupLoading.value = true;
+  try {
+    const res = await api.runSystemCleanup({ ...maintenanceForm.value, dry_run: dryRun });
+    opsSummary.value = {
+      ...opsSummary.value,
+      cleanup_preview: res.data || { dry_run: dryRun, items: [] }
+    };
+    if (dryRun) {
+      fb.success("清理预估已刷新");
+    } else {
+      fb.success("运营数据清理完成");
+      await loadOpsSummary();
+    }
+  } catch (err) {
+    fb.apiError(err, dryRun ? "清理预估失败" : "清理执行失败");
+  } finally {
+    cleanupLoading.value = false;
   }
 }
 
@@ -886,6 +928,18 @@ watch(activeTab, (tab) => {
           图表缓存条目：
           <b>{{ opsSummary.cache_summary?.history_entries || 0 }}</b>
         </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          当前版本：
+          <b>{{ opsSummary.build?.version || "dev" }}</b>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          构建提交：
+          <b>{{ opsSummary.build?.commit || "unknown" }}</b>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          构建时间：
+          <b>{{ opsSummary.build?.build_time || "unknown" }}</b>
+        </div>
       </div>
       <el-alert
         class="mt-3"
@@ -906,6 +960,52 @@ watch(activeTab, (tab) => {
           <el-table-column prop="path" label="路径" min-width="220" />
           <el-table-column prop="status_code" label="状态码" width="90" />
           <el-table-column prop="duration_ms" label="耗时(ms)" width="110" />
+        </el-table>
+      </div>
+      <div class="mt-4 rounded-lg border border-slate-200 p-3">
+        <div class="mb-2 flex items-center justify-between">
+          <span class="font-semibold">数据库容量概览</span>
+          <el-button size="small" @click="loadOpsSummary">刷新容量</el-button>
+        </div>
+        <el-table :data="storageOverviewRows" size="small" max-height="300" class="np-borderless-table">
+          <el-table-column prop="table_name" label="表" min-width="180" />
+          <el-table-column prop="total_size" label="占用" width="120" />
+          <el-table-column prop="estimated_rows" label="估算行数" width="140" />
+        </el-table>
+      </div>
+      <div class="mt-4 rounded-lg border border-slate-200 p-3">
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <span class="font-semibold">运营数据保留与清理</span>
+          <div class="flex gap-2">
+            <el-button size="small" :loading="cleanupLoading" @click="runSystemCleanup(true)">预估</el-button>
+            <el-button size="small" type="danger" plain :disabled="!editMode" :loading="cleanupLoading" @click="runSystemCleanup(false)">执行清理</el-button>
+          </div>
+        </div>
+        <el-form label-position="top" class="grid grid-cols-1 gap-2 md:grid-cols-3">
+          <el-form-item label="审计日志保留天数">
+            <el-input-number v-model="maintenanceForm.audit_log_days" :min="30" :max="3650" class="w-full" />
+          </el-form-item>
+          <el-form-item label="设备日志保留天数">
+            <el-input-number v-model="maintenanceForm.device_log_days" :min="30" :max="3650" class="w-full" />
+          </el-form-item>
+          <el-form-item label="已关闭告警保留天数">
+            <el-input-number v-model="maintenanceForm.resolved_alert_days" :min="30" :max="3650" class="w-full" />
+          </el-form-item>
+          <el-form-item label="健康快照保留天数">
+            <el-input-number v-model="maintenanceForm.system_health_days" :min="90" :max="3650" class="w-full" />
+          </el-form-item>
+          <el-form-item label="备份演练报告保留天数">
+            <el-input-number v-model="maintenanceForm.backup_drill_days" :min="90" :max="3650" class="w-full" />
+          </el-form-item>
+          <el-form-item label="能力历史保留天数">
+            <el-input-number v-model="maintenanceForm.capability_history_days" :min="30" :max="3650" class="w-full" />
+          </el-form-item>
+        </el-form>
+        <el-table :data="cleanupPreviewRows" size="small" max-height="260" class="np-borderless-table">
+          <el-table-column prop="target" label="对象" min-width="190" />
+          <el-table-column prop="retention_days" label="保留天数" width="110" />
+          <el-table-column prop="matched_rows" label="匹配行数" width="120" />
+          <el-table-column prop="deleted_rows" label="已删除" width="120" />
         </el-table>
       </div>
       <div class="mt-4 rounded-lg border border-slate-200 p-3">

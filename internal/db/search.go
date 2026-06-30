@@ -38,7 +38,8 @@ func (r *Repository) GlobalSearch(ctx context.Context, q string, limit int, ctxD
 				CASE WHEN $3 > 0 AND d.id = $3 THEN 0 ELSE 1 END AS priority_scope,
 				similarity(COALESCE(d.name, host(d.ip)), $4) AS sim
 			FROM devices d
-			WHERE host(d.ip) ILIKE $1 OR COALESCE(d.name,'') ILIKE $1 OR d.brand ILIKE $1 OR COALESCE(d.remark,'') ILIKE $1
+			WHERE d.deleted_at IS NULL
+			  AND (host(d.ip) ILIKE $1 OR COALESCE(d.name,'') ILIKE $1 OR d.brand ILIKE $1 OR COALESCE(d.remark,'') ILIKE $1)
 		),
 		ports AS (
 			SELECT
@@ -71,11 +72,12 @@ func (r *Repository) GlobalSearch(ctx context.Context, q string, limit int, ctxD
 				) AS sim
 			FROM interfaces i
 			JOIN devices d ON d.id=i.device_id
-			WHERE i.name ILIKE $1
+			WHERE d.deleted_at IS NULL
+			  AND (i.name ILIKE $1
 			   OR COALESCE(i.custom_name,'') ILIKE $1
 			   OR COALESCE(i.remark,'') ILIKE $1
 			   OR host(d.ip) ILIKE $1
-			   OR COALESCE(d.name,'') ILIKE $1
+			   OR COALESCE(d.name,'') ILIKE $1)
 		),
 		all_hits AS (
 			SELECT * FROM dev

@@ -29,8 +29,18 @@ export function toTrafficSeriesData(data) {
     if (!Number.isFinite(t)) continue;
     const inV = p.traffic_in_bps == null ? null : Number(p.traffic_in_bps);
     const outV = p.traffic_out_bps == null ? null : Number(p.traffic_out_bps);
-    inbound.push([t, Number.isFinite(inV) ? inV : null]);
-    outbound.push([t, Number.isFinite(outV) ? outV : null]);
+    const inDown = String(p.traffic_in_status || "").toUpperCase() === "PORT_DOWN";
+    const outDown = String(p.traffic_out_status || "").toUpperCase() === "PORT_DOWN";
+    if (Number.isFinite(inV)) {
+      inbound.push([t, inV]);
+    } else if (inDown) {
+      inbound.push([t, null]);
+    }
+    if (Number.isFinite(outV)) {
+      outbound.push([t, outV]);
+    } else if (outDown) {
+      outbound.push([t, null]);
+    }
   }
   return { inbound, outbound };
 }
@@ -70,12 +80,17 @@ export function decimatePoints(points, maxPoints = 2200) {
   const stride = Math.max(1, Math.ceil(arr.length / maxPoints));
   const out = [];
   for (let i = 0; i < arr.length; i += stride) {
-    out.push(arr[i]);
+    const slice = arr.slice(i, Math.min(arr.length, i + stride));
+    out.push(slice[0]);
+    const nullPoint = slice.find((x) => x?.[1] == null);
+    if (nullPoint && nullPoint !== slice[0]) {
+      out.push(nullPoint);
+    }
   }
   if (arr.length > 0 && out[out.length - 1] !== arr[arr.length - 1]) {
     out.push(arr[arr.length - 1]);
   }
-  return out;
+  return out.sort((a, b) => Number(a?.[0] || 0) - Number(b?.[0] || 0));
 }
 
 function medianOf(values) {

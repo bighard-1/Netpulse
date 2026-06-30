@@ -346,6 +346,7 @@ func (w *Worker) pollOne(ctx context.Context, d db.Device) {
 			itf.LegacyInOctets, itf.LegacyOutOctets, itf.LegacyPresent,
 			result.PolledAt, result.UptimeSec, itf.SpeedMbps, d.SNMPVersion,
 			w.pollIntervalForDevice(d),
+			itf.OperUp,
 		)
 		w.trackPortState(ctx, d, itf.IfIndex, itf.IfName, itf.OperUp)
 		mList = append(mList, db.InterfaceMetric{
@@ -757,6 +758,7 @@ func (w *Worker) calcBps(
 	speedMbps int,
 	snmpVersion string,
 	expectedInterval time.Duration,
+	operUp bool,
 ) (*int64, *int64, string, string) {
 	key := interfaceKey(deviceID, ifIndex)
 
@@ -766,6 +768,22 @@ func (w *Worker) calcBps(
 	mode := w.pickCounterMode(key, speedMbps, snmpVersion, hcPresent, legacyPresent)
 	highSpeedHC := speedMbps >= 1000 && hcPresent && mode == "hc"
 	inOctets, outOctets := trafficcalc.PickCounterPair(mode, hcInOctets, hcOutOctets, legacyInOctets, legacyOutOctets)
+
+	if !operUp {
+		w.last[key] = counterState{
+			inOctets: inOctets, outOctets: outOctets, at: now,
+			inChangeOctets: inOctets, outChangeOctets: outOctets,
+			counterMode: mode,
+			lastHCIn:    hcInOctets, lastHCOut: hcOutOctets,
+			lastLegacyIn: legacyInOctets, lastLegacyOut: legacyOutOctets,
+			inChangedAt: now, outChangedAt: now,
+			inBps: 0, outBps: 0,
+			inRaw1: 0, inRaw2: 0, outRaw1: 0, outRaw2: 0,
+			inZeroStreak: 0, outZeroStreak: 0,
+			uptimeSec: uptimeSec,
+		}
+		return nil, nil, "PORT_DOWN", "PORT_DOWN"
+	}
 
 	prev, ok := w.last[key]
 	if !ok {

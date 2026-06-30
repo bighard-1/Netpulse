@@ -18,29 +18,43 @@ func (h *Handler) handleImportDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	created := 0
+	header := map[string]int{}
+	if len(records) > 0 {
+		for i, name := range records[0] {
+			header[strings.ToLower(strings.TrimSpace(name))] = i
+		}
+	}
+	field := func(rec []string, names ...string) string {
+		for _, name := range names {
+			if idx, ok := header[name]; ok && idx >= 0 && idx < len(rec) {
+				return strings.TrimSpace(rec[idx])
+			}
+		}
+		return ""
+	}
 	for i, rec := range records {
 		if i == 0 {
 			continue
 		}
-		if len(rec) < 4 {
+		if len(rec) < 1 {
 			continue
 		}
 		port := 161
-		if len(rec) > 5 {
-			if p, err := strconv.Atoi(strings.TrimSpace(rec[5])); err == nil && p > 0 {
+		if raw := field(rec, "snmp_port", "port"); raw != "" {
+			if p, err := strconv.Atoi(raw); err == nil && p > 0 {
 				port = p
 			}
 		}
+		readCommunity := field(rec, "read_community", "community")
 		dev := db.Device{
-			IP:          strings.TrimSpace(rec[0]),
-			Brand:       strings.TrimSpace(rec[1]),
-			Community:   strings.TrimSpace(rec[2]),
-			SNMPVersion: strings.TrimSpace(rec[3]),
-			Remark:      "",
-			SNMPPort:    port,
-		}
-		if len(rec) > 4 {
-			dev.Remark = strings.TrimSpace(rec[4])
+			IP:             field(rec, "ip"),
+			Name:           field(rec, "name"),
+			Brand:          field(rec, "brand"),
+			Community:      readCommunity,
+			WriteCommunity: field(rec, "write_community"),
+			SNMPVersion:    field(rec, "snmp_version"),
+			Remark:         field(rec, "remark"),
+			SNMPPort:       port,
 		}
 		if dev.IP == "" || dev.Brand == "" {
 			continue

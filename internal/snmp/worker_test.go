@@ -55,7 +55,7 @@ func mustInt64Ptr(t *testing.T, got *int64, want int64) {
 func TestCalcBpsInitializesBeforePersisting(t *testing.T) {
 	w := newTestWorker()
 	now := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
-	in, out, inStatus, outStatus := w.calcBps(1, 10, 1000, 2000, true, 0, 0, false, now, 100, 1000, "2c", 30*time.Second)
+	in, out, inStatus, outStatus := w.calcBps(1, 10, 1000, 2000, true, 0, 0, false, now, 100, 1000, "2c", 30*time.Second, true)
 	if in != nil || out != nil {
 		t.Fatalf("initial sample should not persist traffic, got in=%v out=%v", in, out)
 	}
@@ -67,9 +67,9 @@ func TestCalcBpsInitializesBeforePersisting(t *testing.T) {
 func TestCalcBpsUsesElapsedTimeBetweenCounterChanges(t *testing.T) {
 	w := newTestWorker()
 	base := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
-	w.calcBps(1, 10, 1_000, 2_000, true, 0, 0, false, base, 100, 100, "2c", 30*time.Second)
+	w.calcBps(1, 10, 1_000, 2_000, true, 0, 0, false, base, 100, 100, "2c", 30*time.Second, true)
 
-	in, out, inStatus, outStatus := w.calcBps(1, 10, 126_000, 252_000, true, 0, 0, false, base.Add(30*time.Second), 130, 100, "2c", 30*time.Second)
+	in, out, inStatus, outStatus := w.calcBps(1, 10, 126_000, 252_000, true, 0, 0, false, base.Add(30*time.Second), 130, 100, "2c", 30*time.Second, true)
 	if inStatus != "VALID" || outStatus != "VALID" {
 		t.Fatalf("status=(%s,%s), want VALID", inStatus, outStatus)
 	}
@@ -80,16 +80,16 @@ func TestCalcBpsUsesElapsedTimeBetweenCounterChanges(t *testing.T) {
 func TestCalcBpsSkipsCounterStalePollThenAveragesOverChangeWindow(t *testing.T) {
 	w := newTestWorker()
 	base := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
-	w.calcBps(1, 10, 1_000, 2_000, true, 0, 0, false, base, 100, 100, "2c", 30*time.Second)
+	w.calcBps(1, 10, 1_000, 2_000, true, 0, 0, false, base, 100, 100, "2c", 30*time.Second, true)
 
-	in, out, inStatus, outStatus := w.calcBps(1, 10, 1_000, 2_000, true, 0, 0, false, base.Add(30*time.Second), 130, 100, "2c", 30*time.Second)
+	in, out, inStatus, outStatus := w.calcBps(1, 10, 1_000, 2_000, true, 0, 0, false, base.Add(30*time.Second), 130, 100, "2c", 30*time.Second, true)
 	if inStatus != "VALID" || outStatus != "VALID" || in == nil || out == nil {
 		t.Fatalf("stale poll should keep a valid zero rate, got in=%v out=%v status=(%s,%s)", in, out, inStatus, outStatus)
 	}
 	mustInt64Ptr(t, in, 0)
 	mustInt64Ptr(t, out, 0)
 
-	in, out, inStatus, outStatus = w.calcBps(1, 10, 241_000, 362_000, true, 0, 0, false, base.Add(60*time.Second), 160, 100, "2c", 30*time.Second)
+	in, out, inStatus, outStatus = w.calcBps(1, 10, 241_000, 362_000, true, 0, 0, false, base.Add(60*time.Second), 160, 100, "2c", 30*time.Second, true)
 	if inStatus != "VALID" || outStatus != "VALID" {
 		t.Fatalf("status=(%s,%s), want VALID after counter changes", inStatus, outStatus)
 	}
@@ -99,12 +99,27 @@ func TestCalcBpsSkipsCounterStalePollThenAveragesOverChangeWindow(t *testing.T) 
 	mustInt64Ptr(t, out, 48_000)
 }
 
+func TestCalcBpsReturnsEmptySampleWhenPortDown(t *testing.T) {
+	w := newTestWorker()
+	base := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+	w.calcBps(1, 10, 1_000, 2_000, true, 0, 0, false, base, 100, 100, "2c", 30*time.Second, true)
+	w.calcBps(1, 10, 126_000, 252_000, true, 0, 0, false, base.Add(30*time.Second), 130, 100, "2c", 30*time.Second, true)
+
+	in, out, inStatus, outStatus := w.calcBps(1, 10, 126_000, 252_000, true, 0, 0, false, base.Add(60*time.Second), 160, 100, "2c", 30*time.Second, false)
+	if in != nil || out != nil {
+		t.Fatalf("down port should not persist traffic, got in=%v out=%v", in, out)
+	}
+	if inStatus != "PORT_DOWN" || outStatus != "PORT_DOWN" {
+		t.Fatalf("status=(%s,%s), want PORT_DOWN", inStatus, outStatus)
+	}
+}
+
 func TestCalcBpsDetectsDeviceRebootAndResetsBaseline(t *testing.T) {
 	w := newTestWorker()
 	base := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
-	w.calcBps(1, 10, 10_000, 20_000, true, 0, 0, false, base, 500, 1000, "2c", 30*time.Second)
+	w.calcBps(1, 10, 10_000, 20_000, true, 0, 0, false, base, 500, 1000, "2c", 30*time.Second, true)
 
-	in, out, inStatus, outStatus := w.calcBps(1, 10, 1_000, 2_000, true, 0, 0, false, base.Add(30*time.Second), 10, 1000, "2c", 30*time.Second)
+	in, out, inStatus, outStatus := w.calcBps(1, 10, 1_000, 2_000, true, 0, 0, false, base.Add(30*time.Second), 10, 1000, "2c", 30*time.Second, true)
 	if in != nil || out != nil {
 		t.Fatalf("reboot sample should not persist traffic, got in=%v out=%v", in, out)
 	}
@@ -116,9 +131,9 @@ func TestCalcBpsDetectsDeviceRebootAndResetsBaseline(t *testing.T) {
 func TestCalcBpsRejectsUnexpectedPollWindowGap(t *testing.T) {
 	w := newTestWorker()
 	base := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
-	w.calcBps(1, 10, 10_000, 20_000, true, 0, 0, false, base, 100, 1000, "2c", 30*time.Second)
+	w.calcBps(1, 10, 10_000, 20_000, true, 0, 0, false, base, 100, 1000, "2c", 30*time.Second, true)
 
-	in, out, inStatus, outStatus := w.calcBps(1, 10, 20_000, 40_000, true, 0, 0, false, base.Add(4*time.Minute), 340, 1000, "2c", 30*time.Second)
+	in, out, inStatus, outStatus := w.calcBps(1, 10, 20_000, 40_000, true, 0, 0, false, base.Add(4*time.Minute), 340, 1000, "2c", 30*time.Second, true)
 	if in != nil || out != nil {
 		t.Fatalf("window gap should not persist traffic, got in=%v out=%v", in, out)
 	}
