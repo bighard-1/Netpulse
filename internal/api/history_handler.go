@@ -106,7 +106,15 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 		queryCtx := r.Context()
 		cancel := func() {}
 		if span > 24*time.Hour {
-			queryCtx, cancel = context.WithTimeout(r.Context(), 10*time.Second)
+			// Long-range traffic reads are served from compact rollups, but a cold
+			// cache or an incomplete rollup can still require a fallback query.
+			// Ten seconds is too aggressive for a busy production TimescaleDB and
+			// was the direct cause of the 7/30-day chart failures.
+			timeout := 30 * time.Second
+			if span > 31*24*time.Hour {
+				timeout = 45 * time.Second
+			}
+			queryCtx, cancel = context.WithTimeout(r.Context(), timeout)
 		}
 		defer cancel()
 		items, err := h.repo.GetInterfaceHistory(queryCtx, id, start, end, interval, maxPoints)

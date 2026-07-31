@@ -22,7 +22,7 @@ const logSource = ref("device");
 const device = ref(null);
 const portKeyword = ref("");
 const deviceEditVisible = ref(false);
-const deviceEditForm = ref({ id: null, name: "", brand: "", remark: "", maintenance_mode: false });
+const deviceEditForm = ref({ id: null, ip: "", name: "", brand: "", remark: "", maintenance_mode: false });
 const showPortID = ref(false);
 const showPortIndex = ref(false);
 const portPage = ref(1);
@@ -308,6 +308,7 @@ function openDeviceEdit() {
   if (!device.value) return;
   deviceEditForm.value = {
     id: device.value.id,
+    ip: device.value.ip || "",
     name: device.value.name || "",
     brand: device.value.brand || "",
     remark: device.value.remark || "",
@@ -325,6 +326,7 @@ function openDeviceEdit() {
 async function saveDeviceEdit() {
   try {
     await api.updateDevice(deviceEditForm.value.id, {
+      ip: String(deviceEditForm.value.ip || "").trim(),
       name: deviceEditForm.value.name || "",
       brand: deviceEditForm.value.brand || "",
       remark: deviceEditForm.value.remark || "",
@@ -433,7 +435,7 @@ watch(filteredPorts, () => {
               <el-option label="SSH（本地终端）" value="ssh" />
             </el-select>
             <el-button type="primary" plain @click="openTerminal">连接设备终端</el-button>
-            <el-button type="primary" plain :icon="Edit" @click="openDeviceEdit">编辑设备名称/备注</el-button>
+            <el-button type="primary" plain :icon="Edit" @click="openDeviceEdit">编辑设备信息/IP</el-button>
           </div>
         </div>
       </template>
@@ -614,6 +616,10 @@ watch(filteredPorts, () => {
 
     <el-dialog v-model="deviceEditVisible" title="编辑设备信息" width="520">
       <el-form label-position="top">
+        <el-form-item label="设备 IP">
+          <el-input v-model="deviceEditForm.ip" placeholder="例如：192.168.1.10" />
+          <div class="text-xs text-slate-500">保存后立即切换到新 IP 采集，历史数据和端口记录保持不变。</div>
+        </el-form-item>
         <el-form-item label="设备名称"><el-input v-model="deviceEditForm.name" /></el-form-item>
         <el-form-item label="品牌"><el-input v-model="deviceEditForm.brand" /></el-form-item>
         <el-form-item label="备注"><el-input v-model="deviceEditForm.remark" type="textarea" :rows="4" /></el-form-item>

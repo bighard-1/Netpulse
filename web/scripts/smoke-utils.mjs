@@ -87,11 +87,14 @@ function testPortTrafficUtils() {
   const series = toTrafficSeriesData([
     { timestamp: "2026-06-01T00:00:00Z", traffic_in_bps: 100, traffic_out_bps: 200 },
     { timestamp: "bad", traffic_in_bps: 1, traffic_out_bps: 2 },
-    { timestamp: "2026-06-01T00:01:00Z", traffic_in_bps: null, traffic_out_bps: "300" }
+    { timestamp: "2026-06-01T00:01:00Z", traffic_in_bps: null, traffic_out_bps: "300" },
+    { timestamp: "2026-06-01T00:02:00Z", traffic_in_bps: null, traffic_in_status: "PORT_DOWN", traffic_out_bps: null, traffic_out_status: "PORT_DOWN" }
   ]);
   assert.equal(series.inbound.length, 2);
   assert.equal(series.inbound[1][1], null);
+  assert.equal(series.outbound.length, 3);
   assert.equal(series.outbound[1][1], 300);
+  assert.equal(series.outbound[2][1], null);
 
   const filled = fillShortNullGaps([[1, 10], [2, null], [3, 30]], 1);
   assert.equal(filled[1][1], 20);

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -52,6 +53,7 @@ type updateRemarkRequest struct {
 }
 
 type updateDeviceRequest struct {
+	IP                    string  `json:"ip"`
 	Name                  string  `json:"name"`
 	Brand                 string  `json:"brand"`
 	Remark                string  `json:"remark"`
@@ -154,6 +156,25 @@ func (h *Handler) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "device not found")
 		return
 	}
+	ip := strings.TrimSpace(req.IP)
+	if ip == "" {
+		ip = item.IP
+	}
+	if net.ParseIP(ip) == nil {
+		writeError(w, http.StatusBadRequest, "invalid IP address")
+		return
+	}
+	if ip != item.IP {
+		existing, findErr := h.repo.FindDeviceByIP(r.Context(), ip)
+		if findErr != nil {
+			writeError(w, http.StatusInternalServerError, findErr.Error())
+			return
+		}
+		if existing != nil && existing.ID != id {
+			writeError(w, http.StatusConflict, "该 IP 已被其他资产使用")
+			return
+		}
+	}
 	name := req.Name
 	if name == "" {
 		name = item.Name
@@ -188,6 +209,7 @@ func (h *Handler) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.repo.UpdateDevice(r.Context(), db.Device{
 		ID:                    id,
+		IP:                    ip,
 		Name:                  name,
 		Brand:                 brand,
 		Remark:                req.Remark,

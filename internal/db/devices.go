@@ -322,19 +322,20 @@ func (r *Repository) ListDevicesWithStatus(ctx context.Context) ([]DeviceStatus,
 func (r *Repository) UpdateDevice(ctx context.Context, d Device) error {
 	const q = `
 		UPDATE devices
-		SET name = $2,
-		    brand = $3,
-		    remark = $4,
-		    maintenance_mode = $5,
-		    monitoring_paused = $6,
-		    monitoring_pause_reason = $7,
-		    device_tier = $8,
-		    poll_interval_sec = $9,
-		    cpu_threshold = $10,
-		    mem_threshold = $11
+		SET ip = $2::inet,
+		    name = $3,
+		    brand = $4,
+		    remark = $5,
+		    maintenance_mode = $6,
+		    monitoring_paused = $7,
+		    monitoring_pause_reason = $8,
+		    device_tier = $9,
+		    poll_interval_sec = $10,
+		    cpu_threshold = $11,
+		    mem_threshold = $12
 		WHERE id = $1 AND deleted_at IS NULL;
 	`
-	if _, err := r.db.ExecContext(ctx, q, d.ID, strings.TrimSpace(d.Name), strings.TrimSpace(d.Brand), d.Remark, d.MaintenanceMode, d.MonitoringPaused, strings.TrimSpace(d.MonitoringPauseReason), strings.TrimSpace(d.DeviceTier), d.PollIntervalSec, d.CPUThreshold, d.MemThreshold); err != nil {
+	if _, err := r.db.ExecContext(ctx, q, d.ID, strings.TrimSpace(d.IP), strings.TrimSpace(d.Name), strings.TrimSpace(d.Brand), d.Remark, d.MaintenanceMode, d.MonitoringPaused, strings.TrimSpace(d.MonitoringPauseReason), strings.TrimSpace(d.DeviceTier), d.PollIntervalSec, d.CPUThreshold, d.MemThreshold); err != nil {
 		return fmt.Errorf("update device: %w", err)
 	}
 	return nil

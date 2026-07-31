@@ -401,6 +401,51 @@ body,
   color: #94a3b8 !important;
 }
 
+/* Element Plus poppers are teleported below #app.  Use the document theme
+   class as well so menus, selects, notifications and dialogs do not retain
+   light-mode text colours over dark surfaces. */
+.np-theme-dark .el-popper,
+.np-theme-dark .el-select-dropdown,
+.np-theme-dark .el-dropdown-menu,
+.np-theme-dark .el-message,
+.np-theme-dark .el-notification,
+.np-theme-dark .el-message-box {
+  --el-text-color-primary: #f1f5f9;
+  --el-text-color-regular: #dbe7f3;
+  --el-text-color-secondary: #aebed0;
+  --el-fill-color-blank: #0f172a;
+  --el-bg-color-overlay: #111c30;
+  --el-border-color-light: rgba(148, 163, 184, 0.26);
+  color: #e5edf7 !important;
+}
+
+.np-theme-dark .el-select-dropdown__item,
+.np-theme-dark .el-dropdown-menu__item,
+.np-theme-dark .el-popper__arrow::before,
+.np-theme-dark .el-message-box__content,
+.np-theme-dark .el-notification__content {
+  color: #dbe7f3 !important;
+  background-color: #111c30 !important;
+}
+
+.np-theme-dark .el-select-dropdown__item.is-hovering,
+.np-theme-dark .el-dropdown-menu__item:not(.is-disabled):hover {
+  background-color: rgba(37, 99, 235, 0.3) !important;
+  color: #ffffff !important;
+}
+
+.np-theme-dark .el-button.is-link:not(.is-disabled),
+.np-theme-dark .el-button.is-text:not(.is-disabled),
+.np-theme-dark .el-link:not(.is-disabled) {
+  color: #7dd3fc !important;
+}
+
+.np-theme-dark .el-button.is-link:not(.is-disabled):hover,
+.np-theme-dark .el-button.is-text:not(.is-disabled):hover,
+.np-theme-dark .el-link:not(.is-disabled):hover {
+  color: #bae6fd !important;
+}
+
 .np-theme-dark .el-tabs__item {
   color: #94a3b8 !important;
 }

@@ -52,7 +52,7 @@ const runtimeDefaults = ref({
   alert_mem_threshold: 90
 });
 const editForm = ref({
-  id: null, name: "", brand: "", remark: "", maintenance_mode: false,
+  id: null, ip: "", name: "", brand: "", remark: "", maintenance_mode: false,
   monitoring_paused: false, monitoring_pause_reason: "",
   device_tier: "access",
   poll_interval_sec: 60, cpu_threshold: 90, mem_threshold: 90
@@ -289,6 +289,7 @@ async function bulkRemove() {
 function openEditDevice(row) {
   editForm.value = {
     id: row.id,
+    ip: row.ip || "",
     name: row.name || "",
     brand: row.brand || "",
     remark: row.remark || "",
@@ -306,9 +307,11 @@ function openEditDevice(row) {
 async function saveEditDevice() {
   if (!editMode.value) return fb.warn("当前为只读模式，请先在左侧开启编辑模式");
   if (!editForm.value.id) return;
+	if (!String(editForm.value.ip || "").trim()) return fb.warn("请填写设备 IP 地址");
   editLoading.value = true;
   try {
     await api.updateDevice(editForm.value.id, {
+      ip: String(editForm.value.ip || "").trim(),
       name: editForm.value.name || "",
       brand: editForm.value.brand || "",
       remark: editForm.value.remark || "",
@@ -332,6 +335,7 @@ async function saveEditDevice() {
 
 function deviceUpdatePayload(row, overrides = {}) {
   return {
+    ip: row?.ip || "",
     name: row?.name || "",
     brand: row?.brand || "",
     remark: row?.remark || "",
@@ -781,6 +785,10 @@ watch(editMode, (v) => {
 
     <el-dialog v-model="editVisible" title="编辑资产" width="560">
       <el-form label-position="top">
+        <el-form-item label="设备 IP">
+          <el-input v-model="editForm.ip" placeholder="例如：192.168.1.10" />
+          <div class="text-xs text-slate-500">保存后立即使用新 IP 进行后续监控，历史数据和端口记录会保留。</div>
+        </el-form-item>
         <el-form-item label="资产名称"><el-input v-model="editForm.name" /></el-form-item>
         <el-form-item label="品牌">
           <el-select v-model="editForm.brand" class="w-full" filterable allow-create default-first-option>
