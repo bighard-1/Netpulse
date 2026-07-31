@@ -109,6 +109,7 @@ func (r *Repository) DiagnoseAssetLoad(ctx context.Context) (*AssetLoadDiagnosti
 			"idx_device_latest_metrics_ts",
 			"idx_traffic_5m_device_bucket",
 			"idx_traffic_1h_device_bucket",
+			"idx_metrics_1m_interface_bucket",
 		}
 		rows, err := r.db.QueryContext(ctx, `
 			SELECT indexname
@@ -123,7 +124,8 @@ func (r *Repository) DiagnoseAssetLoad(ctx context.Context) (*AssetLoadDiagnosti
 				    'idx_interface_latest_metrics_ts',
 				    'idx_device_latest_metrics_ts',
 				    'idx_traffic_5m_device_bucket',
-				    'idx_traffic_1h_device_bucket'
+				    'idx_traffic_1h_device_bucket',
+				    'idx_metrics_1m_interface_bucket'
 				  );
 			`)
 		if err != nil {

@@ -107,6 +107,7 @@ func (h *Handler) Router() http.Handler {
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("UPDATE_INTERFACE_REMARK")).Put("/api/interfaces/{id}/remark", h.handleUpdateInterfaceRemark)
 		pr.With(h.requirePermission("device.write"), h.auditMiddleware("UPDATE_INTERFACE_PROFILE")).Put("/api/interfaces/{id}", h.handleUpdateInterfaceProfile)
 		pr.With(h.requirePermission("metrics.read")).Get("/api/metrics/history", h.handleMetricsHistory)
+		pr.With(h.requirePermission("metrics.read")).Post("/api/interfaces/{id}/traffic-trends/retry", h.handleRetryTrafficTrendBackfill)
 		pr.With(h.requirePermission("logs.read")).Get("/api/devices/{id}/logs", h.handleDeviceLogs)
 		pr.Get("/api/events/recent", h.handleRecentEvents)
 		pr.With(h.requirePermission("logs.read")).Get("/api/alerts/events", h.handleListAlertEvents)

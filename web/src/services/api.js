@@ -183,6 +183,9 @@ export const api = {
       timeout: 60000
     });
   },
+  retryTrafficTrendBackfill(id) {
+    return http.post(`/interfaces/${id}/traffic-trends/retry`);
+  },
   precheckDevice(payload) {
     return http.post("/devices/precheck", payload);
   },

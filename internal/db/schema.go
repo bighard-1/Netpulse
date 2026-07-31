@@ -219,6 +219,55 @@ SELECT create_hypertable('traffic_1h', 'bucket', if_not_exists => TRUE);
 ALTER TABLE traffic_1h ADD COLUMN IF NOT EXISTS port_down_samples INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_traffic_1h_device_bucket ON traffic_1h(device_id, bucket DESC);
 
+-- Zabbix-style traffic trends. Unlike the legacy traffic_1h rollup this table
+-- is updated while a metric is being written, so long-range graph reads never
+-- depend on a later scan of the raw metrics hypertable.
+CREATE TABLE IF NOT EXISTS traffic_trends_1h (
+    bucket TIMESTAMPTZ NOT NULL,
+    interface_id BIGINT NOT NULL REFERENCES interfaces(id) ON DELETE CASCADE,
+    device_id BIGINT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    in_sample_count INTEGER NOT NULL DEFAULT 0,
+    out_sample_count INTEGER NOT NULL DEFAULT 0,
+    traffic_in_sum NUMERIC(28,2) NOT NULL DEFAULT 0,
+    traffic_out_sum NUMERIC(28,2) NOT NULL DEFAULT 0,
+    min_traffic_in_bps BIGINT,
+    max_traffic_in_bps BIGINT,
+    min_traffic_out_bps BIGINT,
+    max_traffic_out_bps BIGINT,
+    port_down_samples INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (interface_id, bucket)
+);
+SELECT create_hypertable('traffic_trends_1h', 'bucket', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_traffic_trends_1h_device_bucket
+    ON traffic_trends_1h(device_id, bucket DESC);
+SELECT add_retention_policy(
+    'traffic_trends_1h',
+    drop_after => INTERVAL '730 days',
+    if_not_exists => TRUE
+);
+
+-- One resumable job per port. A historical backfill advances next_bucket in
+-- bounded chunks; it never runs an unbounded global aggregation query.
+CREATE TABLE IF NOT EXISTS traffic_trend_backfill_state (
+    interface_id BIGINT PRIMARY KEY REFERENCES interfaces(id) ON DELETE CASCADE,
+    next_bucket TIMESTAMPTZ NOT NULL,
+    target_bucket TIMESTAMPTZ NOT NULL,
+    last_error TEXT NOT NULL DEFAULT '',
+	priority INTEGER NOT NULL DEFAULT 0,
+	requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	attempts INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- Keep bootstrap safe for databases that received an earlier trend-table
+-- revision before priority fields were introduced.
+ALTER TABLE traffic_trend_backfill_state ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE traffic_trend_backfill_state ADD COLUMN IF NOT EXISTS requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE traffic_trend_backfill_state ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_traffic_trend_backfill_next
+    ON traffic_trend_backfill_state(priority DESC, requested_at, next_bucket);
+
 CREATE TABLE IF NOT EXISTS traffic_rollup_state (
     grain VARCHAR(16) PRIMARY KEY,
     last_bucket TIMESTAMPTZ,
@@ -1068,6 +1117,63 @@ func (r *Repository) ensureSchemaVersion(ctx context.Context) error {
 	`
 	if err := r.applySchemaMigration(ctx, 13, mig13); err != nil {
 		return fmt.Errorf("apply migration v13 failed: %w", err)
+	}
+	// v14: write-time hourly traffic trends and resumable per-port backfill.
+	// The primary key puts the equality-filtered interface first and the range
+	// bucket second, matching every long-range chart query.
+	const mig14 = `
+		CREATE TABLE IF NOT EXISTS traffic_trends_1h (
+		    bucket TIMESTAMPTZ NOT NULL,
+		    interface_id BIGINT NOT NULL REFERENCES interfaces(id) ON DELETE CASCADE,
+		    device_id BIGINT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+		    sample_count INTEGER NOT NULL DEFAULT 0,
+		    in_sample_count INTEGER NOT NULL DEFAULT 0,
+		    out_sample_count INTEGER NOT NULL DEFAULT 0,
+		    traffic_in_sum NUMERIC(28,2) NOT NULL DEFAULT 0,
+		    traffic_out_sum NUMERIC(28,2) NOT NULL DEFAULT 0,
+		    min_traffic_in_bps BIGINT,
+		    max_traffic_in_bps BIGINT,
+		    min_traffic_out_bps BIGINT,
+		    max_traffic_out_bps BIGINT,
+		    port_down_samples INTEGER NOT NULL DEFAULT 0,
+		    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    PRIMARY KEY (interface_id, bucket)
+		);
+		SELECT create_hypertable('traffic_trends_1h', 'bucket', if_not_exists => TRUE);
+		CREATE INDEX IF NOT EXISTS idx_traffic_trends_1h_device_bucket
+			ON traffic_trends_1h(device_id, bucket DESC);
+		SELECT add_retention_policy(
+			'traffic_trends_1h',
+			drop_after => INTERVAL '730 days',
+			if_not_exists => TRUE
+		);
+		CREATE TABLE IF NOT EXISTS traffic_trend_backfill_state (
+		    interface_id BIGINT PRIMARY KEY REFERENCES interfaces(id) ON DELETE CASCADE,
+		    next_bucket TIMESTAMPTZ NOT NULL,
+		    target_bucket TIMESTAMPTZ NOT NULL,
+		    last_error TEXT NOT NULL DEFAULT '',
+		    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS idx_traffic_trend_backfill_next
+			ON traffic_trend_backfill_state(next_bucket, updated_at);
+		INSERT INTO schema_migrations(version, description)
+		VALUES (14, 'add write-time hourly traffic trends and resumable backfill state')
+		ON CONFLICT (version) DO NOTHING;
+	`
+	if err := r.applySchemaMigration(ctx, 14, mig14); err != nil {
+		return fmt.Errorf("apply migration v14 failed: %w", err)
+	}
+	const mig15 = `
+		ALTER TABLE traffic_trend_backfill_state ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 0;
+		ALTER TABLE traffic_trend_backfill_state ADD COLUMN IF NOT EXISTS requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+		ALTER TABLE traffic_trend_backfill_state ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
+		CREATE INDEX IF NOT EXISTS idx_traffic_trend_backfill_priority
+			ON traffic_trend_backfill_state(priority DESC, requested_at, next_bucket);
+		INSERT INTO schema_migrations(version, description)
+		VALUES (15, 'add traffic trend backfill priority and monitoring fields') ON CONFLICT (version) DO NOTHING;
+	`
+	if err := r.applySchemaMigration(ctx, 15, mig15); err != nil {
+		return fmt.Errorf("apply migration v15 failed: %w", err)
 	}
 	return nil
 }

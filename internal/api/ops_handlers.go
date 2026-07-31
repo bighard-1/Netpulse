@@ -20,6 +20,7 @@ func (h *Handler) handleSystemOps(w http.ResponseWriter, r *http.Request) {
 	pollSummary, _ := h.repo.GetOpsPollSummary(ctx, time.Hour)
 	trafficSummary, _ := h.repo.GetTrafficSampleSummary(ctx, time.Hour)
 	trafficRollups, _ := h.repo.GetTrafficRollupStatuses(ctx)
+	trendBackfill, _ := h.repo.GetTrafficTrendBackfillOverview(ctx)
 	storageOverview, _ := h.repo.GetStorageOverview(ctx)
 	cleanupPreview, _ := h.repo.CleanupOperationalData(ctx, db.OperationalDataRetention{}, true)
 	openAlerts := 0
@@ -53,6 +54,7 @@ func (h *Handler) handleSystemOps(w http.ResponseWriter, r *http.Request) {
 		"poll_summary":      pollSummary,
 		"traffic_summary":   trafficSummary,
 		"traffic_rollups":   trafficRollups,
+		"trend_backfill":    trendBackfill,
 		"storage_overview":  storageOverview,
 		"cleanup_preview":   cleanupPreview,
 		"cache_summary":     h.snapshotCacheStats(),

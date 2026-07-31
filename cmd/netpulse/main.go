@@ -118,6 +118,7 @@ func main() {
 
 	repo.StartBackgroundMaintenance(runCtx)
 	repo.StartTrafficRollupWorker(runCtx)
+	repo.StartTrafficTrendBackfillWorker(runCtx)
 	go worker.Start(runCtx)
 	go snmp.StartSyslogServer(runCtx, repo, syslogAddr)
 	go snmp.StartTrapServer(runCtx, repo, trapAddr)

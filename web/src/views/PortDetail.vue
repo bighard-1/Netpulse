@@ -35,6 +35,8 @@ const editMode = ref(localStorage.getItem("np_edit_mode") === "1");
 
 const loading = ref(false);
 const chartLoadError = ref("");
+const trendBackfill = ref({ state: "not_applicable", progress_percent: 0 });
+const retryingTrendBackfill = ref(false);
 const customRange = ref([]);
 const customStartDraft = ref(null);
 const customEndDraft = ref(null);
@@ -243,7 +245,8 @@ async function fetchRange(start, end) {
     data: res.data.data || [],
     plan,
     source: String(res?.data?.source_table || ""),
-    sampledInterval: String(res?.data?.sampled_interval || "")
+    sampledInterval: String(res?.data?.sampled_interval || ""),
+    trendBackfill: res?.data?.trend_backfill || { state: "not_applicable", progress_percent: 0 }
   };
 }
 
@@ -476,6 +479,7 @@ async function loadPresetChart(key, options = {}) {
     lastSeriesCache.value[key] = res.data;
     chartMeta.value[key] = res.plan;
     chartSource.value[key] = res.source || "metrics";
+    trendBackfill.value = res.trendBackfill;
     chartLoaded.value[key] = true;
     await nextTick();
     applyChart(charts[key], titles[key], res.data, key);
@@ -515,6 +519,7 @@ async function loadCustomChart(options = {}) {
     lastSeriesCache.value.custom = res.data;
     chartMeta.value.custom = res.plan;
     chartSource.value.custom = res.source || "metrics";
+    trendBackfill.value = res.trendBackfill;
     chartLoaded.value.custom = true;
     chartCardActive.value = "custom";
     await nextTick();
@@ -529,6 +534,20 @@ async function loadCustomChart(options = {}) {
     if (seq === customChartRequestSeq && !options.keepLoading) {
       loading.value = false;
     }
+  }
+}
+
+async function retryTrendBackfill() {
+  retryingTrendBackfill.value = true;
+  try {
+    await api.retryTrafficTrendBackfill(props.id);
+    trendBackfill.value = { state: "backfilling", progress_percent: trendBackfill.value?.progress_percent || 0 };
+    fb.success("历史趋势回填已重新排队，图表会自动使用已完成的部分");
+    await loadAllCharts();
+  } catch (err) {
+    fb.apiError(err, "重新排队历史趋势回填失败");
+  } finally {
+    retryingTrendBackfill.value = false;
   }
 }
 
@@ -854,6 +873,23 @@ function onEditModeEvent(e) {
           </div>
         </div>
       </template>
+
+      <el-alert
+        v-if="trendBackfill.state === 'backfilling' || trendBackfill.state === 'failed'"
+        class="mb-3"
+        :type="trendBackfill.state === 'failed' ? 'warning' : 'info'"
+        show-icon
+        :closable="false"
+        :title="trendBackfill.state === 'failed' ? '历史趋势回填暂时停滞' : '正在补齐该端口的历史趋势'"
+      >
+        <template #default>
+          <div class="flex flex-wrap items-center gap-2">
+            <span v-if="trendBackfill.state === 'backfilling'">已完成约 {{ trendBackfill.progress_percent || 0 }}%，期间图表仅显示已归档的历史数据。</span>
+            <span v-else>{{ trendBackfill.last_error || '回填任务可安全重新排队。' }}</span>
+            <el-button v-if="trendBackfill.state === 'failed'" size="small" :loading="retryingTrendBackfill" @click="retryTrendBackfill">重新排队</el-button>
+          </div>
+        </template>
+      </el-alert>
 
       <el-alert
         v-if="chartLoadError"

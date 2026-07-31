@@ -9,13 +9,16 @@ import (
 )
 
 func (r *Repository) StartBackgroundMaintenance(ctx context.Context) {
-	if strings.ToLower(strings.TrimSpace(os.Getenv("NETPULSE_ENABLE_OPTIONAL_INDEX_MAINTENANCE"))) != "true" {
-		log.Printf("optional index maintenance disabled; set NETPULSE_ENABLE_OPTIONAL_INDEX_MAINTENANCE=true to run it during a maintenance window")
+	// Long-range port charts depend on this index. It is deliberately created
+	// after startup and with a short lock timeout, so the service stays usable
+	// while PostgreSQL builds it. Operators may opt out only explicitly.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("NETPULSE_ENABLE_OPTIONAL_INDEX_MAINTENANCE")), "false") {
+		log.Printf("long-range chart index maintenance disabled by NETPULSE_ENABLE_OPTIONAL_INDEX_MAINTENANCE=false")
 		return
 	}
-	go r.ensureOptionalIndexes(ctx)
+	go r.ensureLongRangeChartIndexes(ctx)
 }
-func (r *Repository) ensureOptionalIndexes(ctx context.Context) {
+func (r *Repository) ensureLongRangeChartIndexes(ctx context.Context) {
 	timer := time.NewTimer(15 * time.Second)
 	defer timer.Stop()
 	select {
@@ -34,11 +37,6 @@ func (r *Repository) ensureOptionalIndexes(ctx context.Context) {
 			concurrent:  `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_metrics_1m_interface_bucket ON metrics_1m (interface_id, bucket DESC);`,
 			nonBlocking: `CREATE INDEX IF NOT EXISTS idx_metrics_1m_interface_bucket ON metrics_1m (interface_id, bucket DESC);`,
 		},
-		{
-			name:        "idx_metrics_1m_device_bucket",
-			concurrent:  `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_metrics_1m_device_bucket ON metrics_1m (device_id, bucket DESC);`,
-			nonBlocking: `CREATE INDEX IF NOT EXISTS idx_metrics_1m_device_bucket ON metrics_1m (device_id, bucket DESC);`,
-		},
 	}
 
 	for attempt := 1; attempt <= 3; attempt++ {
@@ -52,10 +50,10 @@ func (r *Repository) ensureOptionalIndexes(ctx context.Context) {
 			}
 			if err := r.createOptionalIndex(ctx, idx.concurrent, idx.nonBlocking); err != nil {
 				failed++
-				log.Printf("optional index %s attempt %d skipped: %v", idx.name, attempt, err)
+				log.Printf("long-range chart index %s attempt %d skipped: %v", idx.name, attempt, err)
 				continue
 			}
-			log.Printf("optional index %s ready", idx.name)
+			log.Printf("long-range chart index %s ready", idx.name)
 		}
 		if failed == 0 {
 			return

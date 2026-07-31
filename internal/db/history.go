@@ -12,9 +12,10 @@ import (
 )
 
 // A single port's recent raw history is small when read through
-// idx_metrics_interface_ts.  Reading it directly is both faster and more
-// reliable than waiting for a shared, asynchronous rollup to catch up.
-const trafficDirectQueryRange = 31 * 24 * time.Hour
+// idx_metrics_interface_ts. Longer ranges must never scan the raw collection
+// hypertable: use the one-minute continuous aggregate, just as RRD based
+// systems read a fixed-resolution archive for longer charts.
+const trafficDirectQueryRange = 24 * time.Hour
 
 func (r *Repository) GetInterfaceHistory(
 	ctx context.Context, interfaceID int64, start, end time.Time, interval string, maxPoints int,
@@ -27,11 +28,23 @@ func (r *Repository) GetInterfaceHistory(
 	if span <= trafficDirectQueryRange {
 		return r.queryInterfaceTrafficRaw(ctx, interfaceID, start, end, interval, maxPoints)
 	}
+	// The continuous aggregate has one row per port per minute, and its
+	// (interface_id, bucket) index is maintained at startup. This keeps a 7/30
+	// day chart bounded even when the raw metrics hypertable holds years of data.
+	if span <= 31*24*time.Hour {
+		return r.queryInterfaceTraffic1m(ctx, interfaceID, start, end, interval, maxPoints)
+	}
 	if span > 31*24*time.Hour {
-		items, err := r.queryInterfaceTrafficRollup(ctx, "traffic_1h", interfaceID, start, end, interval, maxPoints)
-		if (err == nil && len(items) > 0) || span > trafficRollup5mRange {
+		if err := r.EnsureTrafficTrendBackfill(ctx, interfaceID); err != nil {
+			log.Printf("queue traffic trend backfill interface=%d: %v", interfaceID, err)
+		}
+		items, err := r.queryInterfaceTrafficTrend(ctx, interfaceID, start, end, interval, maxPoints)
+		if err != nil || len(items) > 0 || span > trafficRollup5mRange {
 			return items, err
 		}
+		// Existing installations may need a little time to backfill their new
+		// hourly trend table. The 1-minute aggregate is a bounded bridge for
+		// periods up to 90 days; longer periods intentionally never scan raw data.
 		fallback, fallbackErr := r.queryInterfaceTraffic1m(ctx, interfaceID, start, end, interval, maxPoints)
 		if fallbackErr == nil {
 			return fallback, nil
@@ -42,23 +55,44 @@ func (r *Repository) GetInterfaceHistory(
 		log.Printf("metrics_1m traffic fallback skipped interface=%d: %v", interfaceID, fallbackErr)
 		return items, nil
 	}
-	if span > 24*time.Hour {
-		items, err := r.queryInterfaceTrafficRollup(ctx, "traffic_5m", interfaceID, start, end, interval, maxPoints)
-		if err == nil && len(items) > 0 {
-			return items, nil
-		}
-		fallback, fallbackErr := r.queryInterfaceTraffic1m(ctx, interfaceID, start, end, interval, maxPoints)
-		if fallbackErr == nil {
-			return fallback, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-		log.Printf("metrics_1m traffic fallback skipped interface=%d: %v", interfaceID, fallbackErr)
-		return items, nil
-	}
+	return nil, fmt.Errorf("unsupported traffic history range")
+}
 
-	return r.queryInterfaceTrafficRaw(ctx, interfaceID, start, end, interval, maxPoints)
+func (r *Repository) queryInterfaceTrafficTrend(
+	ctx context.Context, interfaceID int64, start, end time.Time, interval string, maxPoints int,
+) ([]InterfaceHistoryPoint, error) {
+	span := end.Sub(start)
+	bucketInterval := resolveHistoryBucketInterval(span, interval, maxPoints, true)
+	if bucketInterval == "" {
+		bucketInterval = "1 hour"
+	}
+	if d, ok := parseSQLInterval(bucketInterval); !ok || d < time.Hour {
+		bucketInterval = "1 hour"
+	}
+	q := fmt.Sprintf(`
+		SELECT time_bucket('%[1]s', bucket) AS ts,
+		       CASE WHEN SUM(in_sample_count) > 0 THEN
+		         SUM(traffic_in_sum)::DOUBLE PRECISION / SUM(in_sample_count)
+		       END AS traffic_in_bps,
+		       CASE WHEN SUM(out_sample_count) > 0 THEN
+		         SUM(traffic_out_sum)::DOUBLE PRECISION / SUM(out_sample_count)
+		       END AS traffic_out_bps,
+		       CASE WHEN SUM(in_sample_count) = 0 AND SUM(port_down_samples) > 0
+		         THEN 'PORT_DOWN' ELSE '' END AS traffic_in_status,
+		       CASE WHEN SUM(out_sample_count) = 0 AND SUM(port_down_samples) > 0
+		         THEN 'PORT_DOWN' ELSE '' END AS traffic_out_status
+		FROM traffic_trends_1h
+		WHERE interface_id = $1
+		  AND bucket >= $2 AND bucket <= $3
+		GROUP BY 1
+		HAVING SUM(sample_count) > 0
+		ORDER BY 1;
+	`, bucketInterval)
+	out, err := r.scanInterfaceHistory(ctx, q, interfaceID, start, end, span, maxPoints)
+	if err != nil {
+		return nil, fmt.Errorf("get interface history from hourly traffic trends: %w", err)
+	}
+	return out, nil
 }
 
 func (r *Repository) queryInterfaceTrafficRaw(

@@ -34,6 +34,9 @@ func TestSampledIntervalForSource(t *testing.T) {
 	if got := sampledIntervalForSource("", "traffic_1h"); got != "1h(预聚合)" {
 		t.Fatalf("1h source interval=%q", got)
 	}
+	if got := sampledIntervalForSource("", "traffic_trends_1h"); got != "1h(趋势归档)" {
+		t.Fatalf("trend source interval=%q", got)
+	}
 	if got := sampledIntervalForSource("15m", "traffic_5m"); got != "15m" {
 		t.Fatalf("explicit interval=%q", got)
 	}

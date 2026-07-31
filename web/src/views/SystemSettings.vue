@@ -57,6 +57,7 @@ const opsSummary = ref({
     initializing_samples: 0,
     window_minutes: 60
   },
+	trend_backfill: { pending: 0, failed: 0, completed: 0 },
   cache_summary: {
     topology_hits: 0,
     topology_miss: 0,
@@ -949,6 +950,18 @@ watch(activeTab, (tab) => {
         title="观测说明"
         description="这里展示最近1小时的采集健康度和图表采样状态，仅用于定位慢设备、断点样本和入库延迟，不会改变现有采集计算结果。"
       />
+      <div class="mt-4 rounded-lg border border-slate-200 p-3">
+        <div class="mb-2 flex items-center justify-between">
+          <span class="font-semibold">长周期流量趋势回填</span>
+          <el-button size="small" @click="loadOpsSummary">刷新</el-button>
+        </div>
+        <div class="grid grid-cols-1 gap-2 text-sm md:grid-cols-3">
+          <div class="rounded-lg bg-slate-50 p-3">等待/进行中：<b>{{ opsSummary.trend_backfill?.pending || 0 }}</b></div>
+          <div class="rounded-lg bg-slate-50 p-3">需要恢复：<b>{{ opsSummary.trend_backfill?.failed || 0 }}</b></div>
+          <div class="rounded-lg bg-slate-50 p-3">已完成：<b>{{ opsSummary.trend_backfill?.completed || 0 }}</b></div>
+        </div>
+        <div class="mt-2 text-xs text-slate-500">用户打开长周期端口图会进入高优先级队列；默认每个工作者每 20 秒最多处理 3 个 7 天分片，可通过环境变量限制工作者和吞吐。</div>
+      </div>
       <div class="mt-4 rounded-lg border border-slate-200 p-3">
         <div class="mb-2 flex items-center justify-between">
           <span class="font-semibold">最近服务端慢请求</span>

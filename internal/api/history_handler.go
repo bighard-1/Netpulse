@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"netpulse/internal/db"
 )
 
@@ -102,17 +104,26 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, withHistoryDiagnostics(payload, diag))
 			return
 		}
-		// Recent single-port ranges use the indexed raw history path; do not put
-		// a short outer deadline around it and turn a slow rollup into a chart
-		// failure before the database can return the indexed result.
+		// Recent ranges use the indexed raw history path. Longer ranges use the
+		// indexed one-minute continuous aggregate rather than a raw-table scan.
 		items, err := h.repo.GetInterfaceHistory(r.Context(), id, start, end, interval, maxPoints)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		sourceTable := "metrics"
-		if span > 31*24*time.Hour {
-			sourceTable = "traffic_1h"
+		if span > 24*time.Hour && span <= 31*24*time.Hour {
+			sourceTable = "metrics_1m"
+		} else if span > 31*24*time.Hour {
+			sourceTable = "traffic_trends_1h"
+		}
+		trendStatus := db.TrafficTrendBackfillStatus{State: "not_applicable"}
+		if sourceTable == "traffic_trends_1h" {
+			trendStatus, err = h.repo.GetTrafficTrendBackfillStatus(r.Context(), id, start, end)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 		}
 		sampledInterval := sampledIntervalForSource(interval, sourceTable)
 		diag := historyDiagnostic{
@@ -132,6 +143,7 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			"sampled_interval":    sampledInterval,
 			"source_table":        sourceTable,
 			"aggregation_pending": sourceTable != "metrics" && len(items) == 0,
+			"trend_backfill":      trendStatus,
 			"maxPoints":           maxPoints,
 			"data":                items,
 		}
@@ -172,6 +184,19 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *Handler) handleRetryTrafficTrendBackfill(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid interface id")
+		return
+	}
+	if err := h.repo.RetryTrafficTrendBackfill(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"message": "端口历史趋势回填已重新排队"})
+}
+
 type historyDiagnostic struct {
 	RangeLabel      string
 	SourceTable     string
@@ -183,6 +208,10 @@ type historyDiagnostic struct {
 
 func sampledIntervalForSource(interval, sourceTable string) string {
 	switch sourceTable {
+	case "metrics_1m":
+		return sampledIntervalLabel(interval, "1m(连续预聚合)")
+	case "traffic_trends_1h":
+		return sampledIntervalLabel(interval, "1h(趋势归档)")
 	case "traffic_1h":
 		return sampledIntervalLabel(interval, "1h(预聚合)")
 	case "traffic_5m":

@@ -507,6 +507,57 @@ func (r *Repository) SaveMetrics(
 		SELECT interface_id FROM latest_upsert
 		LIMIT 1;
 	`
+	// A trend row is updated in the same short transaction as the raw point.
+	// This is deliberately an atomic UPSERT rather than a later rollup scan:
+	// long-period charts must stay available even while historical backfill is
+	// running or after a service restart.
+	const trendQ = `
+		INSERT INTO traffic_trends_1h (
+		    bucket, interface_id, device_id, sample_count,
+		    in_sample_count, out_sample_count,
+		    traffic_in_sum, traffic_out_sum,
+		    min_traffic_in_bps, max_traffic_in_bps,
+		    min_traffic_out_bps, max_traffic_out_bps,
+		    port_down_samples, updated_at
+		)
+		VALUES (
+		    date_trunc('hour', $1::timestamptz), $2, $3, 1,
+		    CASE WHEN $4::bigint IS NULL THEN 0 ELSE 1 END,
+		    CASE WHEN $5::bigint IS NULL THEN 0 ELSE 1 END,
+		    COALESCE($4::numeric, 0), COALESCE($5::numeric, 0),
+		    $4::bigint, $4::bigint, $5::bigint, $5::bigint,
+		    CASE WHEN $6 = 'PORT_DOWN' OR $7 = 'PORT_DOWN' THEN 1 ELSE 0 END, NOW()
+		)
+		ON CONFLICT (interface_id, bucket) DO UPDATE SET
+		    device_id = EXCLUDED.device_id,
+		    sample_count = traffic_trends_1h.sample_count + 1,
+		    in_sample_count = traffic_trends_1h.in_sample_count + EXCLUDED.in_sample_count,
+		    out_sample_count = traffic_trends_1h.out_sample_count + EXCLUDED.out_sample_count,
+		    traffic_in_sum = traffic_trends_1h.traffic_in_sum + EXCLUDED.traffic_in_sum,
+		    traffic_out_sum = traffic_trends_1h.traffic_out_sum + EXCLUDED.traffic_out_sum,
+		    min_traffic_in_bps = CASE
+		        WHEN EXCLUDED.in_sample_count = 0 THEN traffic_trends_1h.min_traffic_in_bps
+		        WHEN traffic_trends_1h.in_sample_count = 0 THEN EXCLUDED.min_traffic_in_bps
+		        ELSE LEAST(traffic_trends_1h.min_traffic_in_bps, EXCLUDED.min_traffic_in_bps)
+		    END,
+		    max_traffic_in_bps = CASE
+		        WHEN EXCLUDED.in_sample_count = 0 THEN traffic_trends_1h.max_traffic_in_bps
+		        WHEN traffic_trends_1h.in_sample_count = 0 THEN EXCLUDED.max_traffic_in_bps
+		        ELSE GREATEST(traffic_trends_1h.max_traffic_in_bps, EXCLUDED.max_traffic_in_bps)
+		    END,
+		    min_traffic_out_bps = CASE
+		        WHEN EXCLUDED.out_sample_count = 0 THEN traffic_trends_1h.min_traffic_out_bps
+		        WHEN traffic_trends_1h.out_sample_count = 0 THEN EXCLUDED.min_traffic_out_bps
+		        ELSE LEAST(traffic_trends_1h.min_traffic_out_bps, EXCLUDED.min_traffic_out_bps)
+		    END,
+		    max_traffic_out_bps = CASE
+		        WHEN EXCLUDED.out_sample_count = 0 THEN traffic_trends_1h.max_traffic_out_bps
+		        WHEN traffic_trends_1h.out_sample_count = 0 THEN EXCLUDED.max_traffic_out_bps
+		        ELSE GREATEST(traffic_trends_1h.max_traffic_out_bps, EXCLUDED.max_traffic_out_bps)
+		    END,
+		    port_down_samples = traffic_trends_1h.port_down_samples + EXCLUDED.port_down_samples,
+		    updated_at = NOW();
+	`
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin save metrics tx: %w", err)
@@ -526,6 +577,12 @@ func (r *Repository) SaveMetrics(
 			ctx, q, ts, deviceID, m.IfIndex, m.IfName, cpu, mem, clampPercent(m.StorageUsage), clampNonNegative(m.StorageTotal), clampNonNegative(m.StorageFree), m.UptimeSec, inBps, outBps, m.SpeedMbps, m.OperStatus, strings.TrimSpace(m.TrafficInStat), strings.TrimSpace(m.TrafficOutStat), m.AdminStatus,
 		).Scan(&interfaceID); err != nil {
 			return fmt.Errorf("insert metric ifIndex=%d: %w", m.IfIndex, err)
+		}
+		if _, err := tx.ExecContext(
+			ctx, trendQ, ts, interfaceID, deviceID, inBps, outBps,
+			strings.TrimSpace(m.TrafficInStat), strings.TrimSpace(m.TrafficOutStat),
+		); err != nil {
+			return fmt.Errorf("upsert hourly traffic trend ifIndex=%d: %w", m.IfIndex, err)
 		}
 	}
 	if len(metrics) > 0 {
