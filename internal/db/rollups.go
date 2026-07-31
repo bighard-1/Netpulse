@@ -72,6 +72,24 @@ func trafficRollupChunksPerRun(envKey string, fallback int) int {
 	return fallback
 }
 
+func trafficRollupBackfillEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("NETPULSE_TRAFFIC_ROLLUP_BACKFILL")), "true")
+}
+
+// Normal collection must never spend all of its database capacity rebuilding
+// months of derived data. Historical rebuilds are an explicit maintenance
+// action; the normal worker only keeps a short recent window current.
+func capTrafficRollupStart(start, targetEnd time.Time, recentWindow time.Duration) time.Time {
+	if trafficRollupBackfillEnabled() {
+		return start
+	}
+	minimum := targetEnd.Add(-recentWindow)
+	if start.Before(minimum) {
+		return minimum
+	}
+	return start
+}
+
 func (r *Repository) aggregateTraffic5m(ctx context.Context) bool {
 	targetEnd := time.Now().UTC().Truncate(5 * time.Minute).Add(-5 * time.Minute)
 	if targetEnd.IsZero() {
@@ -81,6 +99,7 @@ func (r *Repository) aggregateTraffic5m(ctx context.Context) bool {
 	if start.Before(targetEnd.Add(-trafficRollup5mRange)) {
 		start = targetEnd.Add(-trafficRollup5mRange)
 	}
+	start = capTrafficRollupStart(start, targetEnd, 6*time.Hour)
 	if !start.Before(targetEnd) {
 		r.recordTrafficRollupState(ctx, "5m", targetEnd, time.Now(), 0, "")
 		return false
@@ -139,6 +158,7 @@ func (r *Repository) aggregateTraffic1h(ctx context.Context) bool {
 	if start.Before(targetEnd.Add(-trafficRollup1hRange)) {
 		start = targetEnd.Add(-trafficRollup1hRange)
 	}
+	start = capTrafficRollupStart(start, targetEnd, 24*time.Hour)
 	if !start.Before(targetEnd) {
 		r.recordTrafficRollupState(ctx, "1h", targetEnd, time.Now(), 0, "")
 		return false

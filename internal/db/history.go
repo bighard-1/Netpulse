@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+// A single port's recent raw history is small when read through
+// idx_metrics_interface_ts.  Reading it directly is both faster and more
+// reliable than waiting for a shared, asynchronous rollup to catch up.
+const trafficDirectQueryRange = 31 * 24 * time.Hour
+
 func (r *Repository) GetInterfaceHistory(
 	ctx context.Context, interfaceID int64, start, end time.Time, interval string, maxPoints int,
 ) ([]InterfaceHistoryPoint, error) {
@@ -19,6 +24,9 @@ func (r *Repository) GetInterfaceHistory(
 		return nil, fmt.Errorf("traffic history range exceeds 730 days")
 	}
 	interval = strings.TrimSpace(strings.ToLower(interval))
+	if span <= trafficDirectQueryRange {
+		return r.queryInterfaceTrafficRaw(ctx, interfaceID, start, end, interval, maxPoints)
+	}
 	if span > 31*24*time.Hour {
 		items, err := r.queryInterfaceTrafficRollup(ctx, "traffic_1h", interfaceID, start, end, interval, maxPoints)
 		if (err == nil && len(items) > 0) || span > trafficRollup5mRange {
@@ -50,6 +58,13 @@ func (r *Repository) GetInterfaceHistory(
 		return items, nil
 	}
 
+	return r.queryInterfaceTrafficRaw(ctx, interfaceID, start, end, interval, maxPoints)
+}
+
+func (r *Repository) queryInterfaceTrafficRaw(
+	ctx context.Context, interfaceID int64, start, end time.Time, interval string, maxPoints int,
+) ([]InterfaceHistoryPoint, error) {
+	span := end.Sub(start)
 	bucketInterval := resolveHistoryBucketInterval(span, interval, maxPoints, false)
 	q := `
 		SELECT ts, traffic_in_bps, traffic_out_bps,

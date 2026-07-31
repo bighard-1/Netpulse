@@ -42,3 +42,13 @@ CONCURRENCY=8 ROUNDS=5 DEVICE_ID=1 PORT_ID=10 ./scripts/capacity_probe.sh
 2. 如果慢接口是资产或图表查询，执行“资产/数据库诊断”。
 3. 如果最近指标入库延迟正常但图表慢，优先看慢请求里的 `周期/数据源/缓存/点数`，再检查 TimescaleDB 索引、连续聚合和查询跨度。
 4. 如果慢接口集中在拓扑或事件流，优先检查是否有大量重复刷新或异常客户端持续轮询。
+# Long-range traffic query safeguards
+
+For a single interface, charts up to 31 days read `metrics` directly through
+the `(interface_id, ts)` index and aggregate only that interface's points. This
+does not wait for a global rollup job.
+
+The traffic rollup worker normally refreshes only the recent window (6 hours
+for 5-minute rows and 24 hours for hourly rows). To deliberately rebuild old
+derived data, set `NETPULSE_TRAFFIC_ROLLUP_BACKFILL=true` temporarily and
+monitor database load; do not enable it during normal peak operations.

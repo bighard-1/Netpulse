@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -103,21 +102,10 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, withHistoryDiagnostics(payload, diag))
 			return
 		}
-		queryCtx := r.Context()
-		cancel := func() {}
-		if span > 24*time.Hour {
-			// Long-range traffic reads are served from compact rollups, but a cold
-			// cache or an incomplete rollup can still require a fallback query.
-			// Ten seconds is too aggressive for a busy production TimescaleDB and
-			// was the direct cause of the 7/30-day chart failures.
-			timeout := 30 * time.Second
-			if span > 31*24*time.Hour {
-				timeout = 45 * time.Second
-			}
-			queryCtx, cancel = context.WithTimeout(r.Context(), timeout)
-		}
-		defer cancel()
-		items, err := h.repo.GetInterfaceHistory(queryCtx, id, start, end, interval, maxPoints)
+		// Recent single-port ranges use the indexed raw history path; do not put
+		// a short outer deadline around it and turn a slow rollup into a chart
+		// failure before the database can return the indexed result.
+		items, err := h.repo.GetInterfaceHistory(r.Context(), id, start, end, interval, maxPoints)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -125,8 +113,6 @@ func (h *Handler) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 		sourceTable := "metrics"
 		if span > 31*24*time.Hour {
 			sourceTable = "traffic_1h"
-		} else if span > 24*time.Hour {
-			sourceTable = "traffic_5m"
 		}
 		sampledInterval := sampledIntervalForSource(interval, sourceTable)
 		diag := historyDiagnostic{

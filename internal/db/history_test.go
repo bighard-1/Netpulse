@@ -103,3 +103,16 @@ func TestTrafficRollupChunksPerRun(t *testing.T) {
 		t.Fatalf("capped chunks=%d, want 24", got)
 	}
 }
+
+func TestCapTrafficRollupStartAvoidsImplicitHistoricalBackfill(t *testing.T) {
+	t.Setenv("NETPULSE_TRAFFIC_ROLLUP_BACKFILL", "")
+	target := time.Date(2026, 7, 31, 10, 0, 0, 0, time.UTC)
+	oldStart := target.Add(-90 * 24 * time.Hour)
+	if got := capTrafficRollupStart(oldStart, target, 6*time.Hour); !got.Equal(target.Add(-6 * time.Hour)) {
+		t.Fatalf("normal rollup start=%s, want recent window", got)
+	}
+	t.Setenv("NETPULSE_TRAFFIC_ROLLUP_BACKFILL", "true")
+	if got := capTrafficRollupStart(oldStart, target, 6*time.Hour); !got.Equal(oldStart) {
+		t.Fatalf("explicit backfill start=%s, want original start", got)
+	}
+}
